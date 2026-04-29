@@ -1,0 +1,387 @@
+/**
+ * TUI entrypoint — bootstraps providers/registries and mounts the Ink app.
+ *
+ * If the user has not configured an API key yet, we still launch the TUI
+ * in "setup" mode (provider = null). The App renders a setup overlay
+ * that lets the user paste a key inside the program — no `vim` round-trip
+ * required.
+ */
+import { render } from 'ink';
+import React from 'react';
+import {
+  AgentRegistry,
+  SkillRegistry,
+  allowAllPolicy,
+  builtinToolRegistry,
+  createAnthropicProvider,
+  createCodexProvider,
+  createOpenRouterProvider,
+  fetchAnthropicModels,
+  fetchCodexModels,
+  fetchOpenRouterModels,
+  loadAgents,
+  loadConfig,
+  loadSkills,
+  loadClaudeCodeCredentials,
+  providerFromConfigAsync,
+  saveConfig,
+  type AtlasConfig,
+  type ModelInfo,
+  type Provider
+} from '@atlas/core';
+import { TuiApp } from './App.js';
+
+export interface RunTuiOptions {
+  readonly model?: string;
+  readonly agent?: string;
+  /** Inject a provider (tests). */
+  readonly provider?: Provider;
+  /** Inject config (tests). */
+  readonly config?: AtlasConfig;
+}
+
+export interface RunTuiResult {
+  readonly exitCode: number;
+}
+
+const OPENROUTER_FALLBACK_MODELS = [
+  'anthropic/claude-opus-4.7',
+  'anthropic/claude-sonnet-4.5',
+  'anthropic/claude-opus-4.5',
+  'anthropic/claude-haiku-4.5',
+  'anthropic/claude-sonnet-4',
+  'anthropic/claude-opus-4',
+  'openai/gpt-5.5',
+  'openai/gpt-5',
+  'openai/gpt-5-mini',
+  'openai/gpt-4o',
+  'openai/gpt-4o-mini',
+  'deepseek/deepseek-v4',
+  'moonshotai/kimi-2.6',
+  'google/gemini-2.5-pro',
+  'google/gemini-2.5-flash'
+];
+
+const ANTHROPIC_NATIVE_MODELS = [
+  'claude-opus-4-7',
+  'claude-sonnet-4-5',
+  'claude-opus-4-5',
+  'claude-haiku-4-5',
+  'claude-opus-4',
+  'claude-sonnet-4',
+  'claude-3-5-sonnet-latest',
+  'claude-3-5-haiku-latest'
+];
+
+/**
+ * If the user hasn't configured a key explicitly but has Claude Code
+ * installed, switch to the Anthropic provider with native model ids and
+ * use their OAuth credentials. Keeps explicit user config (apiKey on
+ * either provider, or `defaultProvider` set in ~/.atlas/config.yaml)
+ * untouched.
+ */
+const maybeAutoDetectClaudeCode = async (cfg: AtlasConfig): Promise<AtlasConfig> => {
+  const orHasKey = Boolean(cfg.providers.openrouter.apiKey);
+  const anHasKey = Boolean(cfg.providers.anthropic.apiKey);
+  // If anything is already configured, respect it.
+  if (orHasKey || anHasKey) return cfg;
+  if (cfg.defaultProvider !== 'openrouter') return cfg; // user picked something explicitly
+
+  const creds = await loadClaudeCodeCredentials({});
+  if (!creds.ok) return cfg;
+
+  // Promote to anthropic + a native model id. Only override defaultModel
+  // if it still looks like the OpenRouter-shaped default (`provider/id`).
+  const looksLikeOpenRouterId = cfg.defaultModel.includes('/');
+  return {
+    ...cfg,
+    defaultProvider: 'anthropic',
+    defaultModel: looksLikeOpenRouterId ? 'claude-sonnet-4-5' : cfg.defaultModel
+  };
+};
+
+export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> => {
+  let provider: Provider | null = null;
+  let cfg: AtlasConfig | null = null;
+  let setupError: string | null = null;
+
+  if (opts.provider) {
+    provider = opts.provider;
+    cfg = opts.config ?? null;
+  } else {
+    const cfgResult = await loadConfig({ env: process.env });
+    if (!cfgResult.ok) {
+      setupError = cfgResult.error.message;
+    } else {
+      cfg = await maybeAutoDetectClaudeCode(cfgResult.value);
+      const provResult = await providerFromConfigAsync(cfg);
+      if (provResult.ok) {
+        provider = provResult.value;
+      } else {
+        setupError = provResult.error.message;
+      }
+    }
+  }
+
+  const agentsResult = await loadAgents();
+  const skillsResult = await loadSkills();
+  const agents = new AgentRegistry(agentsResult.ok ? agentsResult.value : []);
+  const skills = new SkillRegistry(skillsResult.ok ? skillsResult.value : []);
+  const tools = builtinToolRegistry();
+
+  const fallbackPool =
+    cfg?.defaultProvider === 'anthropic' ? ANTHROPIC_NATIVE_MODELS : OPENROUTER_FALLBACK_MODELS;
+  const defaultModel =
+    opts.model ??
+    cfg?.defaultModel ??
+    (cfg?.defaultProvider === 'anthropic' ? 'claude-sonnet-4-5' : 'anthropic/claude-sonnet-4');
+  const fallbackModels = cfg?.fallbackModels ?? [];
+  const availableModels = uniq([defaultModel, ...fallbackModels, ...fallbackPool]);
+
+  // Pull the live model catalog so the picker + thinking levels reflect
+  // what the provider actually exposes today (cached for 24h on disk).
+  // Failures are non-fatal — we just fall back to the hardcoded seed list.
+  const modelCatalog = await loadModelCatalog(cfg);
+
+  // Build every provider the user has credentials for, so /models can
+  // route chat to the right backend on selection. The active `provider`
+  // (from providerFromConfigAsync above) is just the startup default.
+  const providers = await buildAllProviders(cfg);
+
+  // The orchestrator (`atlas`) is the default entry. If the user passed
+  // -a we honor it; otherwise prefer `atlas`, falling back to the first
+  // installed agent (preserves behavior on minimal installs).
+  const initialAgent =
+    opts.agent ??
+    (agentsResult.ok && agentsResult.value.some((a) => a.name === 'atlas') ? 'atlas' : undefined);
+
+  if (
+    !opts.agent &&
+    agentsResult.ok &&
+    !agentsResult.value.some((a) => a.name === 'atlas') &&
+    agentsResult.value.length > 0
+  ) {
+    process.stderr.write(
+      "atlas: orchestrator agent not installed. Run `atlas init -f` to upgrade your ~/.atlas/ install.\n"
+    );
+  }
+
+  const props = {
+    provider,
+    providers,
+    agents,
+    skills,
+    tools,
+    toolContext: { cwd: process.cwd(), approve: allowAllPolicy },
+    defaultModel,
+    fallbackModels,
+    availableModels,
+    modelCatalog,
+    ...(initialAgent ? { initialAgentName: initialAgent } : {}),
+    ...(cfg ? { config: cfg } : {}),
+    ...(setupError ? { setupError } : {})
+  };
+
+  // Use the alternate screen buffer so Atlas owns the whole terminal
+  // window like opencode/htop/vim. We restore the original screen on
+  // exit so the user's prompt history is preserved.
+  const useAltScreen = process.stdout.isTTY === true && !process.env['ATLAS_NO_ALTSCREEN'];
+  if (useAltScreen) {
+    // \x1b[?1049h = enter alternate screen, \x1b[2J = clear, \x1b[H = home cursor
+    process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H');
+  }
+
+  const restore = (): void => {
+    if (useAltScreen) process.stdout.write('\x1b[?1049l');
+  };
+  process.on('exit', restore);
+
+  try {
+    const { waitUntilExit } = render(React.createElement(TuiApp, props), {
+      exitOnCtrlC: false
+    });
+    await waitUntilExit();
+  } finally {
+    process.off('exit', restore);
+    restore();
+  }
+  return { exitCode: 0 };
+};
+
+const uniq = (arr: readonly string[]): readonly string[] => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of arr) {
+    if (!seen.has(x)) {
+      seen.add(x);
+      out.push(x);
+    }
+  }
+  return out;
+};
+
+const loadModelCatalog = async (
+  cfg: AtlasConfig | null
+): Promise<readonly ModelInfo[] | undefined> => {
+  if (!cfg) return undefined;
+
+  // Load every catalog the user has credentials for, in parallel. The
+  // active provider drives chat, but the picker shows the whole connected
+  // surface so users can see (and toggle to) e.g. ChatGPT models after
+  // signing in via /config → ChatGPT.
+  const tasks: Promise<readonly ModelInfo[]>[] = [];
+
+  // OpenRouter has a public /models endpoint — load it when an
+  // OpenRouter key is configured. Force-refresh on startup so the user
+  // gets the live list immediately (the endpoint is unauthenticated
+  // and quick); fallback to cache if the network call fails.
+  if (cfg.providers.openrouter.apiKey) {
+    tasks.push(
+      fetchOpenRouterModels({ forceRefresh: true }).then((r) => (r.ok ? r.value : []))
+    );
+  }
+
+  // Anthropic — direct key first, otherwise Claude Code OAuth.
+  const anKey = cfg.providers.anthropic.apiKey;
+  if (anKey) {
+    tasks.push(
+      fetchAnthropicModels({ kind: 'apiKey', token: anKey }).then((r) =>
+        r.ok ? r.value : []
+      )
+    );
+  } else {
+    tasks.push(
+      (async () => {
+        const creds = await loadClaudeCodeCredentials({});
+        if (!creds.ok) return [];
+        const r = await fetchAnthropicModels({
+          kind: 'oauth',
+          token: creds.value.accessToken
+        });
+        return r.ok ? r.value : [];
+      })()
+    );
+  }
+
+  // Codex / ChatGPT — return the curated catalog when the user has a
+  // valid (non-expired) ChatGPT OAuth token. The backend has no public
+  // /models endpoint, so we don't try to call one.
+  const codexAuth = cfg.providers.openai?.codex;
+  if (codexAuth?.accessToken) {
+    const accessToken = codexAuth.accessToken;
+    const opts: { accountId?: string; expiresAt?: number } = {};
+    if (codexAuth.accountId) opts.accountId = codexAuth.accountId;
+    if (typeof codexAuth.expiresAt === 'number') opts.expiresAt = codexAuth.expiresAt;
+    tasks.push(fetchCodexModels(accessToken, opts).then((r) => (r.ok ? r.value : [])));
+  }
+
+  const results = await Promise.all(tasks);
+  const merged: ModelInfo[] = [];
+  const seen = new Set<string>();
+  for (const list of results) {
+    for (const m of list) {
+      // Same id can appear in multiple providers (e.g. `gpt-5` on both
+      // OpenRouter and Codex). Key by `provider:id` so each surfaces.
+      const key = `${m.provider}:${m.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(m);
+    }
+  }
+  return merged.length > 0 ? merged : undefined;
+};
+
+/**
+ * Build every provider the user has credentials for. The TUI keeps
+ * this map and routes chat to the matching backend whenever the user
+ * picks a model from a different provider in `/models`. The active
+ * provider at startup is still selected by `providerFromConfigAsync`
+ * so first-render behavior matches the user's `defaultProvider`.
+ */
+const buildAllProviders = async (
+  cfg: AtlasConfig | null
+): Promise<Partial<Record<'openrouter' | 'anthropic' | 'openai-codex', Provider>>> => {
+  if (!cfg) return {};
+  const out: Partial<Record<'openrouter' | 'anthropic' | 'openai-codex', Provider>> = {};
+
+  const or = cfg.providers.openrouter;
+  if (or.apiKey) {
+    out.openrouter = createOpenRouterProvider({
+      apiKey: or.apiKey,
+      ...(or.apiKeys.length > 0 ? { fallbackKeys: or.apiKeys } : {}),
+      baseUrl: or.baseUrl,
+      ...(or.referer !== undefined ? { referer: or.referer } : {}),
+      title: or.title
+    });
+  }
+
+  const an = cfg.providers.anthropic;
+  if (an.apiKey) {
+    out.anthropic = createAnthropicProvider({
+      auth: {
+        kind: 'apiKey',
+        apiKey: an.apiKey,
+        ...(an.apiKeys.length > 0 ? { fallbackKeys: an.apiKeys } : {})
+      },
+      baseUrl: an.baseUrl
+    });
+  } else if (an.useClaudeCodeOauth) {
+    const creds = await loadClaudeCodeCredentials(
+      an.claudeCodeCredentialsPath ? { path: an.claudeCodeCredentialsPath } : {}
+    );
+    if (creds.ok) {
+      out.anthropic = createAnthropicProvider({
+        auth: { kind: 'oauth', accessToken: creds.value.accessToken },
+        baseUrl: an.baseUrl
+      });
+    }
+  }
+
+  // Codex / ChatGPT runtime — uses the ChatGPT OAuth token to talk to
+  // `chatgpt.com/backend-api/codex/responses`. Token refreshes are
+  // persisted back to ~/.atlas/config.yaml so subsequent runs (and
+  // long sessions that outlive the access-token TTL) keep working.
+  const codexAuth = cfg.providers.openai?.codex;
+  if (codexAuth?.accessToken) {
+    let snap = {
+      accessToken: codexAuth.accessToken,
+      ...(codexAuth.refreshToken !== undefined ? { refreshToken: codexAuth.refreshToken } : {}),
+      ...(codexAuth.idToken !== undefined ? { idToken: codexAuth.idToken } : {}),
+      ...(codexAuth.accountId !== undefined ? { accountId: codexAuth.accountId } : {}),
+      ...(typeof codexAuth.expiresAt === 'number' ? { expiresAt: codexAuth.expiresAt } : {})
+    };
+    out['openai-codex'] = createCodexProvider({
+      baseUrl: cfg.providers.openai.baseUrl,
+      tokens: {
+        read: () => snap,
+        write: async (next) => {
+          snap = next;
+          // Best-effort persistence — refresh failures shouldn't crash
+          // the chat loop. We re-read the latest cfg from disk so we
+          // don't clobber concurrent edits.
+          const latest = await loadConfig();
+          if (!latest.ok) return;
+          const merged = {
+            ...latest.value,
+            providers: {
+              ...latest.value.providers,
+              openai: {
+                ...latest.value.providers.openai,
+                codex: {
+                  accessToken: next.accessToken,
+                  ...(next.refreshToken !== undefined ? { refreshToken: next.refreshToken } : {}),
+                  ...(next.idToken !== undefined ? { idToken: next.idToken } : {}),
+                  ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
+                  ...(next.expiresAt !== undefined ? { expiresAt: next.expiresAt } : {})
+                }
+              }
+            }
+          };
+          await saveConfig(merged);
+        }
+      }
+    });
+  }
+
+  return out;
+};

@@ -1,0 +1,46 @@
+{
+  "name": "atlas-cli",
+  "version": "0.1.0",
+  "description": "Atlas CLI — Your autonomous development crew (Greek god agents + skills + hooks).",
+  "license": "MIT",
+  "author": "Luca Pohl Angel",
+  "type": "module",
+  "bin": {
+    "atlas": "./dist/bin/atlas.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "start": "node dist/bin/atlas.js",
+    "prepublishOnly": "pnpm build && pnpm test:run"
+  },
+  "dependencies": {
+    "@atlas/core": "workspace:*",
+    "commander": "^13.1.0",
+    "ink": "^7.0.1",
+    "ink-select-input": "^6.2.0",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^19.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.2.14",
+    "ink-testing-library": "^4.0.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.7"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

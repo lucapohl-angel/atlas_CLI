@@ -1,0 +1,2962 @@
+/**
+ * Atlas TUI — Ink-based interactive shell.
+ *
+ * Layout (top → bottom):
+ *   ┌─────────────────────────────────────────────┐
+ *   │ Header (agent · model · mode · thinking · usage)
+ *   ├─────────────────────────────────────────────┤
+ *   │ Transcript (messages, tool calls, thinking)
+ *   ├─────────────────────────────────────────────┤
+ *   │ Overlay (option picker / model picker / agent picker)
+ *   ├─────────────────────────────────────────────┤
+ *   │ Input (multiline) — slash autocomplete
+ *   ├─────────────────────────────────────────────┤
+ *   │ Status bar (keybinding hints, Ctrl-C twice to exit)
+ *   └─────────────────────────────────────────────┘
+ *
+ * Keybindings:
+ *   Tab          next agent
+ *   Shift-Tab    open agent picker
+ *   Ctrl-O       open model picker (also: /models)
+ *   Ctrl-T       cycle thinking effort
+ *   Ctrl-P       cycle mode: plan → build → autopilot (autopilot prompts for consent once)
+ *   Esc          cancel current stream
+ *   Ctrl-C ×2    exit (within 1s)
+ */
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Box, Text, useApp, useInput, useStdout } from 'ink';
+import SelectInput from 'ink-select-input';
+import Spinner from 'ink-spinner';
+import { spawn } from 'node:child_process';
+import { platform } from 'node:os';
+import {
+  ATLAS_VERSION,
+  allowAllPolicy,
+  createOpenRouterProvider,
+  denyAllPolicy,
+  loadClaudeCodeCredentials,
+  beginCodexLogin,
+  fetchOpenRouterModels,
+  fetchAnthropicModels,
+  fetchCodexModels,
+  runAgentLoop,
+  saveConfig,
+  thinkingLevelsFor,
+  tryExtractInteraction,
+  type Agent,
+  type AgentRegistry,
+  type AtlasConfig,
+  type InteractionRequest,
+  type LoopEvent,
+  type Message,
+  type ModelInfo,
+  type Provider,
+  type ReasoningEffort,
+  type SkillRegistry,
+  type ToolContext,
+  type ToolRegistry,
+  buildSystemPrompt,
+  isFrameworkAgent,
+  estimateCost,
+  formatCost
+} from '@atlas/core';
+
+export type ThinkingEffort = 'off' | ReasoningEffort | 'xhigh';
+
+const THINKING_CYCLE: readonly ThinkingEffort[] = ['off', 'low', 'medium', 'high', 'xhigh'];
+
+interface TranscriptItem {
+  readonly key: string;
+  readonly kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'system' | 'error';
+  readonly text: string;
+  /** Display name for the speaker (e.g. 'atlas', 'hermes'). */
+  readonly author?: string;
+}
+
+export interface TuiAppProps {
+  /** When null, the App opens with a setup overlay until the user configures a key. */
+  readonly provider: Provider | null;
+  /**
+   * All providers the user has credentials for. The active provider is
+   * picked from this map based on the currently selected model's source.
+   * Lets the user keep ChatGPT/Claude Code/OpenRouter all signed in and
+   * switch between them just by switching models.
+   */
+  readonly providers?: Partial<
+    Record<'openrouter' | 'anthropic' | 'openai-codex', Provider>
+  >;
+  readonly agents: AgentRegistry;
+  readonly skills: SkillRegistry;
+  readonly tools: ToolRegistry;
+  readonly toolContext: ToolContext;
+  readonly defaultModel: string;
+  readonly fallbackModels?: readonly string[];
+  readonly availableModels?: readonly string[];
+  /** Catalog from the active provider, used for thinking-level detection. */
+  readonly modelCatalog?: readonly import('@atlas/core').ModelInfo[];
+  readonly initialAgentName?: string;
+  readonly config?: AtlasConfig;
+  /** A non-fatal config error message to surface in the setup overlay. */
+  readonly setupError?: string;
+}
+
+type Mode = 'plan' | 'build' | 'autopilot';
+const MODE_CYCLE: readonly Mode[] = ['plan', 'build', 'autopilot'];
+
+type Overlay =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'agent-picker' }
+  | { readonly kind: 'model-picker' }
+  | { readonly kind: 'model-freeform' }
+  | { readonly kind: 'option-picker'; readonly request: InteractionRequest }
+  | { readonly kind: 'option-freeform'; readonly request: InteractionRequest }
+  | { readonly kind: 'autopilot-consent' }
+  | {
+      readonly kind: 'setup';
+      readonly stage: 'menu' | 'key' | 'info';
+      readonly draftKey: string;
+      readonly target: 'openrouter' | 'anthropic' | 'claude-code' | 'chatgpt' | 'github' | 'mcp';
+      readonly infoText?: string;
+    };
+
+const SetupMenuItem = ({
+  isSelected,
+  label
+}: {
+  isSelected?: boolean;
+  label: string;
+}): React.JSX.Element => {
+  // Labels in the setup menu may carry a trailing status suffix
+  // separated by a `\u0001` sentinel (e.g. `... \u0001● connected`).
+  // Render the prefix in the row's normal color and the suffix in
+  // green so users can scan which providers are wired.
+  const sep = label.indexOf('\u0001');
+  const head = sep < 0 ? label : label.slice(0, sep);
+  const tail = sep < 0 ? '' : label.slice(sep + 1);
+  return (
+    <Text color={isSelected ? 'cyan' : undefined}>
+      {head}
+      {tail.length > 0 ? <Text color="green">{tail}</Text> : null}
+    </Text>
+  );
+};
+
+const colorForAgent = (name: string): string => {
+  // Stable-ish color per agent — purely cosmetic.
+  const palette = ['cyan', 'magenta', 'yellow', 'green', 'blue', 'red', 'cyanBright'];
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) | 0;
+  return palette[Math.abs(h) % palette.length] ?? 'white';
+};
+
+export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
+  const app = useApp();
+  const { stdout } = useStdout();
+  const cols = stdout.columns ?? 80;
+  const rows = stdout.rows ?? 24;
+
+  const allAgents = useMemo(() => props.agents.list(), [props.agents]);
+  // Switchable agents = the orchestrator (`atlas`) + every user-added agent.
+  // Specialist framework agents (Athena/Prometheus/Hercules/...) are routed to
+  // by the orchestrator; the user shouldn't have to remember which one to pick.
+  const switchableAgents = useMemo(
+    () => allAgents.filter((a) => !isFrameworkAgent(a) || a.name === 'atlas'),
+    [allAgents]
+  );
+  const initialAgent =
+    (props.initialAgentName ? props.agents.get(props.initialAgentName) : undefined) ??
+    switchableAgents[0] ??
+    allAgents[0];
+
+  if (!initialAgent) {
+    return (
+      <Box>
+        <Text color="red">No agents installed. Run `atlas init` first.</Text>
+      </Box>
+    );
+  }
+
+  const [activeAgent, setActiveAgent] = useState<Agent>(initialAgent);
+  const [model, setModel] = useState<string>(props.defaultModel);
+  /**
+   * Models added via the picker's "+ Add custom model id…" entry. Seeded
+   * from `~/.atlas/config.yaml` so user-added ids persist across restarts;
+   * additions in-session are appended and saved back on submit.
+   */
+  const [extraModels, setExtraModels] = useState<readonly string[]>(
+    () => props.config?.providers.openrouter.customModels ?? []
+  );
+  /**
+   * Live override for the model catalog. Set by `/restart models` after
+   * a force-refresh against every connected provider's /models endpoint
+   * — bypasses the 24h on-disk cache and updates the picker without
+   * needing a restart.
+   */
+  const [catalogOverride, setCatalogOverride] = useState<readonly ModelInfo[] | undefined>(
+    undefined
+  );
+  const modelCatalog = catalogOverride ?? props.modelCatalog;
+  /**
+   * Per-agent model override. When an agent has an entry here, requests
+   * routed to that agent use this model instead of the global one. Set
+   * via `/agent <name> <model>`. Cleared by re-running with no model arg.
+   */
+  const [agentModels, setAgentModels] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [thinking, setThinking] = useState<ThinkingEffort>(activeAgent.thinkingEffort);
+  const [mode, setMode] = useState<Mode>(activeAgent.mode);
+  const [autopilotConsented, setAutopilotConsented] = useState(false);
+  const [provider, setProvider] = useState<Provider | null>(props.provider);
+  /** Tracks which provider kind is currently driving chat. Drives the
+   *  header tag and gets rotated when the user picks a model from a
+   *  different provider in the picker. */
+  const [activeProviderKind, setActiveProviderKind] = useState<
+    'openrouter' | 'anthropic' | 'openai-codex' | 'unknown'
+  >(() => providerKindFor(props.defaultModel, modelCatalog));
+  const [overlay, setOverlay] = useState<Overlay>(() =>
+    props.provider
+      ? { kind: 'none' }
+      : { kind: 'setup', stage: 'menu', draftKey: '', target: 'openrouter' }
+  );
+  const [input, setInput] = useState('');
+  const [slashIdx, setSlashIdx] = useState(0);
+  // Transcript scroll position, measured in rendered lines from the bottom.
+  // 0 means "stuck to the latest line"; PgUp/PgDn adjust it.
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
+  const [streaming, setStreaming] = useState(false);
+  const [usage, setUsage] = useState<{
+    readonly tokens: number;
+    readonly rounds: number;
+    readonly promptTokens?: number;
+    readonly completionTokens?: number;
+  } | null>(null);
+  const [pendingExit, setPendingExit] = useState(false);
+
+  // Mouse capture is intentionally NOT enabled. Capturing mouse events
+  // would prevent the user from selecting/copying text with the mouse,
+  // and the SGR escape sequences leak into Ink's input parser (Ink
+  // pulls bytes via stdin.read() from a 'readable' listener, so they
+  // can't be intercepted via a data-event hook). Scroll is keyboard-
+  // only: PgUp/PgDn (half page) and Shift+↑/↓ (one line). This also
+  // means terminal-native click-and-drag selection just works.
+
+  const messagesRef = useRef<Message[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+  const transcriptKey = useRef(0);
+  const ctrlCTimer = useRef<NodeJS.Timeout | null>(null);
+
+  const pushItem = useCallback(
+    (kind: TranscriptItem['kind'], text: string, author?: string): void => {
+      transcriptKey.current += 1;
+      setTranscript((prev) => [
+        ...prev,
+        { key: `t${transcriptKey.current}`, kind, text, ...(author ? { author } : {}) }
+      ]);
+      // New content always re-anchors the view to the bottom so the
+      // user sees the latest line; PgUp re-engages scroll mode.
+      setScrollOffset(0);
+    },
+    []
+  );
+
+  const updateLastIfSameKind = useCallback(
+    (kind: TranscriptItem['kind'], text: string, author?: string): void => {
+      setTranscript((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.kind === kind) {
+          return [...prev.slice(0, -1), { ...last, text: last.text + text }];
+        }
+        transcriptKey.current += 1;
+        return [
+          ...prev,
+          { key: `t${transcriptKey.current}`, kind, text, ...(author ? { author } : {}) }
+        ];
+      });
+      setScrollOffset(0);
+    },
+    []
+  );
+
+  // Switch agent — reset per-agent defaults but keep transcript + history.
+  const switchAgent = useCallback(
+    (next: Agent): void => {
+      setActiveAgent(next);
+      setMode(next.mode);
+      setThinking(next.thinkingEffort);
+      pushItem('system', `Switched to ${next.role}${next.personaAlias ? ` (${next.personaAlias})` : ''}.`);
+    },
+    [pushItem]
+  );
+
+  const cycleAgent = useCallback((): void => {
+    if (switchableAgents.length <= 1) return;
+    const idx = switchableAgents.findIndex((a) => a.name === activeAgent.name);
+    const next = switchableAgents[(idx + 1) % switchableAgents.length];
+    if (next) switchAgent(next);
+  }, [switchableAgents, activeAgent.name, switchAgent]);
+
+  const allowedThinking = useMemo(
+    () => thinkingLevelsFor(model, modelCatalog ?? []) as readonly ThinkingEffort[],
+    [model, modelCatalog]
+  );
+
+  const cycleThinking = useCallback((): void => {
+    setThinking((prev) => {
+      const idx = allowedThinking.indexOf(prev);
+      const next = allowedThinking[(idx + 1) % allowedThinking.length] ?? 'off';
+      return next;
+    });
+  }, [allowedThinking]);
+
+  // When the model changes, downgrade `thinking` if the new model doesn't
+  // support the current level (e.g. switching from opus-4.7 xhigh → haiku).
+  useEffect(() => {
+    setThinking((prev) =>
+      allowedThinking.includes(prev) ? prev : (allowedThinking[allowedThinking.length - 1] ?? 'off')
+    );
+  }, [allowedThinking]);
+
+  // Request autopilot. If the user has already consented this session, just
+  // flip the mode; otherwise show the consent overlay first.
+  const requestAutopilot = useCallback((): void => {
+    if (autopilotConsented) {
+      setMode('autopilot');
+      return;
+    }
+    setOverlay({ kind: 'autopilot-consent' });
+  }, [autopilotConsented]);
+
+  const cycleMode = useCallback((): void => {
+    setMode((m) => {
+      const idx = MODE_CYCLE.indexOf(m);
+      const next = MODE_CYCLE[(idx + 1) % MODE_CYCLE.length] ?? 'build';
+      if (next === 'autopilot' && !autopilotConsented) {
+        // defer the actual mode flip until the user accepts the popup
+        setOverlay({ kind: 'autopilot-consent' });
+        return m;
+      }
+      return next;
+    });
+  }, [autopilotConsented]);
+
+  const togglePlanBuild = cycleMode;
+
+  const cancelStream = useCallback((): void => {
+    abortRef.current?.abort();
+  }, []);
+
+  // Ctrl-C twice in 1s exits.
+  const handleCtrlC = useCallback((): void => {
+    if (streaming) {
+      cancelStream();
+      return;
+    }
+    if (pendingExit) {
+      app.exit();
+      return;
+    }
+    setPendingExit(true);
+    if (ctrlCTimer.current) clearTimeout(ctrlCTimer.current);
+    ctrlCTimer.current = setTimeout(() => setPendingExit(false), 1000);
+  }, [streaming, cancelStream, pendingExit, app]);
+
+  // Submit a user message — kicks off the agent loop.
+  const submit = useCallback(
+    async (text: string): Promise<void> => {
+      const trimmed = text.trim();
+      if (trimmed.length === 0) return;
+      if (streaming) return;
+
+      // Slash commands handled inline — no model round-trip.
+      if (trimmed.startsWith('/')) {
+        const [cmd, ...rest] = trimmed.slice(1).split(/\s+/);
+        switch (cmd) {
+          case 'help':
+            pushItem('system', SLASH_HELP);
+            return;
+          case 'clear':
+            messagesRef.current = [];
+            setTranscript([]);
+            setUsage(null);
+            return;
+          case 'history':
+            pushItem(
+              'system',
+              messagesRef.current
+                .map((m) => `[${m.role}] ${m.content.slice(0, 200)}`)
+                .join('\n') || '(empty)'
+            );
+            return;
+          case 'model': {
+            const id = rest.join(' ').trim();
+            if (id.length === 0) {
+              setOverlay({ kind: 'model-picker' });
+            } else {
+              setModel(id);
+              pushItem('system', `model → ${id}`);
+            }
+            return;
+          }
+          case 'models': {
+            setOverlay({ kind: 'model-picker' });
+            return;
+          }
+          case 'restart': {
+            const sub = (rest[0] ?? '').toLowerCase();
+            if (sub !== 'models') {
+              pushItem('error', 'usage: /restart models');
+              return;
+            }
+            pushItem('system', 'refreshing model catalogs (forcing live fetch)…');
+            const cfg = props.config;
+            void (async (): Promise<void> => {
+              const tasks: Promise<readonly ModelInfo[]>[] = [];
+              if (cfg?.providers.openrouter.apiKey || props.providers?.openrouter) {
+                tasks.push(
+                  fetchOpenRouterModels({ forceRefresh: true }).then((r) =>
+                    r.ok ? r.value : []
+                  )
+                );
+              }
+              const anKey = cfg?.providers.anthropic.apiKey;
+              if (anKey) {
+                tasks.push(
+                  fetchAnthropicModels(
+                    { kind: 'apiKey', token: anKey },
+                    { forceRefresh: true }
+                  ).then((r) => (r.ok ? r.value : []))
+                );
+              } else if (props.providers?.anthropic) {
+                tasks.push(
+                  (async (): Promise<readonly ModelInfo[]> => {
+                    const creds = await loadClaudeCodeCredentials({});
+                    if (!creds.ok) return [];
+                    const r = await fetchAnthropicModels(
+                      { kind: 'oauth', token: creds.value.accessToken },
+                      { forceRefresh: true }
+                    );
+                    return r.ok ? r.value : [];
+                  })()
+                );
+              }
+              const codexAuth = cfg?.providers.openai?.codex;
+              if (codexAuth?.accessToken) {
+                const opts: { accountId?: string; expiresAt?: number; forceRefresh?: boolean } = {
+                  forceRefresh: true
+                };
+                if (codexAuth.accountId) opts.accountId = codexAuth.accountId;
+                if (typeof codexAuth.expiresAt === 'number') opts.expiresAt = codexAuth.expiresAt;
+                tasks.push(
+                  fetchCodexModels(codexAuth.accessToken, opts).then((r) =>
+                    r.ok ? r.value : []
+                  )
+                );
+              }
+              try {
+                const results = await Promise.all(tasks);
+                const merged: ModelInfo[] = [];
+                const seen = new Set<string>();
+                for (const list of results) {
+                  for (const m of list) {
+                    const key = `${m.provider}:${m.id}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    merged.push(m);
+                  }
+                }
+                setCatalogOverride(merged);
+                pushItem(
+                  'system',
+                  `model catalog refreshed (${merged.length} model${merged.length === 1 ? '' : 's'} across ${results.length} provider${results.length === 1 ? '' : 's'}).`
+                );
+              } catch (e) {
+                pushItem('error', `refresh failed: ${(e as Error).message}`);
+              }
+            })();
+            return;
+          }
+          case 'agent': {
+            const agentId = (rest[0] ?? '').trim();
+            const modelArg = rest.slice(1).join(' ').trim();
+            if (agentId.length === 0) {
+              pushItem('error', 'usage: /agent <name> [model]');
+              return;
+            }
+            const next = props.agents.get(agentId);
+            if (!next) {
+              pushItem('error', `unknown agent: ${agentId}`);
+              return;
+            }
+            if (modelArg.length === 0) {
+              switchAgent(next);
+              return;
+            }
+            // Bind a model to this agent. Resolve fuzzy ids ("depsek4" →
+            // "deepseek/deepseek-chat-v4") against the catalog + custom
+            // ids the user has added this session.
+            const candidates = [
+              ...extraModels,
+              ...(modelCatalog ?? []).map((m) => m.id)
+            ];
+            const resolved = resolveFuzzyModel(modelArg, candidates) ?? modelArg;
+            setAgentModels((prev) => {
+              const m = new Map(prev);
+              m.set(next.name, resolved);
+              return m;
+            });
+            pushItem(
+              'system',
+              resolved === modelArg
+                ? `${next.name} → ${resolved}`
+                : `${next.name} → ${resolved} (resolved from "${modelArg}")`
+            );
+            return;
+          }
+          case 'agents': {
+            const lines = allAgents.map((a) => {
+              const bound = agentModels.get(a.name);
+              const label = bound
+                ? `${bound}`
+                : `${a.name === activeAgent.name ? model : model} (default)`;
+              const star = a.name === activeAgent.name ? '*' : ' ';
+              return `${star} ${a.name.padEnd(14)} ${a.role.padEnd(20)} → ${label}`;
+            });
+            pushItem(
+              'system',
+              ['agents (* = active, → bound model):', ...lines].join('\n')
+            );
+            return;
+          }
+          case 'mode': {
+            const id = (rest[0] ?? '').toLowerCase();
+            if (id === 'plan' || id === 'build') {
+              setMode(id);
+              pushItem('system', `mode → ${id}`);
+            } else if (id === 'autopilot') {
+              requestAutopilot();
+            } else {
+              pushItem('error', 'usage: /mode plan|build|autopilot');
+            }
+            return;
+          }
+          case 'thinking': {
+            const id = (rest[0] ?? '').toLowerCase() as ThinkingEffort;
+            if (THINKING_CYCLE.includes(id) && allowedThinking.includes(id)) {
+              setThinking(id);
+              pushItem('system', `thinking → ${id}`);
+            } else if (THINKING_CYCLE.includes(id)) {
+              pushItem('error', `model ${model} only supports: ${allowedThinking.join('|')}`);
+            } else {
+              pushItem('error', `usage: /thinking ${allowedThinking.join('|')}`);
+            }
+            return;
+          }
+          case 'config':
+          case 'setup':
+            setOverlay({ kind: 'setup', stage: 'menu', draftKey: '', target: 'openrouter' });
+            return;
+          case 'mcps':
+          case 'mcp': {
+            const servers = props.config?.mcp?.servers ?? [];
+            if (servers.length === 0) {
+              pushItem(
+                'system',
+                'No MCP servers configured.\n\nAdd them under `mcp.servers` in ~/.atlas/config.yaml. Example:\n\n  mcp:\n    servers:\n      - name: filesystem\n        command: npx\n        args: ["@modelcontextprotocol/server-filesystem", "."]\n        enabled: true'
+              );
+              return;
+            }
+            const lines = servers.map((s) => {
+              const status = s.enabled ? 'on ' : 'off';
+              const cmd = [s.command, ...s.args].join(' ');
+              return `  ${status}  ${s.name.padEnd(16)} ${cmd}`;
+            });
+            pushItem(
+              'system',
+              `MCP servers (${servers.length}):\n${lines.join('\n')}\n\nRuntime spawning lands in a later phase.`
+            );
+            return;
+          }
+          case 'exit':
+            app.exit();
+            return;
+          default:
+            pushItem('error', `unknown command: /${cmd ?? ''}`);
+            return;
+        }
+      }
+
+      // Inline `*command` syntax → expand to a normal user message but tag it.
+      if (!provider) {
+        pushItem(
+          'error',
+          'No provider configured. Run /config to configure, or press Esc to open the setup menu.'
+        );
+        setOverlay({ kind: 'setup', stage: 'menu', draftKey: '', target: 'openrouter' });
+        return;
+      }
+      const userMessage: Message = { role: 'user', content: trimmed };
+      messagesRef.current = [...messagesRef.current, userMessage];
+      pushItem('user', trimmed, 'user');
+
+      // Compose system message from the active agent on each turn (cheap).
+      const skills = props.skills.list();
+      // Per-agent override takes precedence over the global model.
+      const effectiveModel = agentModels.get(activeAgent.name) ?? model;
+      const systemContent = buildSystemPrompt(activeAgent, skills, {
+        model: effectiveModel,
+        providerLabel: providerLongLabel(activeProviderKind),
+        atlasVersion: ATLAS_VERSION
+      });
+      const seeded: Message[] = [
+        { role: 'system', content: systemContent },
+        ...messagesRef.current
+      ];
+
+      const ac = new AbortController();
+      abortRef.current = ac;
+      setStreaming(true);
+
+      const reasoningOpt =
+        thinking === 'off'
+          ? undefined
+          : thinking === 'xhigh'
+            ? { effort: 'high' as ReasoningEffort, maxTokens: 32_000 }
+            : { effort: thinking };
+
+      let assistantBuffer = '';
+      let totalTokens = 0;
+      let promptTokens: number | undefined;
+      let completionTokens: number | undefined;
+      let rounds = 0;
+      // Per-tool-call start timestamps so we can show elapsed time on completion.
+      const toolStartedAt = new Map<string, number>();
+      // Stable author label for this turn — used for the "agentName:" prefix
+      // in the transcript. Captured once so mid-turn agent switches don't
+      // mislabel earlier deltas.
+      const assistantAuthor = activeAgent.name;
+      try {
+        for await (const ev of runAgentLoop({
+          provider: provider!,
+          model: effectiveModel,
+          ...(props.fallbackModels ? { fallbackModels: props.fallbackModels } : {}),
+          tools: props.tools,
+          toolContext: {
+            ...props.toolContext,
+            approve: mode === 'plan' ? denyAllPolicy : allowAllPolicy,
+            signal: ac.signal
+          },
+          initialMessages: seeded,
+          ...(reasoningOpt ? { reasoning: reasoningOpt } : {}),
+          signal: ac.signal
+        })) {
+          handleLoopEvent(ev);
+        }
+      } catch (e) {
+        pushItem('error', `loop crashed: ${(e as Error).message}`);
+      } finally {
+        abortRef.current = null;
+        setStreaming(false);
+      }
+
+      function handleLoopEvent(ev: LoopEvent): void {
+        switch (ev.type) {
+          case 'delta':
+            assistantBuffer += ev.text;
+            // Render the running assistant text *with the question block
+            // hidden* — once `<atlas:question>` opens, suppress everything
+            // until the matching close tag arrives. Avoids the raw protocol
+            // briefly leaking into the chat.
+            setTranscript((prev) => {
+              const visible = renderVisibleAssistant(assistantBuffer);
+              const last = prev[prev.length - 1];
+              if (last && last.kind === 'assistant') {
+                if (last.text === visible) return prev;
+                return [...prev.slice(0, -1), { ...last, text: visible }];
+              }
+              if (visible.length === 0) return prev;
+              transcriptKey.current += 1;
+              return [
+                ...prev,
+                {
+                  key: `t${transcriptKey.current}`,
+                  kind: 'assistant',
+                  text: visible,
+                  author: assistantAuthor
+                }
+              ];
+            });
+            break;
+          case 'thinking':
+            updateLastIfSameKind('thinking', ev.text);
+            break;
+          case 'tool_call_start': {
+            toolStartedAt.set(ev.call.id, Date.now());
+            pushItem('tool', `▸ ${ev.call.name}(${truncateArgs(ev.call.arguments)})`);
+            break;
+          }
+          case 'tool_call_done': {
+            const startedAt = toolStartedAt.get(ev.call.id);
+            toolStartedAt.delete(ev.call.id);
+            const elapsed = startedAt ? `  (${formatElapsed(Date.now() - startedAt)})` : '';
+            let resultContent: string;
+            if (ev.outcome.type === 'ok') {
+              pushItem('tool', `  ✓ ${truncate(ev.outcome.summary, 200)}${elapsed}`);
+              resultContent = ev.outcome.summary;
+            } else {
+              pushItem('tool', `  ✗ ${ev.outcome.error.code}: ${ev.outcome.error.message}${elapsed}`);
+              resultContent = `error: ${ev.outcome.error.message}`;
+            }
+            // CRITICAL: every assistant `tool_use` MUST be followed by a
+            // matching `tool` message in history. Without this, providers
+            // like Anthropic reject the next request with HTTP 400
+            // ("tool_use ids were found without tool_result blocks").
+            messagesRef.current = [
+              ...messagesRef.current,
+              {
+                role: 'tool',
+                content: resultContent,
+                toolCallId: ev.call.id,
+                name: ev.call.name
+              }
+            ];
+            break;
+          }
+          case 'turn_end': {
+            // Detect a structured question in the assistant's last message.
+            const found = tryExtractInteraction(assistantBuffer);
+            if (found) {
+              setOverlay({ kind: 'option-picker', request: found.request });
+              // Rewrite the last assistant transcript line to remove the
+              // raw `<atlas:question>...` block — the user gets it as the
+              // overlay UI instead.
+              const cleaned = found.remaining.trim();
+              setTranscript((prev) => {
+                if (prev.length === 0) return prev;
+                const last = prev[prev.length - 1];
+                if (!last || last.kind !== 'assistant') return prev;
+                if (cleaned.length === 0) return prev.slice(0, -1);
+                return [...prev.slice(0, -1), { ...last, text: cleaned }];
+              });
+              // Also strip the block from history so subsequent turns
+              // don't quote a stale prompt back at the model.
+              const sanitized: Message = {
+                ...ev.assistantMessage,
+                content: stripInteractionBlocks(ev.assistantMessage.content)
+              };
+              messagesRef.current = [...messagesRef.current, sanitized];
+            } else {
+              messagesRef.current = [...messagesRef.current, ev.assistantMessage];
+              // Safety net: if the model produced visible content but no
+              // delta event ever fired (some providers consolidate the
+              // final message into thinking blocks only, others batch the
+              // text into a single content_block_stop), make sure the
+              // user actually sees the reply.
+              const visible = renderVisibleAssistant(
+                typeof ev.assistantMessage.content === 'string'
+                  ? ev.assistantMessage.content
+                  : ''
+              );
+              if (visible.length > 0) {
+                setTranscript((prev) => {
+                  const last = prev[prev.length - 1];
+                  if (last && last.kind === 'assistant' && last.text === visible) {
+                    return prev;
+                  }
+                  if (last && last.kind === 'assistant') {
+                    // Replace if delta produced an empty/partial line that
+                    // doesn't match the final committed message.
+                    if (last.text.length >= visible.length) return prev;
+                    return [...prev.slice(0, -1), { ...last, text: visible }];
+                  }
+                  transcriptKey.current += 1;
+                  return [
+                    ...prev,
+                    {
+                      key: `t${transcriptKey.current}`,
+                      kind: 'assistant',
+                      text: visible,
+                      author: assistantAuthor
+                    }
+                  ];
+                });
+              }
+            }
+            assistantBuffer = '';
+            break;
+          }
+          case 'done':
+            rounds = ev.rounds;
+            if (ev.usage) {
+              totalTokens = ev.usage.totalTokens;
+              promptTokens = ev.usage.promptTokens;
+              completionTokens = ev.usage.completionTokens;
+            }
+            setUsage({
+              tokens: totalTokens,
+              rounds,
+              ...(promptTokens !== undefined ? { promptTokens } : {}),
+              ...(completionTokens !== undefined ? { completionTokens } : {})
+            });
+            break;
+          case 'error':
+            if (ev.error.code === 'CANCELLED') {
+              pushItem('system', '(cancelled)');
+            } else {
+              pushItem('error', `[${ev.error.code}] ${ev.error.message}`);
+            }
+            break;
+        }
+      }
+    },
+    [
+      streaming,
+      activeAgent,
+      model,
+      agentModels,
+      thinking,
+      provider,
+      props.tools,
+      props.toolContext,
+      props.skills,
+      props.fallbackModels,
+      props.agents,
+      allAgents,
+      app,
+      pushItem,
+      updateLastIfSameKind,
+      switchAgent
+    ]
+  );
+
+  // Global keybindings.
+  useInput((char, key) => {
+    if (key.ctrl && (char === 'c' || char === '\u0003')) {
+      handleCtrlC();
+      return;
+    }
+    // Ctrl+Y — copy the LATEST fenced code block from the transcript
+    // (scanning the full text, not the on-screen slice — long blocks
+    // that overflow the window still copy in full) via OSC 52.
+    if (key.ctrl && char === 'y') {
+      let code: string | null = null;
+      for (let i = transcript.length - 1; i >= 0; i -= 1) {
+        const it = transcript[i];
+        if (!it || it.kind !== 'assistant') continue;
+        const found = extractLastCodeBlock(it.text);
+        if (found && found.length > 0) {
+          code = found;
+          break;
+        }
+      }
+      if (code) {
+        const b64 = Buffer.from(code, 'utf8').toString('base64');
+        process.stdout.write(`\u001b]52;c;${b64}\u0007`);
+        pushItem('system', `copied ${code.length} chars (last code block) to clipboard`);
+      } else {
+        pushItem('system', 'no code block to copy yet');
+      }
+      return;
+    }
+    // Scroll the transcript history. PgUp/PgDn move by ~half a screen
+    // (using the dynamic row budget computed below); Shift+Up/Down step
+    // by one line; End jumps back to the latest output.
+    if (key.pageUp) {
+      setScrollOffset((o) => o + Math.max(1, Math.floor((rows - 8) / 2)));
+      return;
+    }
+    if (key.pageDown) {
+      setScrollOffset((o) => Math.max(0, o - Math.max(1, Math.floor((rows - 8) / 2))));
+      return;
+    }
+    if (key.shift && key.upArrow && overlay.kind === 'none' && input.length === 0) {
+      setScrollOffset((o) => o + 1);
+      return;
+    }
+    if (key.shift && key.downArrow && overlay.kind === 'none' && input.length === 0) {
+      setScrollOffset((o) => Math.max(0, o - 1));
+      return;
+    }
+    if (overlay.kind !== 'none') {
+      // Esc closes any non-blocking overlay (setup, picker, autopilot).
+      if (key.escape) closeOverlay();
+      return;
+    }
+    // Slash command palette navigation. When the input starts with `/`
+    // (and no space yet) Up/Down + Tab cycle the suggestions; the
+    // visible match list highlights the active row. Enter / Tab on its
+    // own complete the selection (handled in handleInputSubmit).
+    const slashMatches = matchSlashCommands(input);
+    if (slashMatches.length > 0) {
+      if (key.downArrow) {
+        setSlashIdx((i) => (i + 1) % slashMatches.length);
+        return;
+      }
+      if (key.upArrow) {
+        setSlashIdx((i) => (i - 1 + slashMatches.length) % slashMatches.length);
+        return;
+      }
+      if (key.tab && !key.shift) {
+        const pick = slashMatches[Math.min(slashIdx, slashMatches.length - 1)];
+        if (pick) {
+          setInput(`/${pick.name}${pick.args ? ' ' : ''}`);
+          setSlashIdx(0);
+        }
+        return;
+      }
+    }
+    if (key.tab && key.shift) {
+      setOverlay({ kind: 'agent-picker' });
+      return;
+    }
+    if (key.tab) {
+      cycleAgent();
+      return;
+    }
+    // NB: Ctrl+M is indistinguishable from Enter on most terminals (both
+    // produce CR), so we bind the model picker to Ctrl+O instead.
+    if (key.ctrl && char === 'o') {
+      setOverlay({ kind: 'model-picker' });
+      return;
+    }
+    if (key.ctrl && char === 't') {
+      cycleThinking();
+      return;
+    }
+    if (key.ctrl && char === 'p') {
+      togglePlanBuild();
+      return;
+    }
+    if (key.escape && streaming) {
+      cancelStream();
+      return;
+    }
+  });
+
+  // Overlay handlers
+  const closeOverlay = useCallback(() => setOverlay({ kind: 'none' }), []);
+
+  const onPickAgent = useCallback(
+    (item: { value: string }) => {
+      const next = props.agents.get(item.value);
+      if (next) switchAgent(next);
+      closeOverlay();
+    },
+    [props.agents, switchAgent, closeOverlay]
+  );
+
+  const onPickModel = useCallback(
+    (item: { value: string }) => {
+      // Section headers are interleaved with selectable rows so the
+      // user can scan provider boundaries — ignore selects on them.
+      if (item.value === '__header__') return;
+      if (item.value === '__custom__') {
+        setInput('');
+        setOverlay({ kind: 'model-freeform' });
+        return;
+      }
+      // Item value shape: `<providerKind>:<modelId>` for catalog rows,
+      // bare `<modelId>` for legacy / custom rows. Decode and route.
+      let providerKind: 'openrouter' | 'anthropic' | 'openai-codex' | 'unknown' = 'unknown';
+      let modelId = item.value;
+      const sep = item.value.indexOf(':');
+      if (sep > 0) {
+        const head = item.value.slice(0, sep);
+        if (head === 'openrouter' || head === 'anthropic' || head === 'openai-codex') {
+          providerKind = head;
+          modelId = item.value.slice(sep + 1);
+        }
+      }
+      if (providerKind === 'unknown') {
+        providerKind = providerKindFor(modelId, modelCatalog);
+      }
+      // Swap to the matching provider instance if we have one for that
+      // kind. If not (e.g. user picked a Codex model but Codex provider
+      // isn't wired yet), refuse the switch entirely so we don't send
+      // OpenAI ids to the Anthropic endpoint and 404.
+      const next = props.providers?.[providerKind as 'openrouter' | 'anthropic' | 'openai-codex'];
+      if (!next) {
+        pushItem(
+          'system',
+          providerKind === 'unknown'
+            ? `Cannot switch to ${modelId}: no provider matches this model id.`
+            : `Cannot switch to ${modelId}: ${providerKind} is not connected.\nSign in via /config first, then try again.`
+        );
+        closeOverlay();
+        return;
+      }
+      setProvider(next);
+      setActiveProviderKind(providerKind as 'openrouter' | 'anthropic' | 'openai-codex');
+      setModel(modelId);
+      pushItem('system', `model → ${modelId}`);
+      closeOverlay();
+    },
+    [pushItem, closeOverlay, props.providers, modelCatalog]
+  );
+
+  const onCustomModelSubmit = useCallback(
+    (raw: string): void => {
+      const id = raw.trim();
+      if (id.length === 0) {
+        closeOverlay();
+        return;
+      }
+      // Route to the right provider (id-shape heuristic + catalog hit).
+      // Without this, a custom OpenRouter id like `moonshotai/kimi-k2.6`
+      // would stay pinned to whatever provider happened to be active
+      // (e.g. Anthropic via Claude Code OAuth) and 401.
+      const providerKind = providerKindFor(id, modelCatalog);
+      const next =
+        providerKind === 'unknown'
+          ? undefined
+          : props.providers?.[providerKind];
+      if (!next) {
+        pushItem(
+          'system',
+          providerKind === 'unknown'
+            ? `Cannot use ${id}: no provider matches this model id (try prefixing with vendor/, e.g. openai/gpt-5).`
+            : `Cannot use ${id}: ${providerKind} is not connected. Sign in via /config first.`
+        );
+        closeOverlay();
+        return;
+      }
+      let added = false;
+      // Dedup against built-in seed/catalog: a "custom" id that already
+      // ships as a default doesn't need to be saved separately — it'll
+      // appear in the picker either way and "(custom)" wording is gone.
+      const seedSet = new Set<string>([
+        ...(props.availableModels ?? []),
+        ...(props.fallbackModels ?? []),
+        props.defaultModel,
+        ...(modelCatalog?.map((m) => m.id) ?? [])
+      ]);
+      const isBuiltin = seedSet.has(id);
+      setExtraModels((prev) => {
+        if (prev.includes(id)) return prev;
+        if (isBuiltin) return prev;
+        added = true;
+        return [...prev, id];
+      });
+      setProvider(next);
+      setActiveProviderKind(providerKind);
+      setModel(id);
+      pushItem('system', `model → ${id}`);
+      setInput('');
+      closeOverlay();
+      // Persist user-added model ids to ~/.atlas/config.yaml so they
+      // survive restarts. Only OpenRouter ids are persisted (Anthropic
+      // / Codex catalogs are fixed by the provider).
+      const cfg = props.config;
+      if (added && cfg && providerKind === 'openrouter') {
+        const existing = cfg.providers.openrouter.customModels ?? [];
+        if (!existing.includes(id)) {
+          const nextCfg: AtlasConfig = {
+            ...cfg,
+            providers: {
+              ...cfg.providers,
+              openrouter: {
+                ...cfg.providers.openrouter,
+                customModels: [...existing, id]
+              }
+            }
+          };
+          void saveConfig(nextCfg).then((r) => {
+            if (!r.ok) {
+              pushItem('error', `failed to persist custom model: ${r.error.message}`);
+            }
+          });
+        }
+      }
+    },
+    [
+      pushItem,
+      closeOverlay,
+      props.config,
+      modelCatalog,
+      props.providers,
+      props.availableModels,
+      props.fallbackModels,
+      props.defaultModel
+    ]
+  );
+
+  const onPickOption = useCallback(
+    (item: { value: string }) => {
+      if (item.value === '__freeform__' && overlay.kind === 'option-picker') {
+        // Reset the textbox so the freeform overlay starts blank — it
+        // shares the main `input` state, so leftover text would leak in.
+        setInput('');
+        setOverlay({ kind: 'option-freeform', request: overlay.request });
+        return;
+      }
+      closeOverlay();
+      void submit(item.value);
+    },
+    [overlay, submit, closeOverlay]
+  );
+
+  const onFreeformSubmit = useCallback(
+    (value: string) => {
+      // Always clear the shared input state so it doesn't reappear in
+      // the main chat textbox when the overlay closes.
+      setInput('');
+      closeOverlay();
+      void submit(value);
+    },
+    [submit, closeOverlay]
+  );
+
+  const handleInputSubmit = useCallback(
+    (value: string) => {
+      // If the slash palette has matches, Enter "selects" the highlighted
+      // one — for a bare `/`, Up/Down + Enter is faster than typing the
+      // command name. We rewrite `value` to the full canonical command,
+      // then forward to submit() so /help, /exit, etc. fire normally.
+      const matches = matchSlashCommands(value);
+      let resolved = value;
+      if (matches.length > 0) {
+        const pick = matches[Math.min(slashIdx, matches.length - 1)];
+        if (pick) {
+          // Preserve any trailing args the user already typed past the
+          // command name (defensive — matchSlashCommands suppresses on
+          // space, so `value` won't contain one yet).
+          resolved = `/${pick.name}`;
+        }
+      }
+      setInput('');
+      setSlashIdx(0);
+      void submit(resolved);
+    },
+    [submit, slashIdx]
+  );
+
+  // Reset the slash-palette cursor whenever the input no longer looks
+  // like a slash command, so the next `/` starts fresh at the top.
+  useEffect(() => {
+    if (!input.startsWith('/')) setSlashIdx(0);
+    else {
+      const matches = matchSlashCommands(input);
+      if (slashIdx >= matches.length) setSlashIdx(0);
+    }
+    // We intentionally do not depend on slashIdx to avoid a feedback loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input]);
+
+  const onAutopilotConsent = useCallback(
+    (item: { value: string }) => {
+      closeOverlay();
+      if (item.value === 'yes') {
+        setAutopilotConsented(true);
+        setMode('autopilot');
+        pushItem(
+          'system',
+          'Autopilot enabled. Atlas will use any tool without asking for the rest of this session.'
+        );
+      } else {
+        pushItem('system', 'Autopilot declined — staying in current mode.');
+      }
+    },
+    [pushItem, closeOverlay]
+  );
+
+  // Setup overlay: paste API key inside the TUI, persist to ~/.atlas/config.yaml,
+  // then materialize a real provider so the next /send works.
+  const onSetupKeyChange = useCallback(
+    (value: string) => {
+      if (overlay.kind !== 'setup') return;
+      setOverlay({ ...overlay, draftKey: value });
+    },
+    [overlay]
+  );
+
+  const onSetupMenuPick = useCallback(
+    async (
+      target: 'openrouter' | 'anthropic' | 'claude-code' | 'chatgpt' | 'github' | 'mcp'
+    ) => {
+      if (target === 'openrouter' || target === 'anthropic') {
+        setOverlay({ kind: 'setup', stage: 'key', draftKey: '', target });
+        return;
+      }
+      if (target === 'claude-code') {
+        const creds = await loadClaudeCodeCredentials({});
+        const expiresLine =
+          creds.ok && creds.value.expiresAt !== undefined
+            ? `\n  expires: ${new Date(creds.value.expiresAt).toLocaleString()}`
+            : '';
+        const info = creds.ok
+          ? `Claude Code OAuth detected.${expiresLine}\n\nAtlas will use it automatically when the Anthropic\nprovider is selected and no API key is configured.`
+          : `No Claude Code credentials found.\n  reason: ${creds.error.message}\n\nInstall + sign in to Claude Code, then re-open this menu.`;
+        setOverlay({ kind: 'setup', stage: 'info', draftKey: '', target, infoText: info });
+        return;
+      }
+      if (target === 'chatgpt') {
+        // Kick off the PKCE flow. Show the URL in an info panel; the
+        // promise resolves when the browser hits our loopback callback.
+        const handle = beginCodexLogin({
+          openBrowser: async (url) => {
+            await openInBrowser(url);
+          }
+        });
+        setOverlay({
+          kind: 'setup',
+          stage: 'info',
+          draftKey: '',
+          target,
+          infoText:
+            'Opening your browser to sign in with ChatGPT…\n\nIf nothing opens, visit:\n  ' +
+            handle.authorizeUrl +
+            '\n\nWaiting for callback on http://127.0.0.1:1455 …\nPress Esc to cancel.'
+        });
+        const result = await handle.tokens;
+        if (!result.ok) {
+          pushItem('error', `ChatGPT login failed: ${result.error.message}`);
+          closeOverlay();
+          return;
+        }
+        const baseCfg: AtlasConfig = props.config ?? {
+          defaultProvider: 'openrouter',
+          defaultModel: model,
+          fallbackModels: [],
+          providers: {
+            openrouter: { baseUrl: 'https://openrouter.ai/api/v1', title: 'Atlas CLI', apiKeys: [], customModels: [] },
+            anthropic: {
+              baseUrl: 'https://api.anthropic.com',
+              useClaudeCodeOauth: true,
+              apiKeys: []
+            },
+            openai: {
+              codex: {},
+              baseUrl: 'https://chatgpt.com/backend-api/codex'
+            }
+          },
+          mcp: { servers: [] },
+          github: {}
+        };
+        const nextCfg: AtlasConfig = {
+          ...baseCfg,
+          providers: {
+            ...baseCfg.providers,
+            openai: {
+              ...baseCfg.providers.openai,
+              codex: {
+                accessToken: result.value.accessToken,
+                ...(result.value.refreshToken !== undefined
+                  ? { refreshToken: result.value.refreshToken }
+                  : {}),
+                ...(result.value.idToken !== undefined ? { idToken: result.value.idToken } : {}),
+                ...(result.value.accountId !== undefined
+                  ? { accountId: result.value.accountId }
+                  : {}),
+                expiresAt: result.value.expiresAt
+              }
+            }
+          }
+        };
+        const saved = await saveConfig(nextCfg);
+        if (!saved.ok) {
+          pushItem('error', `failed to save config: ${saved.error.message}`);
+          closeOverlay();
+          return;
+        }
+        pushItem(
+          'system',
+          `Signed in to ChatGPT. Tokens saved to ${saved.value.path}.\nRestart atlas to start chatting with OpenAI models.`
+        );
+        closeOverlay();
+        return;
+      }
+      if (target === 'github') {
+        const info =
+          'GitHub OAuth is not yet wired up in this build.\n\nFor now, use the `gh` CLI:\n  1. Install:  brew install gh   (or apt/dnf/winget)\n  2. Sign in:  gh auth login\n\nAtlas will pick up the token from `gh auth token`\nwhen the GitHub tools are invoked.';
+        setOverlay({ kind: 'setup', stage: 'info', draftKey: '', target, infoText: info });
+        return;
+      }
+      // mcp
+      const info =
+        'MCP servers are configured in ~/.atlas/config.yaml under\nthe top-level `mcp:` key. Example:\n\n  mcp:\n    servers:\n      - name: filesystem\n        command: npx\n        args: ["@modelcontextprotocol/server-filesystem", "."]\n        enabled: true\n\nUse `/mcps` to list configured servers.\nIn-TUI editing + runtime spawning land in a later phase.';
+      setOverlay({ kind: 'setup', stage: 'info', draftKey: '', target, infoText: info });
+    },
+    [props.config, model, pushItem, closeOverlay]
+  );
+
+  const onSetupSubmit = useCallback(async () => {
+    if (overlay.kind !== 'setup' || overlay.stage !== 'key') return;
+    const raw = overlay.draftKey.trim();
+    if (raw.length === 0) {
+      pushItem('error', 'API key is empty.');
+      return;
+    }
+    const allKeys = raw
+      .split(',')
+      .map((k) => k.trim())
+      .filter((k) => k.length > 0);
+    const key = allKeys[0] ?? '';
+    const fallbackKeys = allKeys.slice(1);
+
+    const baseCfg: AtlasConfig = props.config ?? {
+      defaultProvider: 'openrouter',
+      defaultModel: model,
+      fallbackModels: [],
+      providers: {
+        openrouter: {
+          baseUrl: 'https://openrouter.ai/api/v1',
+          title: 'Atlas CLI',
+          apiKeys: [],
+          customModels: []
+        },
+        anthropic: {
+          baseUrl: 'https://api.anthropic.com',
+          useClaudeCodeOauth: true,
+          apiKeys: []
+        },
+        openai: {
+          codex: {},
+          baseUrl: 'https://chatgpt.com/backend-api/codex'
+        }
+      },
+      mcp: { servers: [] },
+      github: {}
+    };
+
+    const target = overlay.target;
+    const nextCfg: AtlasConfig =
+      target === 'anthropic'
+        ? {
+            ...baseCfg,
+            defaultProvider: 'anthropic',
+            providers: {
+              ...baseCfg.providers,
+              anthropic: {
+                ...baseCfg.providers.anthropic,
+                apiKey: key,
+                apiKeys: fallbackKeys
+              }
+            }
+          }
+        : {
+            ...baseCfg,
+            defaultModel: model,
+            providers: {
+              ...baseCfg.providers,
+              openrouter: {
+                ...baseCfg.providers.openrouter,
+                apiKey: key,
+                apiKeys: fallbackKeys
+              }
+            }
+          };
+
+    const saved = await saveConfig(nextCfg);
+    if (!saved.ok) {
+      pushItem('error', `failed to save config: ${saved.error.message}`);
+      return;
+    }
+
+    const fallbackNote =
+      fallbackKeys.length > 0 ? ` (+ ${fallbackKeys.length} fallback)` : '';
+
+    if (target === 'anthropic') {
+      pushItem(
+        'system',
+        `Anthropic key saved${fallbackNote} to ${saved.value.path}. Restart atlas to switch providers.`
+      );
+      closeOverlay();
+      return;
+    }
+
+    const next = createOpenRouterProvider({
+      apiKey: key,
+      ...(fallbackKeys.length > 0 ? { fallbackKeys } : {}),
+      baseUrl: nextCfg.providers.openrouter.baseUrl,
+      title: nextCfg.providers.openrouter.title
+    });
+    setProvider(next);
+    closeOverlay();
+    pushItem(
+      'system',
+      `OpenRouter key saved${fallbackNote} to ${saved.value.path}. You're ready to chat.`
+    );
+  }, [overlay, props.config, model, pushItem, closeOverlay]);
+
+  // Render
+  // Reserve rows for the sticky header (3), input (3), status (1), splash (~6 when present),
+  // slash autocomplete (~10 when active), and any active overlay (varies by kind).
+  // The transcript gets whatever's left, measured in *rendered terminal rows*
+  // (not item count) so multi-line tool output / assistant text can't push
+  // overlays off-screen.
+  const overlayReserve = ((): number => {
+    switch (overlay.kind) {
+      case 'setup':
+        // Menu has 6 rows + title + hint + borders + margins ≈ 14.
+        // Key/info stages need a bit more for the input/help block.
+        return overlay.stage === 'menu' ? 14 : 16;
+      case 'agent-picker':
+      case 'model-picker':
+        return 16;
+      case 'model-freeform':
+      case 'option-freeform':
+        return 6;
+      case 'option-picker':
+        return 10;
+      case 'autopilot-consent':
+        return 14;
+      case 'none':
+      default:
+        return 0;
+    }
+  })();
+  const reserved =
+    3 /* header */ +
+    3 /* input box */ +
+    1 /* status */ +
+    (transcript.length === 0 && overlay.kind !== 'setup' ? 6 : 0) +
+    (overlay.kind === 'none' && !streaming && input.startsWith('/') ? 10 : 0) +
+    overlayReserve;
+  const transcriptRowBudget = Math.max(2, rows - reserved);
+  // Estimate rendered height of each transcript item by counting hard
+  // newlines and wrapping long lines against the terminal width.
+  const wrapWidth = Math.max(20, cols - 4);
+  const wrappedLineCount = (text: string): number => {
+    const lines = text.length === 0 ? [''] : text.split('\n');
+    let n = 0;
+    for (const line of lines) {
+      const visible = line.replace(/\u0001/g, '');
+      n += Math.max(1, Math.ceil(visible.length / wrapWidth));
+    }
+    return n;
+  };
+  const rowsForItem = (item: TranscriptItem): number => {
+    let n = wrappedLineCount(item.text ?? '');
+    if (item.kind === 'assistant' || item.kind === 'thinking') n += 1;
+    // user/assistant are wrapped in a bordered box: top border + author
+    // label + bottom border + marginTop = 4 extra rows.
+    if (item.kind === 'user' || item.kind === 'assistant') n += 4;
+    return n;
+  };
+  // Slice an item's text to keep only the LAST `keepRows` rendered rows.
+  // Used when the topmost visible item alone exceeds the row budget so
+  // it doesn't spill past the box and overlap overlays/header.
+  const sliceItemTail = (item: TranscriptItem, keepRows: number): TranscriptItem => {
+    const text = item.text ?? '';
+    if (keepRows <= 0) return { ...item, text: '… (truncated)' };
+    const lines = text.split('\n');
+    // Walk lines bottom-up, expanding any that wrap to multiple rows.
+    const kept: string[] = [];
+    let used = 0;
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const ln = lines[i] ?? '';
+      const visible = ln.replace(/\u0001/g, '');
+      const h = Math.max(1, Math.ceil(visible.length / wrapWidth));
+      if (used + h > keepRows && kept.length > 0) break;
+      kept.unshift(ln);
+      used += h;
+      if (used >= keepRows) break;
+    }
+    const sliced = kept.join('\n');
+    return { ...item, text: `… (truncated)\n${sliced}` };
+  };
+
+  // Compute total rendered rows so we know how far the user can scroll.
+  let totalRows = 0;
+  for (const it of transcript) totalRows += rowsForItem(it);
+  const maxOffset = Math.max(0, totalRows - transcriptRowBudget);
+  const offset = Math.min(scrollOffset, maxOffset);
+  // Window is [endRow - budget, endRow) measured from the top.
+  const endRow = totalRows - offset;
+  const startRow = Math.max(0, endRow - transcriptRowBudget);
+  // Walk items, accumulating row positions, slicing the boundary items
+  // so we render exactly the rows in [startRow, endRow).
+  const visibleTranscript: TranscriptItem[] = [];
+  let cursor = 0;
+  for (const it of transcript) {
+    const h = rowsForItem(it);
+    const itemStart = cursor;
+    const itemEnd = cursor + h;
+    cursor = itemEnd;
+    if (itemEnd <= startRow) continue; // entirely above window
+    if (itemStart >= endRow) break; // entirely below window
+    let view = it;
+    // If the item is partially above the top of the window, drop the
+    // overflowing rows from its head.
+    if (itemStart < startRow) {
+      const keep = itemEnd - startRow;
+      view = sliceItemTail(view, keep);
+    }
+    // If it extends past the bottom of the window, drop overflow rows
+    // from its tail. Combined with the head trim above this guarantees
+    // the rendered slice fits exactly in the window.
+    if (itemEnd > endRow) {
+      const dropTail = itemEnd - endRow;
+      const text = view.text ?? '';
+      const lines = text.split('\n');
+      const kept: string[] = [];
+      let usedRows = 0;
+      const keepRows = wrappedLineCount(text) - dropTail;
+      for (const ln of lines) {
+        if (usedRows >= keepRows) break;
+        const visible = ln.replace(/\u0001/g, '');
+        const h2 = Math.max(1, Math.ceil(visible.length / wrapWidth));
+        if (usedRows + h2 > keepRows && kept.length > 0) break;
+        kept.push(ln);
+        usedRows += h2;
+      }
+      view = { ...view, text: kept.join('\n') };
+    }
+    visibleTranscript.push(view);
+  }
+  // hiddenCount is for the "↑ N earlier messages" hint at the top —
+  // count whole items that fall entirely above the window.
+  let hiddenCount = 0;
+  let cur = 0;
+  for (const it of transcript) {
+    const h = rowsForItem(it);
+    if (cur + h <= startRow) hiddenCount += 1;
+    cur += h;
+  }
+  const newerHidden = Math.max(0, offset);
+
+  return (
+    <Box flexDirection="column" width={cols} height={rows}>
+      <Header
+        agent={activeAgent}
+        model={model}
+        modelProvider={activeProviderKind}
+        mode={mode}
+        thinking={thinking}
+        usage={usage}
+        streaming={streaming}
+        contextWindow={contextWindowFor(model, modelCatalog)}
+      />
+      {transcript.length === 0 && overlay.kind !== 'setup' && <Splash defaultModel={model} />}
+      <Box flexDirection="column" flexGrow={1}>
+        {hiddenCount > 0 && (
+          <Text color="gray" dimColor>
+            ↑ {hiddenCount} earlier message{hiddenCount === 1 ? '' : 's'} (PgUp to scroll)
+          </Text>
+        )}
+        {visibleTranscript.map((item) => (
+          <TranscriptRow key={item.key} item={item} />
+        ))}
+        {newerHidden > 0 && (
+          <Text color="gray" dimColor>
+            ↓ {newerHidden} more line{newerHidden === 1 ? '' : 's'} below (PgDn / End)
+          </Text>
+        )}
+      </Box>
+      {overlay.kind === 'agent-picker' && (
+        <OverlayBox title="Switch agent (framework specialists are routed automatically)">
+          <SelectInput
+            items={switchableAgents.map((a) => ({
+              key: a.name,
+              label: `${a.role}${a.personaAlias ? ` — ${a.personaAlias}` : ''}${
+                a.name === 'atlas' ? ' (orchestrator)' : ''
+              }`,
+              value: a.name
+            }))}
+            onSelect={onPickAgent}
+          />
+        </OverlayBox>
+      )}
+      {overlay.kind === 'model-picker' && (
+        <OverlayBox title="Switch model (↑/↓ to navigate, ↵ select)">
+          {(() => {
+            const catalog = modelCatalog ?? [];
+            const items: PickerEntry[] = [];
+
+            const byProvider = new Map<string, typeof catalog>();
+            for (const m of catalog) {
+              const list = byProvider.get(m.provider) ?? [];
+              byProvider.set(m.provider, [...list, m]);
+            }
+
+            const groupOrder: readonly ('anthropic' | 'openai-codex' | 'openrouter')[] = [
+              'anthropic',
+              'openai-codex',
+              'openrouter'
+            ];
+            const groupLabel = (k: string): string => {
+              if (k === 'anthropic') return '── Anthropic ──';
+              if (k === 'openai-codex') return '── OpenAI (ChatGPT / Codex) ──';
+              if (k === 'openrouter') return '── OpenRouter ──';
+              return `── ${k} ──`;
+            };
+            // Seed list to inject into the OpenRouter group when the live
+            // catalog is missing entries (cache stale / network blocked /
+            // first launch). Includes the curated wide defaults the user
+            // wants always visible (kimi-2.6, deepseek-v4, opus-4.7…) plus
+            // anything that came from `availableModels`/`fallbackModels`.
+            const orSeed = [
+              ...(props.availableModels ?? []),
+              ...(props.fallbackModels ?? []),
+              props.defaultModel
+            ].filter((id) => typeof id === 'string' && id.includes('/'));
+
+            const seenValues = new Set<string>();
+
+            for (const grp of groupOrder) {
+              if (!props.providers?.[grp]) continue;
+              const catalogList = byProvider.get(grp) ?? [];
+              // Custom (saved) ids only make sense under OpenRouter — they
+              // come exclusively from the +Add custom model id… flow which
+              // is OR-only (Anthropic/Codex catalogs are fixed by the
+              // provider). Dedup against the catalog & seed below.
+              const customsHere = grp === 'openrouter' ? extraModels : [];
+              const seedHere = grp === 'openrouter' ? orSeed : [];
+              if (catalogList.length === 0 && customsHere.length === 0 && seedHere.length === 0) {
+                continue;
+              }
+              items.push({ kind: 'header', key: `__hdr_${grp}`, label: groupLabel(grp) });
+              const groupSeen = new Set<string>();
+              const addEntry = (id: string, label: string, pinned = false): void => {
+                if (groupSeen.has(id)) return;
+                groupSeen.add(id);
+                if (seenValues.has(`${grp}:${id}`)) return;
+                seenValues.add(`${grp}:${id}`);
+                items.push({
+                  kind: 'item',
+                  key: `${grp}:${id}`,
+                  label,
+                  value: `${grp}:${id}`,
+                  ...(pinned ? { pinned: true } : {})
+                });
+              };
+
+              // Within OpenRouter: a "★ Popular" sub-header with the
+              // curated pins first, then the rest of the catalog. We
+              // match pins against catalog ids by *pattern* (rather than
+              // a hard-coded id string) so when the live OR catalog uses
+              // a slightly different slug — e.g. `moonshotai/kimi-k2.6`
+              // instead of `moonshotai/kimi-2.6` — the pin still resolves
+              // to the real model and dedups properly. Anthropic / Codex
+              // have no pins (their catalogs are short and curated).
+              if (grp === 'openrouter') {
+                const POPULAR_PATTERNS: readonly {
+                  readonly desc: string;
+                  readonly fallback: string;
+                  readonly match: (id: string) => boolean;
+                }[] = [
+                  {
+                    desc: 'Claude Opus 4.7',
+                    fallback: 'anthropic/claude-opus-4.7',
+                    match: (id) =>
+                      /^anthropic\/claude-opus-4[.\-]?7$/i.test(id)
+                  },
+                  {
+                    desc: 'Claude Opus 4.6',
+                    fallback: 'anthropic/claude-opus-4.6',
+                    match: (id) =>
+                      /^anthropic\/claude-opus-4[.\-]?6$/i.test(id)
+                  },
+                  {
+                    desc: 'Claude Sonnet 4.6',
+                    fallback: 'anthropic/claude-sonnet-4.6',
+                    match: (id) =>
+                      /^anthropic\/claude-sonnet-4[.\-]?6$/i.test(id)
+                  },
+                  {
+                    desc: 'Claude Sonnet 4.5',
+                    fallback: 'anthropic/claude-sonnet-4.5',
+                    match: (id) =>
+                      /^anthropic\/claude-sonnet-4[.\-]?5$/i.test(id)
+                  },
+                  {
+                    desc: 'DeepSeek V4',
+                    fallback: 'deepseek/deepseek-v4',
+                    match: (id) =>
+                      /^deepseek\/deepseek-v?4$/i.test(id) ||
+                      /^deepseek\/deepseek-v?4-(chat|base|pro)$/i.test(id)
+                  },
+                  {
+                    desc: 'DeepSeek V4 Flash',
+                    fallback: 'deepseek/deepseek-v4-flash',
+                    match: (id) => /^deepseek\/deepseek-v?4[-.]flash/i.test(id)
+                  },
+                  {
+                    desc: 'Kimi 2.6',
+                    fallback: 'moonshotai/kimi-2.6',
+                    match: (id) => /^moonshotai\/kimi-?(k)?2[.\-]?6/i.test(id)
+                  },
+                  {
+                    desc: 'GPT-5.5',
+                    fallback: 'openai/gpt-5.5',
+                    match: (id) => /^openai\/gpt-5[.\-]?5$/i.test(id)
+                  },
+                  {
+                    desc: 'GPT-5',
+                    fallback: 'openai/gpt-5',
+                    match: (id) => /^openai\/gpt-5$/i.test(id)
+                  },
+                  {
+                    desc: 'Gemini 2.5 Pro',
+                    fallback: 'google/gemini-2.5-pro',
+                    match: (id) => /^google\/gemini-2\.5-pro$/i.test(id)
+                  }
+                ];
+                const popularHere: { id: string; label: string }[] = [];
+                const usedIds = new Set<string>();
+                for (const pat of POPULAR_PATTERNS) {
+                  const hit = catalogList.find(
+                    (m) => pat.match(m.id) && !usedIds.has(m.id)
+                  );
+                  if (hit) {
+                    usedIds.add(hit.id);
+                    const label = hit.label !== hit.id ? `${hit.id} — ${hit.label}` : hit.id;
+                    popularHere.push({ id: hit.id, label });
+                  } else if (
+                    // Only add fallback when the pin id isn't going to
+                    // collide with a catalog entry (would create the
+                    // exact dup the user reported). If the fallback
+                    // string itself appears in the catalog, the loop
+                    // above would have matched it already.
+                    !catalogList.some((m) => m.id === pat.fallback)
+                  ) {
+                    popularHere.push({ id: pat.fallback, label: pat.fallback });
+                  }
+                }
+                if (popularHere.length > 0) {
+                  items.push({
+                    kind: 'header',
+                    key: '__hdr_or_popular',
+                    label: '   ★ Popular'
+                  });
+                  for (const p of popularHere) addEntry(p.id, p.label, true);
+                }
+              }
+
+              // Order within OR: pinned popular first (above), then
+              // every remaining model — catalog ∪ seed defaults ∪ user
+              // customs — sorted alphabetically by id so it's easy to
+              // scan a long list. For Anthropic / Codex it's just the
+              // catalog, also alphabetized.
+              if (grp === 'openrouter') {
+                const rest = new Map<string, string>();
+                for (const m of catalogList) {
+                  if (groupSeen.has(m.id)) continue;
+                  rest.set(m.id, m.label !== m.id ? `${m.id} — ${m.label}` : m.id);
+                }
+                for (const id of seedHere) {
+                  if (groupSeen.has(id) || rest.has(id)) continue;
+                  rest.set(id, id);
+                }
+                for (const id of customsHere) {
+                  if (groupSeen.has(id) || rest.has(id)) continue;
+                  rest.set(id, id);
+                }
+                const sorted = [...rest.entries()].sort(([a], [b]) => a.localeCompare(b));
+                for (const [id, lbl] of sorted) addEntry(id, lbl);
+              } else {
+                const sorted = [...catalogList].sort((a, b) => a.id.localeCompare(b.id));
+                for (const m of sorted) {
+                  const lbl = m.label !== m.id ? `${m.id} — ${m.label}` : m.id;
+                  addEntry(m.id, lbl);
+                }
+              }
+            }
+
+            // Truly nothing — no providers connected or seed list empty.
+            if (items.length === 0) {
+              items.push({ kind: 'header', key: '__hdr_seed', label: '── Available models ──' });
+              items.push({
+                kind: 'item',
+                key: `s:${props.defaultModel}`,
+                label: props.defaultModel,
+                value: props.defaultModel
+              });
+            }
+
+            items.push({
+              kind: 'item',
+              key: '__custom__',
+              label: '+ Add custom model id…',
+              value: '__custom__'
+            });
+            const limit = Math.max(6, Math.min(items.length, rows - overlayReserve - 4));
+            return <GroupedPicker items={items} limit={limit} onSelect={onPickModel} />;
+          })()}
+        </OverlayBox>
+      )}
+      {overlay.kind === 'model-freeform' && (
+        <OverlayBox title="Enter model id (e.g. anthropic/claude-opus-4.7)">
+          <TextInput value={input} onChange={setInput} onSubmit={onCustomModelSubmit} />
+        </OverlayBox>
+      )}
+      {overlay.kind === 'option-picker' && (
+        <OverlayBox title={`Atlas asks: ${overlay.request.prompt}`}>
+          <SelectInput
+            items={[
+              ...overlay.request.options.slice(0, 3).map((o, i) => ({
+                key: `o${i}`,
+                label: o.label,
+                value: o.value
+              })),
+              ...(overlay.request.allowFreeform
+                ? [{ key: 'free', label: 'Type your own…', value: '__freeform__' }]
+                : [])
+            ]}
+            onSelect={onPickOption}
+          />
+        </OverlayBox>
+      )}
+      {overlay.kind === 'option-freeform' && (
+        <OverlayBox title={overlay.request.prompt}>
+          <TextInput value={input} onChange={setInput} onSubmit={onFreeformSubmit} />
+        </OverlayBox>
+      )}
+      {overlay.kind === 'autopilot-consent' && (
+        <Box flexDirection="column" borderStyle="double" borderColor="red" paddingX={1} marginY={1}>
+          <Text color="red" bold>
+            ⚠  Enable autopilot mode?
+          </Text>
+          <Box marginTop={1} flexDirection="column">
+            <Text>
+              Autopilot lets Atlas execute <Text bold>any tool</Text> — reading and writing files,
+              running terminal commands, and calling external services — <Text bold>without asking</Text> for
+              your approval each time.
+            </Text>
+            <Box marginTop={1}>
+              <Text color="gray">
+                Recommended only when you trust the active agent and have version control. You can leave
+                autopilot at any time with Ctrl-P or `/mode build`.
+              </Text>
+            </Box>
+          </Box>
+          <Box marginTop={1}>
+            <SelectInput
+              items={[
+                { key: 'no', label: 'No — stay in current mode', value: 'no' },
+                { key: 'yes', label: 'Yes — enable autopilot for this session', value: 'yes' }
+              ]}
+              onSelect={onAutopilotConsent}
+            />
+          </Box>
+        </Box>
+      )}
+      {overlay.kind === 'setup' && overlay.stage === 'menu' && (
+        <Box flexDirection="column" borderStyle="double" borderColor="cyan" paddingX={1} marginY={1}>
+          <Text color="cyan" bold>
+            ⚙  Atlas setup
+          </Text>
+          <Box marginTop={1}>
+            <Text color="gray">Choose what you want to configure. Press Esc to cancel.</Text>
+          </Box>
+          <Box marginTop={1}>
+            <SelectInput
+              itemComponent={SetupMenuItem}
+              items={(() => {
+                // Connection state must mean "I can actually use this
+                // right now" — so it's derived from the providers map
+                // (only populated when a runtime was successfully built
+                // from working creds). For ChatGPT/Codex, the runtime
+                // is not yet wired, so the badge will stay off until
+                // that lands even though tokens are saved.
+                const cfg = props.config;
+                const hasOpenRouter = Boolean(props.providers?.openrouter);
+                const hasAnthropicKey = Boolean(cfg?.providers.anthropic.apiKey);
+                const hasClaudeCode =
+                  Boolean(props.providers?.anthropic) && !hasAnthropicKey;
+                const hasChatGpt = Boolean(props.providers?.['openai-codex']);
+                const hasGithub = Boolean(cfg?.github?.token);
+                const mcpCount = cfg?.mcp?.servers?.length ?? 0;
+                // Sentinel \u0001 separates the action label from the
+                // status note; SetupMenuItem renders the suffix green.
+                const tag = (on: boolean, note = 'connected'): string =>
+                  on ? `  \u0001● ${note}` : '';
+                return [
+                  {
+                    key: 'openrouter',
+                    label: `OpenRouter API key  (sk-or-...)${tag(hasOpenRouter)}`,
+                    value: 'openrouter' as const
+                  },
+                  {
+                    key: 'anthropic',
+                    label: `Anthropic API key   (sk-ant-...)${tag(hasAnthropicKey)}`,
+                    value: 'anthropic' as const
+                  },
+                  {
+                    key: 'claude-code',
+                    label: `Claude Code OAuth   (auto-detected)${tag(hasClaudeCode)}`,
+                    value: 'claude-code' as const
+                  },
+                  {
+                    key: 'chatgpt',
+                    label: `Sign in with ChatGPT (browser, Codex)${tag(hasChatGpt)}`,
+                    value: 'chatgpt' as const
+                  },
+                  {
+                    key: 'github',
+                    label: `GitHub token        (gh integration)${tag(hasGithub)}`,
+                    value: 'github' as const
+                  },
+                  {
+                    key: 'mcp',
+                    label: `MCP server          (model context protocol)${tag(
+                      mcpCount > 0,
+                      `${mcpCount} configured`
+                    )}`,
+                    value: 'mcp' as const
+                  }
+                ];
+              })()}
+              onSelect={(item) => void onSetupMenuPick(item.value)}
+            />
+          </Box>
+        </Box>
+      )}
+      {overlay.kind === 'setup' && overlay.stage === 'key' && (
+        <Box flexDirection="column" borderStyle="double" borderColor="cyan" paddingX={1} marginY={1}>
+          <Text color="cyan" bold>
+            ⚙  {overlay.target === 'anthropic' ? 'Anthropic API key' : 'OpenRouter API key'}
+          </Text>
+          <Box marginTop={1} flexDirection="column">
+            <Text>
+              Paste your key below. It will be saved to{' '}
+              <Text color="gray">~/.atlas/config.yaml</Text>.
+            </Text>
+            <Box marginTop={1}>
+              <Text color="gray">
+                {overlay.target === 'anthropic'
+                  ? 'Get a key at https://console.anthropic.com/settings/keys'
+                  : 'Get a key at https://openrouter.ai/keys'}
+              </Text>
+            </Box>
+            <Box marginTop={1}>
+              <Text color="gray" dimColor>
+                Tip: paste multiple keys separated by commas — the first
+                is primary, the rest are fallbacks rotated on 401/429.
+              </Text>
+            </Box>
+            {props.setupError && (
+              <Box marginTop={1}>
+                <Text color="red">previous error: {props.setupError}</Text>
+              </Box>
+            )}
+          </Box>
+          <Box marginTop={1}>
+            <Text color="cyan">key › </Text>
+            <TextInput
+              value={overlay.draftKey}
+              onChange={onSetupKeyChange}
+              onSubmit={() => void onSetupSubmit()}
+              mask="•"
+              placeholder={overlay.target === 'anthropic' ? 'sk-ant-...' : 'sk-or-...'}
+            />
+          </Box>
+          <Box marginTop={1}>
+            <Text color="gray" dimColor>
+              ↵ save · Esc cancel
+            </Text>
+          </Box>
+        </Box>
+      )}
+      {overlay.kind === 'setup' && overlay.stage === 'info' && (
+        <Box flexDirection="column" borderStyle="double" borderColor="cyan" paddingX={1} marginY={1}>
+          <Text color="cyan" bold>
+            ⚙  Atlas setup
+          </Text>
+          <Box marginTop={1} flexDirection="column">
+            {(overlay.infoText ?? '').split('\n').map((line, i) => (
+              <Text key={i}>{line}</Text>
+            ))}
+          </Box>
+          <Box marginTop={1}>
+            <Text color="gray" dimColor>
+              ↵ / Esc close
+            </Text>
+          </Box>
+        </Box>
+      )}
+      {overlay.kind === 'none' && (
+        <Box borderStyle="round" borderColor="gray" paddingX={1}>
+          {streaming ? (
+            <Box>
+              <Text color="yellow">
+                <Spinner type="dots" />
+              </Text>
+              <Text> streaming… (Esc to cancel)</Text>
+            </Box>
+          ) : (
+            <Box width={cols - 4}>
+              <Text color="cyan">› </Text>
+              <TextInput value={input} onChange={setInput} onSubmit={handleInputSubmit} />
+            </Box>
+          )}
+        </Box>
+      )}
+      {overlay.kind === 'none' && !streaming && (
+        <SlashAutocomplete matches={matchSlashCommands(input)} activeIdx={slashIdx} />
+      )}
+      <StatusBar pendingExit={pendingExit} streaming={streaming} mode={mode} />
+    </Box>
+  );
+};
+
+const Header = ({
+  agent,
+  model,
+  modelProvider,
+  mode,
+  thinking,
+  usage,
+  streaming,
+  contextWindow
+}: {
+  agent: Agent;
+  model: string;
+  modelProvider: ProviderKindLabel;
+  mode: Mode;
+  thinking: ThinkingEffort;
+  usage: {
+    tokens: number;
+    rounds: number;
+    promptTokens?: number;
+    completionTokens?: number;
+  } | null;
+  streaming: boolean;
+  contextWindow: number;
+}): React.JSX.Element => {
+  const cost =
+    usage && usage.promptTokens !== undefined && usage.completionTokens !== undefined
+      ? estimateCost(model, usage.promptTokens, usage.completionTokens)
+      : undefined;
+  // "Used" = tokens of the most recent turn (input + output), since that's
+  // what currently fills the model's context window. Falls back to 0 pre-turn.
+  const used = usage?.tokens ?? 0;
+  return (
+    <Box borderStyle="round" borderColor="gray" paddingX={1} marginBottom={0}>
+      <Box flexGrow={1}>
+        <Text color={colorForAgent(agent.name)} bold>
+          {agent.role}
+        </Text>
+        {agent.personaAlias && <Text color="gray"> ({agent.personaAlias})</Text>}
+        <Text color="gray"> · </Text>
+        <Text color="white">{model}</Text>
+        <Text color={providerColor(modelProvider)}> [{providerShortLabel(modelProvider)}]</Text>
+        <Text color="gray"> · mode </Text>
+        <Text color={modeColor(mode)} bold={mode === 'autopilot'}>
+          {mode}
+        </Text>
+        <Text color="gray"> · think </Text>
+        <Text color={thinking === 'off' ? 'gray' : 'magenta'}>{thinking}</Text>
+        {streaming && (
+          <>
+            <Text color="gray"> · </Text>
+            <Text color="yellow">streaming</Text>
+          </>
+        )}
+      </Box>
+      <Box>
+        <ContextBar used={used} total={contextWindow} />
+        {usage && (
+          <>
+            <Text color="gray"> · </Text>
+            <Text color="gray">{usage.rounds}rd</Text>
+          </>
+        )}
+        {cost !== undefined && (
+          <>
+            <Text color="gray"> · </Text>
+            <Text color="green">{formatCost(cost)}</Text>
+          </>
+        )}
+      </Box>
+    </Box>
+  );
+};
+
+/** 10-cell unicode bar showing context-window fill. */
+const ContextBar = ({ used, total }: { used: number; total: number }): React.JSX.Element => {
+  const pct = total > 0 ? Math.min(1, used / total) : 0;
+  const cells = 10;
+  const filled = Math.round(pct * cells);
+  const bar = '█'.repeat(filled) + '░'.repeat(cells - filled);
+  const color = pct >= 0.9 ? 'red' : pct >= 0.7 ? 'yellow' : 'cyan';
+  const usedShort = compactTokens(used);
+  const totalShort = compactTokens(total);
+  return (
+    <>
+      <Text color={color}>{bar}</Text>
+      <Text color="gray"> {usedShort}/{totalShort}</Text>
+    </>
+  );
+};
+
+const compactTokens = (n: number): string => {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`;
+  return String(n);
+};
+
+/**
+ * Best-effort context window in tokens for a given model id. Uses the
+ * live catalog when available, then falls back to known defaults so the
+ * progress bar still renders for offline / custom ids.
+ */
+const contextWindowFor = (
+  modelId: string,
+  catalog: readonly import('@atlas/core').ModelInfo[] | undefined
+): number => {
+  const hit = catalog?.find((m) => m.id === modelId);
+  if (hit?.contextWindow) return hit.contextWindow;
+  const m = modelId.toLowerCase();
+  if (/claude-(opus|sonnet|haiku)-4/.test(m)) return 200_000;
+  if (/claude-3/.test(m)) return 200_000;
+  if (/gpt-5|gpt-4\.1/.test(m)) return 1_000_000;
+  if (/gpt-4o/.test(m)) return 128_000;
+  if (/gemini-2\.5/.test(m)) return 1_000_000;
+  if (/gemini-1\.5/.test(m)) return 1_000_000;
+  return 128_000;
+};
+
+/** Provider tag rendered after the model id in the header. */
+type ProviderKindLabel = 'openrouter' | 'anthropic' | 'openai-codex' | 'unknown';
+
+/**
+ * Resolve which provider exposes the given model id.
+ *
+ * Prefers the live catalog (so multi-key users get the correct tag for
+ * `gpt-5` whether they signed in via OpenRouter or ChatGPT/Codex), then
+ * falls back to id-shape heuristics for offline / custom ids.
+ */
+const providerKindFor = (
+  modelId: string,
+  catalog: readonly import('@atlas/core').ModelInfo[] | undefined
+): ProviderKindLabel => {
+  const hit = catalog?.find((m) => m.id === modelId);
+  if (hit) return hit.provider;
+  if (modelId.includes('/')) return 'openrouter';
+  const m = modelId.toLowerCase();
+  if (/^claude/.test(m)) return 'anthropic';
+  if (/^(gpt-|codex-|o[1-9])/.test(m)) return 'openai-codex';
+  return 'unknown';
+};
+
+const providerColor = (kind: ProviderKindLabel): string => {
+  switch (kind) {
+    case 'openrouter':
+      return 'magenta';
+    case 'anthropic':
+      return 'yellow';
+    case 'openai-codex':
+      return 'green';
+    case 'unknown':
+      return 'gray';
+  }
+};
+
+/**
+ * Compact provider tag for the header — full names overflow narrow
+ * terminals (and existing TUI snapshots assume a tight header). Two-to
+ * three-letter codes keep the header readable on 100-column ttys.
+ */
+const providerShortLabel = (kind: ProviderKindLabel): string => {
+  switch (kind) {
+    case 'openrouter':
+      return 'OR';
+    case 'anthropic':
+      return 'AN';
+    case 'openai-codex':
+      return 'OAI';
+    case 'unknown':
+      return '?';
+  }
+};
+
+/** Long-form provider label for the system-prompt self-knowledge block. */
+const providerLongLabel = (kind: ProviderKindLabel): string => {
+  switch (kind) {
+    case 'openrouter':
+      return 'OpenRouter';
+    case 'anthropic':
+      return 'Anthropic';
+    case 'openai-codex':
+      return 'OpenAI (ChatGPT/Codex backend)';
+    case 'unknown':
+      return 'unknown';
+  }
+};
+
+/**
+ * Lightweight inline-markdown renderer for assistant text. Recognises
+ * `**bold**`, `*italic*` / `_italic_`, `` `code` ``, ~~strike~~, and
+ * fenced ```code blocks``` (rendered as a bordered box with a copy
+ * hint — press Ctrl+Y to copy the most recent block).
+ */
+const Markdown = ({ text }: { text: string }): React.JSX.Element => {
+  const lines = text.split('\n');
+  // Group consecutive lines between ``` fences into a CodeBlock; everything
+  // else becomes a plain Text row with inline markdown.
+  const blocks: React.JSX.Element[] = [];
+  let buf: string[] = [];
+  let inFence = false;
+  let lang = '';
+  let codeBuf: string[] = [];
+  let blockIdx = 0;
+  const flushPlain = (): void => {
+    if (buf.length === 0) return;
+    const slice = buf;
+    buf = [];
+    blocks.push(
+      <Box flexDirection="column" key={`p${blockIdx++}`}>
+        {slice.map((line, i) => (
+          <Text key={i}>{renderInlineMarkdown(line)}</Text>
+        ))}
+      </Box>
+    );
+  };
+  for (const rawLine of lines) {
+    // Strip trailing CR + ignore leading whitespace when matching fences
+    // so models that indent code blocks (or emit CRLF) still get their
+    // closing ``` recognized — otherwise the rest of the message ends
+    // up rendered inside the code block. Any line whose first non-space
+    // characters are 3+ backticks is treated as a fence toggle; the
+    // info string after is captured only on opening.
+    const line = rawLine.replace(/\r$/, '');
+    const fence = line.match(/^\s{0,3}(`{3,})\s*(.*)$/);
+    if (fence && fence[1]) {
+      if (inFence) {
+        // Any ```-prefixed line closes the current block — even if the
+        // model added a trailing info string by mistake. Avoids prose
+        // spilling into the code block when the close is malformed.
+        const code = codeBuf.join('\n');
+        codeBuf = [];
+        inFence = false;
+        flushPlain();
+        blocks.push(<CodeBlock key={`c${blockIdx++}`} lang={lang} code={code} />);
+        lang = '';
+      } else {
+        flushPlain();
+        inFence = true;
+        // First word of the info string is the language hint.
+        const info = (fence[2] ?? '').trim();
+        lang = info.split(/\s+/)[0] ?? '';
+      }
+      continue;
+    }
+    if (inFence) codeBuf.push(line);
+    else buf.push(line);
+  }
+  if (inFence) {
+    // Unclosed fence — render whatever we collected as a code block so the
+    // streaming view shows code as it lands rather than withholding it.
+    flushPlain();
+    blocks.push(<CodeBlock key={`c${blockIdx++}`} lang={lang} code={codeBuf.join('\n')} />);
+  } else {
+    flushPlain();
+  }
+  return <Box flexDirection="column">{blocks}</Box>;
+};
+
+/**
+ * A bordered fenced-code-block.
+ */
+const CodeBlock = ({ lang, code }: { lang: string; code: string }): React.JSX.Element => {
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1} marginY={1}>
+      <Box>
+        <Text color="gray" dimColor>
+          {lang ? `◦ ${lang}` : '◦ code'}
+        </Text>
+        <Box flexGrow={1} />
+        <Text color="gray" dimColor>
+          Ctrl-Y copy
+        </Text>
+      </Box>
+      {code.split('\n').map((line, i) => (
+        <Text key={i} color="yellow">
+          {line}
+        </Text>
+      ))}
+    </Box>
+  );
+};
+
+/**
+ * Scan a transcript text for fenced code blocks and return the LAST one
+ * (full content, not truncated to the visible window). Used by Ctrl+Y
+ * so users can copy long code blocks that scroll off-screen.
+ */
+const extractLastCodeBlock = (text: string): string | null => {
+  const lines = text.split('\n');
+  let inFence = false;
+  let buf: string[] = [];
+  let last: string | null = null;
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, '');
+    if (/^\s{0,3}`{3,}/.test(line)) {
+      if (inFence) {
+        last = buf.join('\n');
+        buf = [];
+        inFence = false;
+      } else {
+        inFence = true;
+        buf = [];
+      }
+      continue;
+    }
+    if (inFence) buf.push(line);
+  }
+  // Unclosed fence at end of text — still return what we have so the user
+  // can copy partial blocks while a stream is in flight.
+  if (inFence && buf.length > 0) last = buf.join('\n');
+  return last;
+};
+
+const renderInlineMarkdown = (line: string): React.ReactNode[] => {
+  const out: React.ReactNode[] = [];
+  let buf = '';
+  let i = 0;
+  const flushBuf = (): void => {
+    if (buf.length > 0) {
+      out.push(buf);
+      buf = '';
+    }
+  };
+  const matchPair = (open: string, close: string): number => {
+    if (line.slice(i, i + open.length) !== open) return -1;
+    return line.indexOf(close, i + open.length);
+  };
+  while (i < line.length) {
+    let end = matchPair('**', '**');
+    if (end > 0) {
+      flushBuf();
+      out.push(
+        <Text key={`b${i}`} bold>
+          {line.slice(i + 2, end)}
+        </Text>
+      );
+      i = end + 2;
+      continue;
+    }
+    end = matchPair('`', '`');
+    if (end > 0) {
+      flushBuf();
+      out.push(
+        <Text key={`c${i}`} color="yellow">
+          {line.slice(i + 1, end)}
+        </Text>
+      );
+      i = end + 1;
+      continue;
+    }
+    end = matchPair('~~', '~~');
+    if (end > 0) {
+      flushBuf();
+      out.push(
+        <Text key={`s${i}`} strikethrough>
+          {line.slice(i + 2, end)}
+        </Text>
+      );
+      i = end + 2;
+      continue;
+    }
+    const charNow = line[i];
+    if ((charNow === '*' || charNow === '_') && line[i + 1] !== charNow) {
+      const closer = line.indexOf(charNow, i + 1);
+      const prevCh = i === 0 ? '' : line[i - 1] ?? '';
+      const nextCh = closer >= 0 ? line[closer + 1] ?? '' : '';
+      const okLeft = prevCh === '' || /[\s(\[{>]/.test(prevCh);
+      const okRight = nextCh === '' || /[\s)\].,!?:;>]/.test(nextCh);
+      if (closer > i + 1 && okLeft && okRight) {
+        flushBuf();
+        out.push(
+          <Text key={`i${i}`} italic>
+            {line.slice(i + 1, closer)}
+          </Text>
+        );
+        i = closer + 1;
+        continue;
+      }
+    }
+    buf += line[i];
+    i += 1;
+  }
+  flushBuf();
+  return out;
+};
+
+const TranscriptRow = ({ item }: { item: TranscriptItem }): React.JSX.Element => {
+  switch (item.kind) {
+    case 'user':
+      return (
+        <Box
+          flexDirection="column"
+          marginTop={1}
+          borderStyle="round"
+          borderColor="cyan"
+          paddingX={1}
+        >
+          <Text color="cyan" bold>
+            user
+          </Text>
+          <Text>{item.text}</Text>
+        </Box>
+      );
+    case 'assistant': {
+      const author = item.author ?? 'assistant';
+      const color = colorForAgent(author);
+      return (
+        <Box
+          flexDirection="column"
+          marginTop={1}
+          borderStyle="round"
+          borderColor={color}
+          paddingX={1}
+        >
+          <Text color={color} bold>
+            {author}
+          </Text>
+          <Markdown text={item.text} />
+        </Box>
+      );
+    }
+    case 'thinking':
+      return (
+        <Box>
+          <Text color="magenta" dimColor italic>
+            ⌁ {item.text}
+          </Text>
+        </Box>
+      );
+    case 'tool': {
+      // Lines containing a `\u0001..\u0001` segment render the wrapped
+      // text bold (used to highlight tool names) and the rest dim cyan
+      // so multi-tool turns stay scannable.
+      const text = item.text;
+      const m = text.match(/^(.*?)\u0001(.+?)\u0001(.*)$/);
+      if (m) {
+        return (
+          <Box>
+            <Text color="cyan">{m[1]}</Text>
+            <Text color="cyan" bold>{m[2]}</Text>
+            <Text color="cyan">{m[3]}</Text>
+          </Box>
+        );
+      }
+      return (
+        <Box>
+          <Text color="cyan">{text}</Text>
+        </Box>
+      );
+    }
+    case 'system':
+      return (
+        <Box>
+          <Text color="gray" italic>
+            {item.text}
+          </Text>
+        </Box>
+      );
+    case 'error':
+      return (
+        <Box>
+          <Text color="red">{item.text}</Text>
+        </Box>
+      );
+  }
+};
+
+const OverlayBox = ({
+  title,
+  children
+}: {
+  title: string;
+  children: React.ReactNode;
+}): React.JSX.Element => (
+  <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginY={1}>
+    <Text bold color="cyan">
+      {title}
+    </Text>
+    <Box marginTop={1}>{children}</Box>
+  </Box>
+);
+
+/**
+ * Scrollable picker that supports non-selectable section headers. Arrow
+ * keys jump straight from item to item (skipping headers), the visible
+ * window auto-scrolls to keep the cursor in view, and headers render in
+ * a distinct color so users can see provider boundaries at a glance.
+ *
+ * We can't use `ink-select-input` for this — it treats every row as
+ * selectable, so the cursor would land on `── OpenRouter ──` rows and
+ * Enter would do nothing.
+ */
+type PickerEntry =
+  | { readonly kind: 'header'; readonly key: string; readonly label: string }
+  | {
+      readonly kind: 'item';
+      readonly key: string;
+      readonly label: string;
+      readonly value: string;
+      readonly pinned?: boolean;
+    };
+
+const GroupedPicker = ({
+  items,
+  limit,
+  onSelect
+}: {
+  readonly items: readonly PickerEntry[];
+  readonly limit: number;
+  readonly onSelect: (item: { value: string }) => void;
+}): React.JSX.Element => {
+  const itemEntryIdx = useMemo(() => {
+    const out: number[] = [];
+    items.forEach((e, i) => {
+      if (e.kind === 'item') out.push(i);
+    });
+    return out;
+  }, [items]);
+  const [cursor, setCursor] = useState(0);
+  const cur = itemEntryIdx.length === 0 ? 0 : Math.min(cursor, itemEntryIdx.length - 1);
+  const cursorEntry = itemEntryIdx[cur] ?? 0;
+  const [start, setStart] = useState(0);
+  const effLimit = Math.max(3, limit);
+  // Keep the cursor inside the visible window. Anchor headers above the
+  // cursor when possible so the user always knows which group they're in.
+  let winStart = start;
+  if (cursorEntry < winStart) winStart = cursorEntry;
+  if (cursorEntry >= winStart + effLimit) winStart = cursorEntry - effLimit + 1;
+  if (winStart > 0) {
+    // Scroll up one extra row to keep the section header visible if there
+    // is one immediately above the cursor.
+    const prev = items[winStart - 1];
+    if (prev && prev.kind === 'header' && winStart === cursorEntry) {
+      winStart -= 1;
+    }
+  }
+  winStart = Math.max(0, Math.min(winStart, Math.max(0, items.length - effLimit)));
+  if (winStart !== start) {
+    // Defer state update; React tolerates render-time setState only when
+    // it's the same value, but we want to persist the clamp.
+    queueMicrotask(() => setStart(winStart));
+  }
+  const winEnd = Math.min(items.length, winStart + effLimit);
+  useInput((_char, key) => {
+    if (itemEntryIdx.length === 0) return;
+    if (key.upArrow) {
+      setCursor((p) => (p <= 0 ? itemEntryIdx.length - 1 : p - 1));
+    } else if (key.downArrow) {
+      setCursor((p) => (p >= itemEntryIdx.length - 1 ? 0 : p + 1));
+    } else if (key.return) {
+      const idx = itemEntryIdx[cur];
+      if (idx === undefined) return;
+      const e = items[idx];
+      if (e && e.kind === 'item') onSelect({ value: e.value });
+    }
+  });
+  return (
+    <Box flexDirection="column">
+      {winStart > 0 && (
+        <Text color="gray" dimColor>
+          ↑ {winStart} above
+        </Text>
+      )}
+      {items.slice(winStart, winEnd).map((e, i) => {
+        const idx = winStart + i;
+        if (e.kind === 'header') {
+          return (
+            <Text key={e.key} color="magenta" bold>
+              {e.label}
+            </Text>
+          );
+        }
+        const sel = idx === cursorEntry;
+        const baseColor = e.pinned ? 'yellow' : undefined;
+        const color = sel ? 'green' : baseColor;
+        const prefix = sel ? '❯ ' : e.pinned ? '★ ' : '  ';
+        return (
+          <Text key={e.key} color={color} bold={e.pinned && !sel}>
+            {prefix}
+            {e.label}
+          </Text>
+        );
+      })}
+      {winEnd < items.length && (
+        <Text color="gray" dimColor>
+          ↓ {items.length - winEnd} below
+        </Text>
+      )}
+    </Box>
+  );
+};
+
+const StatusBar = ({
+  pendingExit,
+  streaming,
+  mode
+}: {
+  pendingExit: boolean;
+  streaming: boolean;
+  mode: Mode;
+}): React.JSX.Element => (
+  <Box>
+    <Text color="gray" dimColor>
+      Tab agent · Ctrl-O model · Ctrl-T think · Ctrl-P mode · PgUp/PgDn scroll · Ctrl-Y copy ·{' '}
+      {streaming ? 'Esc cancel' : '↵ send'} ·{' '}
+      {pendingExit ? <Text color="yellow">Ctrl-C again to exit</Text> : 'Ctrl-C ×2 exit'}
+    </Text>
+    {mode === 'autopilot' && (
+      <Text color="red" bold>
+        {'  '}⚠ AUTOPILOT
+      </Text>
+    )}
+  </Box>
+);
+
+const modeColor = (mode: Mode): string => {
+  switch (mode) {
+    case 'plan':
+      return 'yellow';
+    case 'build':
+      return 'green';
+    case 'autopilot':
+      return 'red';
+  }
+};
+
+interface SlashCommand {
+  readonly name: string;
+  readonly args?: string;
+  readonly summary: string;
+}
+
+const SLASH_COMMANDS: readonly SlashCommand[] = [
+  { name: 'help', summary: 'show this list' },
+  { name: 'clear', summary: 'clear the conversation' },
+  { name: 'history', summary: 'print the message history' },
+  { name: 'model', args: '<id>', summary: 'switch model (no arg → open picker)' },
+  { name: 'models', summary: 'open the model picker' },
+  { name: 'restart', args: 'models', summary: 'force-refresh the live model catalog (skip 24h cache)' },
+  { name: 'agent', args: '<name> [model]', summary: 'switch agent (or bind a model to it)' },
+  { name: 'agents', summary: 'list installed agents and their bound models' },
+  { name: 'mode', args: 'plan|build|autopilot', summary: 'set permission mode' },
+  { name: 'thinking', args: 'off|low|medium|high|xhigh', summary: 'set reasoning effort (model-aware)' },
+  { name: 'config', summary: 'open the config menu (API keys, OAuth, integrations)' },
+  { name: 'mcps', summary: 'list configured MCP servers' },
+  { name: 'exit', summary: 'leave atlas' }
+];
+
+const SLASH_HELP = SLASH_COMMANDS.map((c) => {
+  const head = `/${c.name}${c.args ? ` ${c.args}` : ''}`;
+  return `${head.padEnd(28)} ${c.summary}`;
+}).join('\n');
+
+/**
+ * Returns the slash commands matching the current input.
+ *
+ *   ""        → []                (no popup unless input starts with /)
+ *   "/"       → all commands      (browse the full list)
+ *   "/he"     → help              (prefix-filtered)
+ *   "/help "  → []                (already complete + space → suppress popup)
+ */
+const matchSlashCommands = (input: string): readonly SlashCommand[] => {
+  if (!input.startsWith('/')) return [];
+  const head = input.slice(1);
+  if (head.includes(' ')) return [];
+  if (head.length === 0) return SLASH_COMMANDS;
+  const lower = head.toLowerCase();
+  return SLASH_COMMANDS.filter((c) => c.name.startsWith(lower));
+};
+
+/**
+ * Minimal controlled text input that respects modifier keys. Unlike
+ * `ink-text-input` we explicitly drop characters whose ctrl/meta modifier
+ * is set, so global shortcuts like Ctrl-T / Ctrl-O / Ctrl-P don't leak
+ * the literal letter into the typed value.
+ *
+ * Supports: printable insert, Backspace/Delete, ←/→, Home/End, Enter (submit).
+ * Cursor is rendered inline with a reverse-color block.
+ */
+const TextInput = ({
+  value,
+  onChange,
+  onSubmit,
+  placeholder,
+  mask,
+  focus = true
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  onSubmit?: (final: string) => void;
+  placeholder?: string;
+  mask?: string;
+  focus?: boolean;
+}): React.JSX.Element => {
+  const [cursor, setCursor] = useState<number>(value.length);
+
+  // Keep cursor inside the value when it changes externally (e.g. slash completion).
+  useEffect(() => {
+    setCursor((c) => Math.min(c, value.length));
+  }, [value.length]);
+
+  useInput(
+    (char, key) => {
+      // Alt+Enter / Option+Enter inserts a newline. Most terminals send
+      // this as ESC + CR, which Ink surfaces as `key.meta && key.return`.
+      if (key.meta && key.return) {
+        const next = value.slice(0, cursor) + '\n' + value.slice(cursor);
+        setCursor(cursor + 1);
+        onChange(next);
+        return;
+      }
+      // Modern terminals with kitty / xterm modifyOtherKeys send a CSI-u
+      // sequence for Shift+Enter (e.g. "\x1b[13;2u"). Ink doesn't decode
+      // it, so it arrives in `char`. Catch it (and a few common variants)
+      // and convert to a newline insert instead of letting the raw escape
+      // get pasted into the textbox as garbage.
+      if (char && /\x1b\[13;[0-9]+u/.test(char)) {
+        const next = value.slice(0, cursor) + '\n' + value.slice(cursor);
+        setCursor(cursor + 1);
+        onChange(next);
+        return;
+      }
+      // Ignore anything else with a modifier — those are global shortcuts.
+      if (key.ctrl || key.meta) return;
+      if (key.return) {
+        onSubmit?.(value);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        if (cursor === 0) return;
+        const next = value.slice(0, cursor - 1) + value.slice(cursor);
+        setCursor(cursor - 1);
+        onChange(next);
+        return;
+      }
+      if (key.leftArrow) {
+        setCursor((c) => Math.max(0, c - 1));
+        return;
+      }
+      if (key.rightArrow) {
+        setCursor((c) => Math.min(value.length, c + 1));
+        return;
+      }
+      // Up/Down arrows are reserved for parent (slash palette / history).
+      if (key.upArrow || key.downArrow) return;
+      // Tab is reserved for parent (slash completion / agent cycle).
+      if (key.tab) return;
+      if (key.escape) return;
+      // Insert printable text. `char` may contain a multi-char paste.
+      if (char && char.length > 0) {
+        // Strip CSI-u modifier sequences that snuck through (Shift+Enter
+        // already handled above, but other Shift+key combos can produce
+        // similar escapes that would otherwise become visible garbage).
+        let cleaned = char.replace(/\x1b\[\d+(;\d+)?u/g, '');
+        // Preserve real newlines in pastes (multi-line clipboard content)
+        // by stripping only the *other* control chars.
+        cleaned = cleaned.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, '');
+        if (cleaned.length === 0) return;
+        const next = value.slice(0, cursor) + cleaned + value.slice(cursor);
+        setCursor(cursor + cleaned.length);
+        onChange(next);
+      }
+    },
+    { isActive: focus }
+  );
+
+  const display = mask ? mask.repeat(value.length) : value;
+  if (value.length === 0 && placeholder) {
+    return <Text color="gray">{placeholder}</Text>;
+  }
+  // Render with an inline cursor block.
+  const before = display.slice(0, cursor);
+  const at = display.slice(cursor, cursor + 1) || ' ';
+  const after = display.slice(cursor + 1);
+  return (
+    <Text>
+      {before}
+      <Text inverse>{at}</Text>
+      {after}
+    </Text>
+  );
+};
+
+const SlashAutocomplete = ({
+  matches,
+  activeIdx
+}: {
+  matches: readonly SlashCommand[];
+  activeIdx: number;
+}): React.JSX.Element | null => {
+  if (matches.length === 0) return null;
+  // Window the visible slice so the highlighted row stays on screen
+  // when there are more than 8 matches.
+  const MAX = 8;
+  const start =
+    matches.length <= MAX
+      ? 0
+      : Math.min(Math.max(0, activeIdx - Math.floor(MAX / 2)), matches.length - MAX);
+  const visible = matches.slice(start, start + MAX);
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginY={0}>
+      {visible.map((c, i) => {
+        const idx = start + i;
+        const active = idx === activeIdx;
+        return (
+          <Box key={c.name}>
+            <Text color={active ? 'cyanBright' : 'gray'}>{active ? '› ' : '  '}</Text>
+            <Text color={active ? 'cyanBright' : 'cyan'} bold={active}>
+              /{c.name}
+            </Text>
+            {c.args && <Text color="gray">{` ${c.args}`}</Text>}
+            <Text color="gray">{`  ${c.summary}`}</Text>
+          </Box>
+        );
+      })}
+      {matches.length > MAX && (
+        <Text color="gray" dimColor>
+          {`${activeIdx + 1}/${matches.length} · ↑↓ select · Tab complete · Enter run`}
+        </Text>
+      )}
+      {matches.length <= MAX && matches.length > 1 && (
+        <Text color="gray" dimColor>
+          ↑↓ select · Tab complete · Enter run
+        </Text>
+      )}
+    </Box>
+  );
+};
+
+/**
+ * The Atlas startup splash — a tiny ASCII octopus next to the wordmark.
+ * Drawn once at the top of the transcript; not part of the chat history.
+ */
+const Splash = ({ defaultModel }: { defaultModel: string }): React.JSX.Element => (
+  <Box flexDirection="row" marginY={1} paddingX={1}>
+    <Box flexDirection="column" marginRight={2}>
+      <Text color="blue">{`     ___`}</Text>
+      <Text color="blue">{`   /     \\`}</Text>
+      <Text color="blueBright">{`  | () () |`}</Text>
+      <Text color="blue">{`   \\  ^  /`}</Text>
+      <Text color="cyan">{`   //|||\\\\`}</Text>
+      <Text color="cyan">{`  // | | \\\\`}</Text>
+    </Box>
+    <Box flexDirection="column">
+      <Text color="cyanBright" bold>{`Atlas CLI`}</Text>
+      <Text color="gray">spec-driven development crew</Text>
+      <Box marginTop={1} flexDirection="column">
+        <Text color="gray">model · <Text color="white">{defaultModel}</Text></Text>
+        <Text color="gray">type <Text color="cyan">/</Text> for commands · <Text color="cyan">Tab</Text> to switch agent</Text>
+        <Text color="gray">press <Text color="cyan">Ctrl-C</Text> twice to exit</Text>
+      </Box>
+    </Box>
+  </Box>
+);
+
+const truncate = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0, n)}…`);
+const truncateArgs = (s: string): string => truncate(s.replace(/\s+/g, ' '), 80);
+
+/** Render a millisecond duration as a compact human label (e.g. "1.2s", "340ms"). */
+const formatElapsed = (ms: number): string => {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.floor((ms % 60_000) / 1000);
+  return `${minutes}m${seconds.toString().padStart(2, '0')}s`;
+};
+
+/** Remove every `<atlas:question>...</atlas:question>` block from a string. */
+const stripInteractionBlocks = (s: string): string =>
+  s.replace(/<atlas:question>[\s\S]*?<\/atlas:question>/g, '').trim();
+
+/**
+ * Strip *complete* interaction blocks and also hide an *in-progress*
+ * (still-streaming) one — i.e. truncate at the first opening tag if its
+ * closer hasn't arrived yet. Keeps the live transcript free of raw
+ * protocol noise while the model is mid-question.
+ */
+const renderVisibleAssistant = (buf: string): string => {
+  const stripped = buf.replace(/<atlas:question>[\s\S]*?<\/atlas:question>/g, '');
+  const open = stripped.indexOf('<atlas:question>');
+  return (open >= 0 ? stripped.slice(0, open) : stripped).trimEnd();
+};
+
+/**
+ * Best-effort browser opener. We don't `await` the child process — the
+ * shell command exits immediately after handing off to the OS opener.
+ * Failures are non-fatal: the caller still prints the URL so the user
+ * can copy it manually.
+ */
+const openInBrowser = async (url: string): Promise<void> => {
+  const plat = platform();
+  let cmd: string;
+  let args: string[];
+  if (plat === 'darwin') {
+    cmd = 'open';
+    args = [url];
+  } else if (plat === 'win32') {
+    cmd = 'cmd';
+    args = ['/c', 'start', '""', url];
+  } else {
+    cmd = 'xdg-open';
+    args = [url];
+  }
+  try {
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+    child.on('error', () => {
+      /* swallow — caller still has the URL on screen */
+    });
+    child.unref();
+  } catch {
+    /* swallow */
+  }
+};
+
+/**
+ * Best-effort fuzzy match: given user input like "depsek4" and a list
+ * of candidate model ids, return the closest match (case-insensitive,
+ * tolerant of dropped/transposed chars). Returns `null` if nothing is
+ * within reasonable edit distance.
+ */
+const resolveFuzzyModel = (
+  query: string,
+  candidates: readonly string[]
+): string | null => {
+  if (candidates.length === 0) return null;
+  const q = query.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (q.length === 0) return null;
+  // 1. Exact (post-normalize) match.
+  for (const c of candidates) {
+    if (c.toLowerCase().replace(/[^a-z0-9]/g, '') === q) return c;
+  }
+  // 2. Normalized substring — query appears inside the candidate id.
+  const subs = candidates.filter((c) =>
+    c.toLowerCase().replace(/[^a-z0-9]/g, '').includes(q)
+  );
+  if (subs.length > 0) {
+    // Prefer the shortest matching id (closest fit).
+    return subs.reduce((a, b) => (a.length <= b.length ? a : b));
+  }
+  // 3. Edit-distance fallback — pick the closest within distance ≤ q/3.
+  let best: { id: string; d: number } | null = null;
+  for (const c of candidates) {
+    const norm = c.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const d = levenshtein(q, norm);
+    if (best === null || d < best.d) best = { id: c, d };
+  }
+  if (best && best.d <= Math.max(2, Math.floor(q.length / 3))) return best.id;
+  return null;
+};
+
+const levenshtein = (a: string, b: string): number => {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const prev = new Array<number>(b.length + 1);
+  const cur = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(
+        (cur[j - 1] ?? 0) + 1,
+        (prev[j] ?? 0) + 1,
+        (prev[j - 1] ?? 0) + cost
+      );
+    }
+    for (let j = 0; j <= b.length; j++) prev[j] = cur[j] ?? 0;
+  }
+  return prev[b.length] ?? 0;
+};
+
+// Re-export for tests.
+export { THINKING_CYCLE };

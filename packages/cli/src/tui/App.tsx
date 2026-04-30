@@ -29,6 +29,7 @@ import SelectInput from 'ink-select-input';
 import Spinner from 'ink-spinner';
 import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
+import { runAiAddMcp, type AiAddMcpEvent } from './mcp-ai-add.js';
 import {
   ATLAS_VERSION,
   DEFAULT_BUILTIN_MCP_SERVERS,
@@ -186,6 +187,26 @@ type Overlay =
       readonly kind: 'mcp-manage';
       readonly serverName: string;
       readonly statusLine?: string;
+    }
+  | {
+      /** Custom-add menu — manual instructions vs AI-assisted prompt. */
+      readonly kind: 'mcp-custom-menu';
+    }
+  | {
+      /** Free-form text input: the user describes which MCP they want
+       *  and the constrained AI harness adds it. */
+      readonly kind: 'mcp-custom-prompt';
+      readonly draft: string;
+    }
+  | {
+      /** AI harness is running. Streams events into the overlay. Once a
+       *  successful add lands, transitions to mcp-restart-prompt. */
+      readonly kind: 'mcp-custom-running';
+      readonly userPrompt: string;
+      readonly events: readonly AiAddMcpEvent[];
+      readonly currentText: string;
+      readonly finished: boolean;
+      readonly error?: string;
     }
   | {
       readonly kind: 'session-picker';
@@ -1217,7 +1238,13 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     }
     if (overlay.kind !== 'none') {
       // Esc closes any non-blocking overlay (setup, picker, autopilot).
-      if (key.escape) closeOverlay();
+      if (key.escape) {
+        // Cancel the AI add-mcp loop if it's running, then close.
+        if (overlay.kind === 'mcp-custom-running' && !overlay.finished) {
+          aiAddMcpAbortRef.current?.abort();
+        }
+        closeOverlay();
+      }
       return;
     }
     // Slash command palette navigation. When the input starts with `/`
@@ -1522,6 +1549,13 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   // `runTui.ts`. The user is told to restart.
   const onMcpPick = useCallback(
     (item: { value: string }) => {
+      // Custom flow — server isn't in the curated catalog. Open a
+      // sub-menu where the user picks between manual instructions or
+      // an AI-assisted add.
+      if (item.value === '__custom__') {
+        setOverlay({ kind: 'mcp-custom-menu' });
+        return;
+      }
       const sug = findSuggestion(item.value);
       if (!sug) {
         closeOverlay();
@@ -2040,6 +2074,94 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     [props.config, pushItem, builtinNames]
   );
 
+  // AbortController for the running AI add-mcp harness, so Esc can
+  // cancel without leaving the loop streaming in the background.
+  const aiAddMcpAbortRef = useRef<AbortController | null>(null);
+
+  const launchAiAddMcp = useCallback(
+    (userPrompt: string): void => {
+      const trimmed = userPrompt.trim();
+      if (!trimmed) return;
+      if (!provider) {
+        pushItem('error', 'no provider configured \u2014 run /setup first');
+        closeOverlay();
+        return;
+      }
+      const cfg = props.config;
+      if (!cfg) {
+        pushItem('error', 'no config loaded');
+        closeOverlay();
+        return;
+      }
+      const ctrl = new AbortController();
+      aiAddMcpAbortRef.current?.abort();
+      aiAddMcpAbortRef.current = ctrl;
+      setOverlay({
+        kind: 'mcp-custom-running',
+        userPrompt: trimmed,
+        events: [],
+        currentText: '',
+        finished: false
+      });
+      void (async (): Promise<void> => {
+        let added: { name: string; path: string } | null = null;
+        try {
+          for await (const ev of runAiAddMcp({
+            provider,
+            model,
+            userPrompt: trimmed,
+            currentConfig: cfg,
+            signal: ctrl.signal
+          })) {
+            if (ctrl.signal.aborted) return;
+            setOverlay((cur) =>
+              cur.kind === 'mcp-custom-running'
+                ? {
+                    ...cur,
+                    events: [...cur.events, ev],
+                    currentText:
+                      ev.type === 'text' ? cur.currentText + ev.text : cur.currentText
+                  }
+                : cur
+            );
+            if (ev.type === 'added') {
+              added = { name: ev.serverName, path: ev.configPath };
+            }
+            if (ev.type === 'error') {
+              setOverlay((cur) =>
+                cur.kind === 'mcp-custom-running'
+                  ? { ...cur, finished: true, error: ev.message }
+                  : cur
+              );
+              return;
+            }
+            if (ev.type === 'done') {
+              setOverlay((cur) =>
+                cur.kind === 'mcp-custom-running' ? { ...cur, finished: true } : cur
+              );
+              break;
+            }
+          }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setOverlay((cur) =>
+            cur.kind === 'mcp-custom-running' ? { ...cur, finished: true, error: msg } : cur
+          );
+          return;
+        }
+        if (added) {
+          pushItem('system', `AI helper added MCP server '${added.name}' to ${added.path}.`);
+          setOverlay({
+            kind: 'mcp-restart-prompt',
+            serverName: added.name,
+            configPath: added.path
+          });
+        }
+      })();
+    },
+    [provider, model, props.config, pushItem, closeOverlay]
+  );
+
   const onSetupKeyChange = useCallback(
     (value: string) => {
       if (overlay.kind !== 'setup') return;
@@ -2287,6 +2409,12 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         return 16;
       case 'mcp-manage':
         return 14;
+      case 'mcp-custom-menu':
+        return 12;
+      case 'mcp-custom-prompt':
+        return 12;
+      case 'mcp-custom-running':
+        return 18;
       case 'none':
       default:
         return 0;
@@ -2763,19 +2891,27 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       {overlay.kind === 'mcp-add' && overlay.stage === 'pick' && (
         <OverlayBox title="Add MCP server (pick from suggested catalog)">
           <SelectInput
-            items={MCP_SUGGESTIONS.map((s) => {
-              const runtime = s.transport === 'http' ? 'http' : (s.prerequisite.label ?? s.prerequisite.bin);
-              const installed = props.config?.mcp.servers.some((cs) => cs.name === s.name) ?? false;
-              // Use SetupMenuItem's `\u0001` sentinel to render the
-              // `\u2022 connected` tail in green when already added.
-              const tail = installed ? ' \u0001\u2022 connected' : '';
-              return {
-                key: s.id,
-                label: `${s.name.padEnd(14)} [${s.pricing.padEnd(8)}] [${runtime}]  ${s.summary}${tail}`,
-                value: s.id
-              };
-            })}
-            itemComponent={SetupMenuItem}
+            items={(() => {
+              const installed = new Set(
+                (props.config?.mcp.servers ?? []).map((cs) => cs.name)
+              );
+              const rows = MCP_SUGGESTIONS
+                .filter((s) => !installed.has(s.name))
+                .map((s) => {
+                  const runtime = s.transport === 'http' ? 'http' : (s.prerequisite.label ?? s.prerequisite.bin);
+                  return {
+                    key: s.id,
+                    label: `${s.name.padEnd(14)} [${s.pricing.padEnd(8)}] [${runtime}]  ${s.summary}`,
+                    value: s.id
+                  };
+                });
+              rows.push({
+                key: '__custom__',
+                label: 'custom…     [byo]      [·]      Add a server not in this list (manual or AI-assisted)',
+                value: '__custom__'
+              });
+              return rows;
+            })()}
             onSelect={onMcpPick}
           />
           <Box marginTop={1} flexDirection="column">
@@ -3146,6 +3282,184 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 </Text>
               </Box>
             ) : null}
+          </OverlayBox>
+        );
+      })()}
+      {overlay.kind === 'mcp-custom-menu' && (
+        <OverlayBox title="Add a custom MCP server">
+          <Box flexDirection="column" marginBottom={1}>
+            <Text color="gray">
+              {'Pick how you want to add a server that isn\u2019t in the curated list.'}
+            </Text>
+          </Box>
+          <SelectInput
+            items={[
+              {
+                key: 'ai',
+                label: 'Ask AI \u2014 describe the MCP server, the model adds it for you',
+                value: 'ai'
+              },
+              {
+                key: 'manual',
+                label: 'Manual \u2014 show me how to edit ~/.atlas/config.yaml',
+                value: 'manual'
+              },
+              { key: 'back', label: 'Back to catalog', value: 'back' },
+              { key: 'cancel', label: 'Cancel', value: 'cancel' }
+            ]}
+            onSelect={(item) => {
+              if (item.value === 'ai') {
+                setInput('');
+                setOverlay({ kind: 'mcp-custom-prompt', draft: '' });
+                return;
+              }
+              if (item.value === 'manual') {
+                pushItem(
+                  'system',
+                  [
+                    'Manual MCP server setup:',
+                    '',
+                    '  1. Open ~/.atlas/config.yaml',
+                    '  2. Under `mcp.servers:` add an entry like:',
+                    '',
+                    '       - name: my-server',
+                    '         transport: stdio   # or http',
+                    '         command: npx       # for stdio',
+                    '         args: [-y, "@vendor/mcp-server"]',
+                    '         env: {}',
+                    '         enabled: true',
+                    '',
+                    '     For HTTP servers use `url:` and optional `headers:` instead.',
+                    '  3. Restart atlas to load the new server.'
+                  ].join('\n')
+                );
+                closeOverlay();
+                return;
+              }
+              if (item.value === 'back') {
+                setOverlay({ kind: 'mcp-add', stage: 'pick' });
+                return;
+              }
+              closeOverlay();
+            }}
+          />
+        </OverlayBox>
+      )}
+      {overlay.kind === 'mcp-custom-prompt' && (
+        <OverlayBox title="Ask AI to add an MCP server">
+          <Box flexDirection="column" marginBottom={1}>
+            <Text color="gray">
+              {'Describe the MCP server you want to install (e.g. \u201cadd the linear mcp server\u201d).'}
+            </Text>
+            <Text color="gray">
+              {'The helper is sandboxed: it can only fetch web pages and add ONE MCP entry.'}
+            </Text>
+          </Box>
+          <Box>
+            <Text color="cyan">{'\u203a '}</Text>
+            <TextInput
+              value={overlay.draft}
+              onChange={(value) => setOverlay({ kind: 'mcp-custom-prompt', draft: value })}
+              onSubmit={(value) => launchAiAddMcp(value)}
+            />
+          </Box>
+          <Box marginTop={1}>
+            <Text color="gray">{'\u21b5 to run \u00b7 Esc to cancel'}</Text>
+          </Box>
+        </OverlayBox>
+      )}
+      {overlay.kind === 'mcp-custom-running' && (() => {
+        const ev = overlay;
+        const lastTool = [...ev.events].reverse().find(
+          (e) => e.type === 'tool_call' || e.type === 'tool_ok' || e.type === 'tool_error'
+        );
+        let statusLabel = 'thinking\u2026';
+        let statusColor: 'cyan' | 'green' | 'red' | 'yellow' = 'cyan';
+        if (ev.error) {
+          statusLabel = `error: ${ev.error}`;
+          statusColor = 'red';
+        } else if (ev.finished) {
+          statusLabel = 'finished';
+          statusColor = 'green';
+        } else if (lastTool?.type === 'tool_call') {
+          statusLabel = `running tool: ${lastTool.name}\u2026`;
+          statusColor = 'yellow';
+        } else if (lastTool?.type === 'tool_ok') {
+          statusLabel = `\u2713 ${lastTool.name}`;
+          statusColor = 'green';
+        } else if (lastTool?.type === 'tool_error') {
+          statusLabel = `\u2717 ${lastTool.name}: ${lastTool.message}`;
+          statusColor = 'red';
+        }
+        const toolLines = ev.events
+          .filter((e) => e.type === 'tool_call' || e.type === 'tool_ok' || e.type === 'tool_error')
+          .slice(-6)
+          .map((e, i) => {
+            if (e.type === 'tool_call') {
+              // input arrives as a JSON-encoded string from the model.
+              // Best-effort parse for a friendlier preview.
+              let url = '';
+              if (e.name === 'web_fetch' && typeof e.input === 'string') {
+                try {
+                  const parsed = JSON.parse(e.input) as { url?: unknown };
+                  if (typeof parsed.url === 'string') url = ` ${parsed.url}`;
+                } catch {
+                  /* ignore */
+                }
+              }
+              return (
+                <Text key={`tc${i}`} color="gray">
+                  {`  \u2192 ${e.name}${url}`}
+                </Text>
+              );
+            }
+            if (e.type === 'tool_ok') {
+              return (
+                <Text key={`to${i}`} color="green">
+                  {`  \u2713 ${e.name}`}
+                </Text>
+              );
+            }
+            return (
+              <Text key={`te${i}`} color="red">
+                {`  \u2717 ${e.name}: ${e.message}`}
+              </Text>
+            );
+          });
+        const tail = ev.currentText.length > 240
+          ? '\u2026' + ev.currentText.slice(-240)
+          : ev.currentText;
+        return (
+          <OverlayBox title="AI helper \u00b7 adding MCP server">
+            <Box flexDirection="column" marginBottom={1}>
+              <Text>
+                <Text color="gray">prompt: </Text>
+                <Text>{ev.userPrompt}</Text>
+              </Text>
+              <Text>
+                <Text color="gray">status: </Text>
+                <Text color={statusColor}>{statusLabel}</Text>
+              </Text>
+            </Box>
+            {toolLines.length > 0 ? (
+              <Box flexDirection="column" marginBottom={1}>
+                {toolLines}
+              </Box>
+            ) : null}
+            {tail.length > 0 ? (
+              <Box flexDirection="column" marginBottom={1}>
+                <Text color="gray">model:</Text>
+                <Text>{tail}</Text>
+              </Box>
+            ) : null}
+            {ev.finished ? (
+              <SelectInput
+                items={[{ key: 'close', label: 'Close', value: 'close' }]}
+                onSelect={() => closeOverlay()}
+              />
+            ) : (
+              <Text color="gray">{'Esc to cancel'}</Text>
+            )}
           </OverlayBox>
         );
       })()}

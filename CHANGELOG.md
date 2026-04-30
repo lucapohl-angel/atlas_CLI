@@ -7,6 +7,22 @@ semantic versioning.
 ## [Unreleased]
 
 ### Added — Phase 12 polish (post-1.0 wiring)
+- **Custom MCP server flow with sandboxed AI helper** — the `/mcps add`
+  picker now ends with a `custom…` row that opens a sub-menu:
+  *Manual* prints concise YAML instructions for `~/.atlas/config.yaml`,
+  and *Ask AI* opens a freeform prompt ("add the linear mcp server")
+  that runs a tightly-scoped agent loop. The harness has exactly two
+  tools — `web_fetch` (HTTPS only, 16 KB body cap) and
+  `add_mcp_server` (single call, writes one entry into the user
+  config) — with a system prompt forbidding anything else (no shell,
+  no other research, refuses unrelated requests). Capped at 8 rounds.
+  Once the entry lands, transitions straight into the existing
+  restart-required overlay. Esc cancels the loop.
+- **Already-installed catalog entries are hidden from `/mcps add`** —
+  picking from the curated list no longer shows servers you've already
+  configured (use `/mcps` to manage them instead). Replaces the prior
+  green "connected" tag.
+
 - **`/mcps` is now an interactive overlay, not a chat dump** — the
   bare `/mcps` command opens a TUI list of all configured servers
   with a green dot for connected (and tool count), yellow circle

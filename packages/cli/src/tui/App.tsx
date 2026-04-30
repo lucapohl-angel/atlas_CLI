@@ -34,6 +34,12 @@ import { platform } from 'node:os';
 import { runAiAddMcp, type AiAddMcpEvent } from './mcp-ai-add.js';
 import { runGithubDeviceFlow } from './github-oauth.js';
 import {
+  buildReflectionMessages,
+  describeLearnReason,
+  parseLearnedSkillDraft,
+  shouldOfferLearn
+} from './learn.js';
+import {
   ATLAS_VERSION,
   DEFAULT_BUILTIN_MCP_SERVERS,
   MCP_SUGGESTIONS,
@@ -70,7 +76,8 @@ import {
   buildSystemPrompt,
   isFrameworkAgent,
   estimateCost,
-  formatCost
+  formatCost,
+  saveLearnedSkill
 } from '@atlas/core';
 
 export type ThinkingEffort = 'off' | ReasoningEffort | 'xhigh';
@@ -84,6 +91,15 @@ interface TranscriptItem {
   /** Display name for the speaker (e.g. 'atlas', 'hermes'). */
   readonly author?: string;
 }
+
+/** Draft skill produced by the reflection sub-call, awaiting user confirmation. */
+interface LearnedSkillDraft {
+  readonly name: string;
+  readonly description: string;
+  readonly triggers: readonly string[];
+  readonly body: string;
+}
+
 
 export interface TuiAppProps {
   /** When null, the App opens with a setup overlay until the user configures a key. */
@@ -228,6 +244,14 @@ type Overlay =
       readonly entries: readonly { id: string; updatedAt: string }[];
     }
   | {
+      /** Self-improvement loop: confirm whether to promote a draft into a learned skill. */
+      readonly kind: 'learn-confirm';
+      readonly stage: 'reflecting' | 'review' | 'saving';
+      readonly reason: string;
+      readonly draft?: LearnedSkillDraft;
+      readonly error?: string;
+    }
+  | {
       readonly kind: 'setup';
       readonly stage: 'menu' | 'key' | 'info';
       readonly draftKey: string;
@@ -369,6 +393,17 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   const transcriptKey = useRef(0);
   const ctrlCTimer = useRef<NodeJS.Timeout | null>(null);
 
+  // Self-improvement loop: per-turn counters used by the heuristic that
+  // decides whether to offer to distill a "learned skill" from the turn.
+  // Reset at the start of each submitMessage; updated during the loop.
+  const turnRoundsRef = useRef(0);
+  const turnToolErrorsRef = useRef(0);
+  const lastUserMessageRef = useRef('');
+  /** Inflight reflection abort controller (Esc cancels it). */
+  const reflectAbortRef = useRef<AbortController | null>(null);
+  /** Soft toggle: user can disable auto-learn via `/learn off`. Defaults on. */
+  const learnEnabledRef = useRef<boolean>(true);
+
   // Auto-compaction live overrides. Defaults come from `props.config.compaction`
   // (loaded from ~/.atlas/config.yaml). `/compact` slash commands mutate
   // these in place AND persist via saveConfig so the choice sticks.
@@ -415,6 +450,176 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       setScrollOffset(0);
     },
     []
+  );
+
+  /**
+   * Replace the visible transcript with items reconstructed from a
+   * persisted Message[]. Used by /resume so the user actually sees
+   * their prior conversation, not just an empty screen.
+   *
+   * Mapping:
+   *  - user        → 'user' bubble
+   *  - assistant + content   → 'assistant' bubble
+   *  - assistant + toolCalls → one 'tool' line per call (name + args summary)
+   *  - tool                  → 'tool' line with the result (truncated)
+   *  - system                → skipped (system prompt is regenerated each turn)
+   */
+  const hydrateTranscriptFromMessages = useCallback(
+    (msgs: readonly Message[], authorHint?: string): void => {
+      const items: TranscriptItem[] = [];
+      let k = transcriptKey.current;
+      const push = (
+        kind: TranscriptItem['kind'],
+        text: string,
+        author?: string
+      ): void => {
+        k += 1;
+        items.push({ key: `t${k}`, kind, text, ...(author ? { author } : {}) });
+      };
+      for (const m of msgs) {
+        if (m.role === 'system') continue;
+        if (m.role === 'user') {
+          if (m.content.trim()) push('user', m.content);
+          continue;
+        }
+        if (m.role === 'assistant') {
+          if (m.content.trim()) push('assistant', m.content, authorHint);
+          for (const tc of m.toolCalls ?? []) {
+            const argPreview = tc.arguments.length > 120
+              ? `${tc.arguments.slice(0, 117)}…`
+              : tc.arguments;
+            push('tool', `→ ${tc.name}(${argPreview})`);
+          }
+          continue;
+        }
+        if (m.role === 'tool') {
+          const preview = m.content.length > 400
+            ? `${m.content.slice(0, 397)}…`
+            : m.content;
+          push('tool', `← ${m.name ?? 'tool'}: ${preview}`);
+          continue;
+        }
+      }
+      transcriptKey.current = k;
+      setTranscript(items);
+      setScrollOffset(0);
+    },
+    []
+  );
+
+  /**
+   * Self-improvement loop: kick off a reflection sub-call that asks the
+   * model whether the just-finished turn contains a procedurally
+   * reusable lesson worth saving as a SKILL.md. The reflection runs
+   * against the active provider via a single non-tool stream. When a
+   * draft comes back, it surfaces in the `learn-confirm` overlay so
+   * the user can Save / Edit / Discard. Esc cancels the in-flight call.
+   */
+  const launchLearnReflection = useCallback(
+    async (reason: string): Promise<void> => {
+      if (!provider) {
+        pushItem('error', 'cannot reflect: no provider configured');
+        return;
+      }
+      // Cancel any prior reflection still streaming.
+      reflectAbortRef.current?.abort();
+      const ac = new AbortController();
+      reflectAbortRef.current = ac;
+      setOverlay({ kind: 'learn-confirm', stage: 'reflecting', reason });
+      const effectiveModel = agentModels.get(activeAgent.name) ?? model;
+      const reflectionMsgs = buildReflectionMessages(messagesRef.current, reason);
+      let buf = '';
+      try {
+        const stream = provider.stream({
+          model: effectiveModel,
+          messages: reflectionMsgs,
+          tools: [],
+          signal: ac.signal
+        });
+        for await (const ev of stream) {
+          if (ev.type === 'delta') buf += ev.text;
+          else if (ev.type === 'error') {
+            setOverlay({
+              kind: 'learn-confirm',
+              stage: 'review',
+              reason,
+              error: ev.error.message
+            });
+            return;
+          }
+          // 'thinking' / 'tool_call*' / 'done' are not interesting here.
+        }
+      } catch (e) {
+        if (ac.signal.aborted) {
+          setOverlay({ kind: 'none' });
+          return;
+        }
+        setOverlay({
+          kind: 'learn-confirm',
+          stage: 'review',
+          reason,
+          error: (e as Error).message
+        });
+        return;
+      }
+      const parsed = parseLearnedSkillDraft(buf);
+      if (!parsed.ok) {
+        setOverlay({
+          kind: 'learn-confirm',
+          stage: 'review',
+          reason,
+          error: parsed.error
+        });
+        return;
+      }
+      if (parsed.draft === null) {
+        // The model decided there was nothing reusable. Just close
+        // silently — no need to bother the user.
+        setOverlay({ kind: 'none' });
+        return;
+      }
+      setOverlay({
+        kind: 'learn-confirm',
+        stage: 'review',
+        reason,
+        draft: parsed.draft
+      });
+    },
+    [provider, model, agentModels, activeAgent, pushItem]
+  );
+
+  /**
+   * Persist the confirmed draft as a learned skill: writes
+   * `~/.atlas/skills/<slug>/SKILL.md` with `kind: learned` and adds
+   * the skill to the live registry so framework agents see it on
+   * their next turn (without restarting the CLI).
+   */
+  const saveLearnedSkillDraft = useCallback(
+    async (draft: LearnedSkillDraft): Promise<void> => {
+      setOverlay((o) =>
+        o.kind === 'learn-confirm' ? { ...o, stage: 'saving' } : o
+      );
+      const r = await saveLearnedSkill({
+        name: draft.name,
+        description: draft.description,
+        triggers: draft.triggers,
+        body: draft.body,
+        createdBy: activeAgent.name,
+        createdFromSession: sessionRef.current?.id ?? undefined,
+        createdReason:
+          overlay.kind === 'learn-confirm' ? overlay.reason : undefined
+      });
+      if (!r.ok) {
+        setOverlay((o) =>
+          o.kind === 'learn-confirm' ? { ...o, stage: 'review', error: r.error.message } : o
+        );
+        return;
+      }
+      props.skills.add(r.value);
+      setOverlay({ kind: 'none' });
+      pushItem('system', `Saved learned skill: ${r.value.name} — ${r.value.description}`);
+    },
+    [activeAgent, props.skills, pushItem, overlay]
   );
 
   // Switch agent — reset per-agent defaults but keep transcript + history.
@@ -525,6 +730,32 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             setTranscript([]);
             setUsage(null);
             return;
+          case 'learn': {
+            const sub = (rest[0] ?? '').toLowerCase();
+            if (sub === 'on') {
+              learnEnabledRef.current = true;
+              pushItem('system', 'auto-learn is ON — Atlas will offer to distill skills after hard turns.');
+              return;
+            }
+            if (sub === 'off') {
+              learnEnabledRef.current = false;
+              pushItem('system', 'auto-learn is OFF.');
+              return;
+            }
+            if (sub === 'status') {
+              pushItem('system', `auto-learn: ${learnEnabledRef.current ? 'on' : 'off'}`);
+              return;
+            }
+            // No subcommand → manually trigger a reflection on the current
+            // transcript (useful when the heuristic didn't fire but the
+            // user knows something reusable just happened).
+            if (messagesRef.current.length === 0) {
+              pushItem('error', 'nothing to learn from yet.');
+              return;
+            }
+            void launchLearnReflection('manual /learn');
+            return;
+          }
           case 'history':
             pushItem(
               'system',
@@ -886,6 +1117,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 sessionRef.current = r.value;
                 messagesRef.current = [...r.value.messages];
                 setSessionId(r.value.id);
+                hydrateTranscriptFromMessages(
+                  r.value.messages,
+                  r.value.agent ?? activeAgent.name
+                );
                 pushItem(
                   'system',
                   `Resumed session ${r.value.id} (${r.value.messages.length} messages).`
@@ -925,6 +1160,11 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       const userMessage: Message = { role: 'user', content: trimmed };
       messagesRef.current = [...messagesRef.current, userMessage];
       pushItem('user', trimmed, 'user');
+
+      // Reset per-turn counters for the self-improvement heuristic.
+      turnRoundsRef.current = 0;
+      turnToolErrorsRef.current = 0;
+      lastUserMessageRef.current = trimmed;
 
       // Compose system message from the active agent on each turn (cheap).
       const skills = props.skills.list();
@@ -1068,6 +1308,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             } else {
               pushItem('tool', `  ✗ ${ev.outcome.error.code}: ${ev.outcome.error.message}${elapsed}`);
               resultContent = `error: ${ev.outcome.error.message}`;
+              turnToolErrorsRef.current += 1;
             }
             // CRITICAL: every assistant `tool_use` MUST be followed by a
             // matching `tool` message in history. Without this, providers
@@ -1167,6 +1408,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           }
           case 'done':
             rounds = ev.rounds;
+            turnRoundsRef.current = ev.rounds;
             if (ev.usage) {
               totalTokens = ev.usage.totalTokens;
               promptTokens = ev.usage.promptTokens;
@@ -1178,6 +1420,26 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               ...(promptTokens !== undefined ? { promptTokens } : {}),
               ...(completionTokens !== undefined ? { completionTokens } : {})
             });
+            // Self-improvement heuristic: if this turn was "hard" (many
+            // rounds, repeated tool errors, or the user signalled success
+            // after a struggle), offer to distill a learned skill.
+            // Lightweight detector — the actual reflection is one
+            // additional LLM call gated behind user confirmation.
+            if (
+              learnEnabledRef.current &&
+              shouldOfferLearn(
+                turnRoundsRef.current,
+                turnToolErrorsRef.current,
+                lastUserMessageRef.current
+              )
+            ) {
+              const reason = describeLearnReason(
+                turnRoundsRef.current,
+                turnToolErrorsRef.current,
+                lastUserMessageRef.current
+              );
+              void launchLearnReflection(reason);
+            }
             break;
           case 'error':
             if (ev.error.code === 'CANCELLED') {
@@ -1205,7 +1467,9 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       app,
       pushItem,
       updateLastIfSameKind,
-      switchAgent
+      switchAgent,
+      launchLearnReflection,
+      hydrateTranscriptFromMessages
     ]
   );
 
@@ -1273,6 +1537,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         // Cancel an in-progress GitHub OAuth device flow.
         if (overlay.kind === 'mcp-add' && overlay.stage === 'oauth-device') {
           githubOauthAbortRef.current?.abort();
+        }
+        // Cancel an in-flight reflection sub-call.
+        if (overlay.kind === 'learn-confirm' && overlay.stage === 'reflecting') {
+          reflectAbortRef.current?.abort();
         }
         closeOverlay();
       }
@@ -3023,6 +3291,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 sessionRef.current = r.value;
                 messagesRef.current = [...r.value.messages];
                 setSessionId(r.value.id);
+                hydrateTranscriptFromMessages(
+                  r.value.messages,
+                  r.value.agent ?? activeAgent.name
+                );
                 pushItem(
                   'system',
                   `Resumed session ${r.value.id} (${r.value.messages.length} messages).`
@@ -3033,6 +3305,82 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           <Box marginTop={1}>
             <Text color="gray">Showing the {overlay.entries.length} most recent sessions. Esc to cancel.</Text>
           </Box>
+        </OverlayBox>
+      )}
+      {overlay.kind === 'learn-confirm' && (
+        <OverlayBox title="Atlas wants to save a learned skill">
+          {overlay.stage === 'reflecting' && (
+            <Box flexDirection="column">
+              <Text color="cyan">Reflecting on the last turn…</Text>
+              <Text color="gray">Trigger: {overlay.reason}</Text>
+              <Box marginTop={1}>
+                <Text color="gray">Esc to cancel.</Text>
+              </Box>
+            </Box>
+          )}
+          {overlay.stage === 'review' && overlay.error && !overlay.draft && (
+            <Box flexDirection="column">
+              <Text color="red">Reflection failed: {overlay.error}</Text>
+              <Box marginTop={1}>
+                <Text color="gray">Esc to dismiss.</Text>
+              </Box>
+            </Box>
+          )}
+          {overlay.stage === 'review' && overlay.draft && (
+            <Box flexDirection="column">
+              <Box>
+                <Text color="gray">Name: </Text>
+                <Text color="cyan" bold>{overlay.draft.name}</Text>
+              </Box>
+              <Box>
+                <Text color="gray">What it does: </Text>
+                <Text>{overlay.draft.description}</Text>
+              </Box>
+              <Box>
+                <Text color="gray">Why created: </Text>
+                <Text color="yellow">{overlay.reason}</Text>
+              </Box>
+              <Box>
+                <Text color="gray">Triggers: </Text>
+                <Text>{overlay.draft.triggers.join(', ') || '(none)'}</Text>
+              </Box>
+              <Box marginTop={1} flexDirection="column">
+                <Text color="gray">Body preview:</Text>
+                <Text>
+                  {overlay.draft.body.split('\n').slice(0, 12).join('\n')}
+                  {overlay.draft.body.split('\n').length > 12 ? '\n…' : ''}
+                </Text>
+              </Box>
+              {overlay.error && (
+                <Box marginTop={1}>
+                  <Text color="red">Save failed: {overlay.error}</Text>
+                </Box>
+              )}
+              <Box marginTop={1}>
+                <SelectInput
+                  items={[
+                    { key: 'save', label: 'Save (only framework agents will see it)', value: 'save' },
+                    { key: 'discard', label: 'Discard', value: 'discard' }
+                  ]}
+                  onSelect={(item: { value: string }) => {
+                    if (item.value === 'save' && overlay.draft) {
+                      void saveLearnedSkillDraft(overlay.draft);
+                    } else {
+                      setOverlay({ kind: 'none' });
+                    }
+                  }}
+                />
+              </Box>
+              <Box marginTop={1}>
+                <Text color="gray">Esc to discard. Learned skills live in ~/.atlas/skills/ and are not /-invokable.</Text>
+              </Box>
+            </Box>
+          )}
+          {overlay.stage === 'saving' && (
+            <Box>
+              <Text color="cyan">Saving skill…</Text>
+            </Box>
+          )}
         </OverlayBox>
       )}
       {overlay.kind === 'mcp-add' && overlay.stage === 'pick' && (
@@ -3867,8 +4215,8 @@ const Header = ({
         )}
         {sessionId && (
           <>
-            <Text color="gray"> · </Text>
-            <Text color="cyan">{sessionId.slice(-12)}</Text>
+            <Text color="gray"> · session </Text>
+            <Text color="cyan">{sessionId}</Text>
           </>
         )}
       </Box>
@@ -4466,6 +4814,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'sessions', args: '[id]', summary: 'list / resume saved sessions' },
   { name: 'resume', args: '[id]', summary: 'resume a session (alias of /sessions)' },
   { name: 'compact', args: '[now|status|on|off|model [id]|threshold <0..1>]', summary: 'auto-compaction controls' },
+  { name: 'learn', args: '[on|off|status]', summary: 'self-improvement loop: distill the current turn into a learned skill' },
   { name: 'exit', summary: 'leave atlas' }
 ];
 

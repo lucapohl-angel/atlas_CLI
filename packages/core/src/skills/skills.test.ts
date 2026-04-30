@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { SkillRegistry, loadSkills, renderSkillIndex } from './loader.js';
+import { SkillRegistry, loadSkills, renderSkillIndex, saveLearnedSkill, slugifySkillName } from './loader.js';
 
 describe('skills', () => {
   let dir: string;
@@ -57,9 +57,50 @@ describe('skills', () => {
 
   it('renderSkillIndex produces a stable list', () => {
     const out = renderSkillIndex([
-      { name: 'a', description: 'one', triggers: [], path: '/', body: '' },
-      { name: 'b', description: 'two', triggers: [], path: '/', body: '' }
+      { name: 'a', description: 'one', triggers: [], kind: 'user', path: '/', body: '' },
+      { name: 'b', description: 'two', triggers: [], kind: 'user', path: '/', body: '' }
     ]);
     expect(out).toBe('- a: one\n- b: two');
+  });
+
+  it('slugifySkillName produces clean slugs', () => {
+    expect(slugifySkillName('Vitest config debug!!!')).toBe('vitest-config-debug');
+    expect(slugifySkillName('   ')).toBe('learned-skill');
+    expect(slugifySkillName('A'.repeat(200)).length).toBeLessThanOrEqual(60);
+  });
+
+  it('saveLearnedSkill writes a SKILL.md with kind: learned', async () => {
+    const r = await saveLearnedSkill({
+      name: 'Fix Vitest ESM Resolver',
+      description: 'How to fix vitest ESM module resolution issues.',
+      triggers: ['vitest', 'esm'],
+      body: '## Steps\n\n1. ...',
+      createdBy: 'hercules',
+      createdFromSession: 'sess123',
+      createdReason: 'Spent 6 rounds debugging the same vitest config.',
+      dir
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('learned');
+    expect(r.value.createdBy).toBe('hercules');
+    const onDisk = await readFile(r.value.path, 'utf8');
+    expect(onDisk).toContain('kind: learned');
+    expect(onDisk).toContain('createdBy: hercules');
+    // Round-trip: loadSkills should re-parse it.
+    const loaded = await loadSkills({ dir });
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    const found = loaded.value.find((s) => s.name === 'fix-vitest-esm-resolver');
+    expect(found?.kind).toBe('learned');
+  });
+
+  it('SkillRegistry.add overwrites existing skills', () => {
+    const reg = new SkillRegistry([
+      { name: 'a', description: 'old', triggers: [], kind: 'user', path: '/x', body: '' }
+    ]);
+    reg.add({ name: 'a', description: 'new', triggers: [], kind: 'learned', path: '/y', body: '' });
+    expect(reg.get('a')?.description).toBe('new');
+    expect(reg.get('a')?.kind).toBe('learned');
   });
 });

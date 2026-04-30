@@ -6,7 +6,30 @@ semantic versioning.
 
 ## [Unreleased]
 
-### Added — Phase 12 polish (post-1.0 wiring)- **Exit shortcut moved from Ctrl-C to Ctrl-D** \u2014 pressing
+### Added — Phase 12 polish (post-1.0 wiring)
+- **Self-improvement loop (Hermes-style learned skills)** — Atlas now
+  watches each turn and, when a heuristic fires (≥5 rounds, ≥2 tool
+  errors, or a success phrase after a struggle), runs a one-shot
+  reflection sub-call against the active provider asking it to distill
+  a procedurally reusable lesson into a draft `SKILL.md`. The draft
+  surfaces in a confirmation overlay showing **what it does**, **why
+  it was created**, the trigger keywords, and a body preview, with
+  Save / Discard. Saved skills land in `~/.atlas/skills/<slug>/SKILL.md`
+  with `kind: learned` frontmatter and are scoped to framework agents
+  only — they are NOT exposed to user agents and not slash-invokable.
+  New `/learn [on|off|status]` command for manual control.
+  Token cost is bounded: the existing skill index is one line per
+  skill (lazy-loaded bodies via `skill_view`), so adding 50 learned
+  skills adds ~600 tokens per turn; reflection only runs when the
+  heuristic gate fires.
+- **Resume actually shows prior messages** — `/resume <id>` and the
+  session picker now rehydrate the visible transcript from the saved
+  message list (previously only the next turn had history; the screen
+  was empty). User/assistant messages reappear, tool calls render as
+  `→ name(args)` lines and tool results as `← name: result` lines.
+- **Session id label** — header now shows `· session <full-id>` instead
+  of the bare last-12 characters of the slug.
+- **Exit shortcut moved from Ctrl-C to Ctrl-D** — pressing
   Ctrl-D twice within 1s now exits atlas (standard shell-style EOF).
   Ctrl-C is now a single-press stream cancel only and is a no-op when
   idle, so it no longer competes with the terminal emulator's

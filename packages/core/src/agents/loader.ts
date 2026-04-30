@@ -136,9 +136,19 @@ export const buildSystemPrompt = (
   sections.push(modeSection(agent.mode));
 
   if (skills.length > 0) {
-    sections.push(
-      `## Available skills\n\nCall \`skill_view <name>\` to load the full body of a skill.\n\n${renderSkillIndex(skills)}`
-    );
+    // Learned skills are scoped to framework agents: they are auto-generated
+    // by the self-improvement loop and only intended to assist the curated
+    // SDD pipeline (atlas/athena/prometheus/etc.). User agents see only
+    // hand-authored skills.
+    const visible =
+      agent.kind === 'framework'
+        ? skills
+        : skills.filter((s) => s.kind !== 'learned');
+    if (visible.length > 0) {
+      sections.push(
+        `## Available skills\n\nCall \`skill_view <name>\` to load the full body of a skill.\n\n${renderSkillIndex(visible)}`
+      );
+    }
   }
 
   if (agent.handoffs.length > 0) {

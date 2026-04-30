@@ -2749,7 +2749,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         const ai = prereq.autoInstall;
         const items = [
           ...(ai && !overlay.installing
-            ? [{ key: 'install', label: `Install for me  (runs: ${ai.shell})`, value: 'install' }]
+            ? [{ key: 'install', label: `Install for me — ${ai.description}`, value: 'install' }]
             : []),
           { key: 'recheck', label: 'I\u2019ve installed it \u2014 re-check PATH', value: 'recheck' },
           { key: 'docs', label: `Open install docs (${prereq.docsUrl})`, value: 'docs' },
@@ -2768,7 +2768,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                   {overlay.statusLine}
                 </Text>
               ) : null}
-              {overlay.installing ? <Text color="yellow">installing\u2026 (Esc to cancel)</Text> : null}
+              {overlay.installing ? <Text color="yellow">{'installing\u2026 (Esc to cancel)'}</Text> : null}
             </Box>
             {!overlay.installing ? (
               <SelectInput items={items} onSelect={onMcpPrereqAction} />
@@ -2808,16 +2808,43 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         const sug = findSuggestion(overlay.suggestionId);
         const spec = sug?.env[overlay.envIndex];
         if (!sug || !spec) return null;
+        // Friendly per-key prompts. We special-case the well-known
+        // secret keys so the user sees a clear action ("Paste your
+        // GitHub Personal Access Token") instead of the dry env-var
+        // description we use as a fallback.
+        const friendly: Record<string, { title: string; helper: string }> = {
+          GITHUB_PERSONAL_ACCESS_TOKEN: {
+            title: 'Paste your GitHub Personal Access Token',
+            helper:
+              'Create one at https://github.com/settings/tokens (classic or fine-grained). Pick the scopes you want Atlas to use — at minimum `repo` for private repos, or `public_repo` for public-only.'
+          },
+          HIGGSFIELD_API_KEY: {
+            title: 'Paste your Higgsfield API key',
+            helper: 'Grab it from https://higgsfield.ai/mcp \u2192 your account.'
+          },
+          FIGMA_API_TOKEN: {
+            title: 'Paste your Figma personal access token',
+            helper:
+              'Create one in Figma \u2192 Settings \u2192 Account \u2192 Personal access tokens.'
+          }
+        };
+        const f = friendly[spec.key];
+        const title = f
+          ? `${f.title}${spec.required ? '' : ' (optional)'}`
+          : `${sug.name} \u2192 ${spec.key}${spec.required ? ' (required)' : ' (optional)'}`;
+        const helper = f?.helper ?? spec.description;
         return (
-          <OverlayBox title={`${sug.name} → ${spec.key}${spec.required ? ' (required)' : ' (optional)'}`}>
+          <OverlayBox title={title}>
             <Box flexDirection="column" marginBottom={1}>
-              <Text color="gray">{spec.description}</Text>
+              <Text color="gray">{helper}</Text>
+              <Text color="gray">{'Press \u21b5 to save, Esc to cancel.'}</Text>
             </Box>
             <TextInput
               value={input}
               onChange={setInput}
               onSubmit={onMcpEnvSubmit}
               placeholder={spec.placeholder ?? ''}
+              mask={spec.required ? '*' : undefined}
             />
           </OverlayBox>
         );

@@ -7,6 +7,15 @@ semantic versioning.
 ## [Unreleased]
 
 ### Added — Phase 12 polish (post-1.0 wiring)
+- **GitHub MCP auth picker (OAuth or PAT)** — picking `github` in
+  `/mcps add` now opens an auth-method chooser. **OAuth** shells out
+  to `gh auth token` (requires the `gh` CLI installed and signed in)
+  and stores the returned token as `GITHUB_PERSONAL_ACCESS_TOKEN` —
+  no copy-paste, scopes follow your `gh auth login` session. **PAT**
+  keeps the existing flow (paste a `ghp_…` / `github_pat_…` token).
+  A third option opens cli.github.com if `gh` isn't installed yet.
+  Suggestions now expose optional `authMethods` + `oauthEnvKey` so
+  this pattern can be reused for other servers later.
 - **`/compact model` (no id) opens the model picker** — picking a model
   now scopes to compaction (persists `compaction.model` in
   `~/.atlas/config.yaml`) instead of switching the chat model. The

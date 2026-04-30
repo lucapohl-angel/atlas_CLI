@@ -149,6 +149,14 @@ type Overlay =
     }
   | {
       readonly kind: 'mcp-add';
+      readonly stage: 'auth';
+      readonly suggestionId: string;
+      /** True while we're shelling out to `gh auth token`. */
+      readonly probing: boolean;
+      readonly statusLine?: string;
+    }
+  | {
+      readonly kind: 'mcp-add';
       readonly stage: 'env';
       readonly suggestionId: string;
       readonly envIndex: number;
@@ -1626,6 +1634,18 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         closeOverlay();
         return;
       }
+      // Stdio entries that declare auth methods (e.g. github) get a
+      // chooser before env collection so the user can pick between
+      // OAuth-via-`gh` and pasting a PAT.
+      if (sug.transport === 'stdio' && sug.authMethods && sug.authMethods.length > 1) {
+        setOverlay({
+          kind: 'mcp-add',
+          stage: 'auth',
+          suggestionId: sug.id,
+          probing: false
+        });
+        return;
+      }
       if (sug.env.length === 0) {
         setOverlay({
           kind: 'mcp-add',
@@ -1744,6 +1764,127 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       }
     },
     [overlay, closeOverlay, pushItem, advanceMcpAfterPrereq]
+  );
+
+  // Handle the choice on the auth-method picker (currently github only:
+  // "OAuth via gh" vs "Personal Access Token" vs cancel).
+  const onMcpAuthSelect = useCallback(
+    (item: { value: string }) => {
+      if (overlay.kind !== 'mcp-add' || overlay.stage !== 'auth') return;
+      const sug = findSuggestion(overlay.suggestionId);
+      if (!sug || sug.transport !== 'stdio') {
+        closeOverlay();
+        return;
+      }
+      const id = sug.id;
+      switch (item.value) {
+        case 'cancel':
+          closeOverlay();
+          pushItem('system', `cancelled adding '${sug.name}'.`);
+          return;
+        case 'pat': {
+          // Hand off to the existing env-collection flow.
+          if (sug.env.length === 0) {
+            setOverlay({ kind: 'mcp-add', stage: 'confirm', suggestionId: id, collected: {} });
+          } else {
+            setInput('');
+            setOverlay({
+              kind: 'mcp-add',
+              stage: 'env',
+              suggestionId: id,
+              envIndex: 0,
+              draft: '',
+              collected: {}
+            });
+          }
+          return;
+        }
+        case 'docs':
+          void openInBrowser('https://cli.github.com');
+          pushItem(
+            'system',
+            'Opened https://cli.github.com. Install gh, run `gh auth login`, then re-pick OAuth.'
+          );
+          return;
+        case 'oauth-gh': {
+          const envKey = sug.oauthEnvKey;
+          if (!envKey) {
+            setOverlay({
+              kind: 'mcp-add',
+              stage: 'auth',
+              suggestionId: id,
+              probing: false,
+              statusLine: 'error: this entry has no oauthEnvKey configured'
+            });
+            return;
+          }
+          setOverlay({ kind: 'mcp-add', stage: 'auth', suggestionId: id, probing: true });
+          void (async () => {
+            const ghPath = await findOnPath('gh');
+            if (!ghPath) {
+              setOverlay({
+                kind: 'mcp-add',
+                stage: 'auth',
+                suggestionId: id,
+                probing: false,
+                statusLine: 'error: `gh` CLI not on PATH. Install it first (cli.github.com), then sign in with `gh auth login`.'
+              });
+              return;
+            }
+            // Capture token from `gh auth token`. Quietly times out
+            // after 5s so a hung gh process can't lock the TUI.
+            const token = await new Promise<string | null>((resolve) => {
+              const child = spawn(ghPath, ['auth', 'token'], { stdio: ['ignore', 'pipe', 'pipe'] });
+              let out = '';
+              let err = '';
+              const timer = setTimeout(() => {
+                child.kill('SIGTERM');
+                resolve(null);
+              }, 5000);
+              child.stdout.on('data', (d: Buffer) => {
+                out += d.toString('utf8');
+              });
+              child.stderr.on('data', (d: Buffer) => {
+                err += d.toString('utf8');
+              });
+              child.on('error', () => {
+                clearTimeout(timer);
+                resolve(null);
+              });
+              child.on('exit', (code) => {
+                clearTimeout(timer);
+                if (code === 0) {
+                  resolve(out.trim());
+                } else {
+                  resolve(err.trim().length > 0 ? `__error__:${err.trim()}` : null);
+                }
+              });
+            });
+            if (!token || token.startsWith('__error__:') || token.length === 0) {
+              const detail = token && token.startsWith('__error__:') ? token.slice('__error__:'.length) : 'no token returned';
+              setOverlay({
+                kind: 'mcp-add',
+                stage: 'auth',
+                suggestionId: id,
+                probing: false,
+                statusLine: `error: gh auth token failed (${detail}). Run \`gh auth login\` and retry.`
+              });
+              return;
+            }
+            // Got a token — jump straight to confirm with it pre-collected.
+            setOverlay({
+              kind: 'mcp-add',
+              stage: 'confirm',
+              suggestionId: id,
+              collected: { [envKey]: token }
+            });
+            pushItem('system', `Pulled OAuth token from \`gh auth token\` (${token.length} chars).`);
+          })();
+          return;
+        }
+      }
+    },
+    [overlay, closeOverlay, pushItem]
   );
 
   const onMcpEnvSubmit = useCallback(() => {
@@ -2620,6 +2761,34 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             {!overlay.installing ? (
               <SelectInput items={items} onSelect={onMcpPrereqAction} />
             ) : null}
+          </OverlayBox>
+        );
+      })()}
+      {overlay.kind === 'mcp-add' && overlay.stage === 'auth' && (() => {
+        const sug = findSuggestion(overlay.suggestionId);
+        if (!sug || sug.transport !== 'stdio') return null;
+        const items = [
+          { key: 'oauth-gh', label: 'OAuth — pull token from `gh auth token`', value: 'oauth-gh' },
+          { key: 'pat', label: 'Personal Access Token — paste a PAT (ghp_… / github_pat_…)', value: 'pat' },
+          { key: 'docs', label: 'I don\u2019t have `gh` yet — open install docs', value: 'docs' },
+          { key: 'cancel', label: 'Cancel', value: 'cancel' }
+        ];
+        return (
+          <OverlayBox title={`How would you like to authenticate ${sug.name}?`}>
+            <Box flexDirection="column" marginBottom={1}>
+              <Text color="gray">
+                OAuth uses your existing `gh auth login` session — no token to paste, scopes match
+                what you authorized for `gh`. PAT is fine if you want a scoped, revocable token
+                stored in ~/.atlas/config.yaml.
+              </Text>
+              {overlay.statusLine ? (
+                <Text color={overlay.statusLine.startsWith('error') ? 'red' : 'green'}>
+                  {overlay.statusLine}
+                </Text>
+              ) : null}
+              {overlay.probing ? <Text color="yellow">running `gh auth token`…</Text> : null}
+            </Box>
+            {!overlay.probing ? <SelectInput items={items} onSelect={onMcpAuthSelect} /> : null}
           </OverlayBox>
         );
       })()}

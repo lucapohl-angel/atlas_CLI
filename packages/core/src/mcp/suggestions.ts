@@ -68,6 +68,18 @@ export interface StdioSuggestion extends BaseSuggestion {
   readonly command: string;
   readonly args: readonly string[];
   readonly prerequisite: PrerequisiteSpec;
+  /**
+   * Auth flows the picker should offer before collecting env vars.
+   * When omitted, the picker goes straight to env collection (current
+   * behaviour). When set, the user picks one of:
+   *  - 'oauth-gh' : pull a token from `gh auth token` (requires `gh`
+   *                 CLI installed and signed in). Maps to the env var
+   *                 named in `oauthEnvKey`.
+   *  - 'pat'      : prompt for the env var(s) declared in `env`.
+   */
+  readonly authMethods?: readonly ('oauth-gh' | 'pat')[];
+  /** Which env key receives the OAuth token. Required when 'oauth-gh' is offered. */
+  readonly oauthEnvKey?: string;
 }
 
 export interface HttpSuggestion extends BaseSuggestion {
@@ -143,7 +155,9 @@ export const MCP_SUGGESTIONS: readonly McpServerSuggestion[] = [
       }
     ],
     docs: 'https://github.com/github/github-mcp-server',
-    prerequisite: GITHUB_BIN_PREREQ
+    prerequisite: GITHUB_BIN_PREREQ,
+    authMethods: ['oauth-gh', 'pat'],
+    oauthEnvKey: 'GITHUB_PERSONAL_ACCESS_TOKEN'
   },
   {
     id: 'higgsfield',

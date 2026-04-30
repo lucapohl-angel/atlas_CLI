@@ -2193,10 +2193,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           />
           <Box marginTop={1} flexDirection="column">
             <Text color="gray">
-              stdio entries spawn locally; http entries call hosted endpoints (Higgsfield, Figma).
+              Tag in [brackets] = how it runs: [npx]/[uvx]/[docker] spawn locally, [http] hits a hosted endpoint.
             </Text>
             <Text color="gray">
-              For stdio, you'll need the listed prerequisite (`npx`, `docker`, or `uvx`) on your PATH.
+              For local entries, the listed runtime must be on your PATH (we'll warn if it isn't).
             </Text>
           </Box>
         </OverlayBox>
@@ -2903,7 +2903,9 @@ const OverlayBox = ({
     <Text bold color="cyan">
       {title}
     </Text>
-    <Box marginTop={1}>{children}</Box>
+    <Box marginTop={1} flexDirection="column">
+      {children}
+    </Box>
   </Box>
 );
 

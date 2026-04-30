@@ -1,7 +1,7 @@
 /**
  * Curated catalog of "official" or otherwise well-known MCP servers we
- * suggest in the TUI. Mix of stdio (run locally via npx/uvx/docker) and
- * HTTP (hosted endpoints — Higgsfield, Figma, etc).
+ * suggest in the TUI. Mix of stdio (run locally via npx/uvx/native
+ * binary) and HTTP (hosted endpoints — Higgsfield, Figma).
  */
 
 export interface McpEnvVarSpec {
@@ -10,6 +10,31 @@ export interface McpEnvVarSpec {
   readonly required: boolean;
   /** Hint only — no validation enforced at config time. */
   readonly placeholder?: string;
+}
+
+/**
+ * What the user needs installed locally before this stdio entry will
+ * run. The TUI checks `bin` against PATH at /mcps add time and offers
+ * the install path if it's missing.
+ */
+export interface PrerequisiteSpec {
+  /** Binary name passed to PATH lookup (e.g. `npx`, `docker`, `uvx`). */
+  readonly bin: string;
+  /** Short label shown as the tag in the catalog. Defaults to `bin`. */
+  readonly label?: string;
+  /** Where humans go to install it. */
+  readonly docsUrl: string;
+  /**
+   * A vetted, idempotent install command. Only set for installers we've
+   * audited as safe to run on a user's machine without sudo (currently:
+   * `uv`'s official curl|sh installer). Anything that needs sudo, kernel
+   * modules, or a GUI installer (Docker) should be left undefined.
+   */
+  readonly autoInstall?: {
+    readonly description: string;
+    /** Shell command, executed via `sh -c` (or `cmd /c` on Windows). */
+    readonly shell: string;
+  };
 }
 
 interface BaseSuggestion {
@@ -26,8 +51,7 @@ export interface StdioSuggestion extends BaseSuggestion {
   readonly transport: 'stdio';
   readonly command: string;
   readonly args: readonly string[];
-  /** A quick note about what the user needs installed. */
-  readonly prerequisite: 'npx' | 'docker' | 'uvx';
+  readonly prerequisite: PrerequisiteSpec;
 }
 
 export interface HttpSuggestion extends BaseSuggestion {
@@ -44,6 +68,31 @@ export interface HttpSuggestion extends BaseSuggestion {
 
 export type McpServerSuggestion = StdioSuggestion | HttpSuggestion;
 
+// ── Reusable prerequisite specs ──────────────────────────────────────
+const NPX_PREREQ: PrerequisiteSpec = {
+  bin: 'npx',
+  label: 'npx',
+  docsUrl: 'https://nodejs.org/en/download'
+};
+
+const UVX_PREREQ: PrerequisiteSpec = {
+  bin: 'uvx',
+  label: 'uvx',
+  docsUrl: 'https://docs.astral.sh/uv/getting-started/installation/',
+  // The uv installer is a single curl|sh, vetted by Astral. Installs
+  // into ~/.local/bin without sudo. Safe to offer as a one-click.
+  autoInstall: {
+    description: 'Installs uv (which provides uvx) into ~/.local/bin.',
+    shell: 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  }
+};
+
+const GITHUB_BIN_PREREQ: PrerequisiteSpec = {
+  bin: 'github-mcp-server',
+  label: 'binary',
+  docsUrl: 'https://github.com/github/github-mcp-server/releases'
+};
+
 export const MCP_SUGGESTIONS: readonly McpServerSuggestion[] = [
   {
     id: 'filesystem',
@@ -54,7 +103,7 @@ export const MCP_SUGGESTIONS: readonly McpServerSuggestion[] = [
     args: ['-y', '@modelcontextprotocol/server-filesystem', '.'],
     env: [],
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem',
-    prerequisite: 'npx'
+    prerequisite: NPX_PREREQ
   },
   {
     id: 'fetch',
@@ -65,15 +114,17 @@ export const MCP_SUGGESTIONS: readonly McpServerSuggestion[] = [
     args: ['mcp-server-fetch'],
     env: [],
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/fetch',
-    prerequisite: 'uvx'
+    prerequisite: UVX_PREREQ
   },
   {
     id: 'github',
     name: 'github',
     transport: 'stdio',
     summary: 'GitHub API access (issues, PRs, repos, code search).',
-    command: 'docker',
-    args: ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', 'ghcr.io/github/github-mcp-server'],
+    // Standalone Go binary from github/github-mcp-server releases.
+    // Single static file, no Docker required.
+    command: 'github-mcp-server',
+    args: ['stdio'],
     env: [
       {
         key: 'GITHUB_PERSONAL_ACCESS_TOKEN',
@@ -83,7 +134,7 @@ export const MCP_SUGGESTIONS: readonly McpServerSuggestion[] = [
       }
     ],
     docs: 'https://github.com/github/github-mcp-server',
-    prerequisite: 'docker'
+    prerequisite: GITHUB_BIN_PREREQ
   },
   {
     id: 'brave-search',
@@ -101,7 +152,7 @@ export const MCP_SUGGESTIONS: readonly McpServerSuggestion[] = [
       }
     ],
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search',
-    prerequisite: 'npx'
+    prerequisite: NPX_PREREQ
   },
   {
     id: 'sqlite',
@@ -112,18 +163,18 @@ export const MCP_SUGGESTIONS: readonly McpServerSuggestion[] = [
     args: ['mcp-server-sqlite', '--db-path', './atlas.db'],
     env: [],
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite',
-    prerequisite: 'uvx'
+    prerequisite: UVX_PREREQ
   },
   {
     id: 'memory',
     name: 'memory',
     transport: 'stdio',
-    summary: 'Persistent knowledge-graph memory across sessions.',
+    summary: 'Persistent knowledge-graph memory across sessions (local JSON).',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-memory'],
     env: [],
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/memory',
-    prerequisite: 'npx'
+    prerequisite: NPX_PREREQ
   },
   {
     id: 'time',
@@ -134,7 +185,7 @@ export const MCP_SUGGESTIONS: readonly McpServerSuggestion[] = [
     args: ['mcp-server-time'],
     env: [],
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/time',
-    prerequisite: 'uvx'
+    prerequisite: UVX_PREREQ
   },
   {
     id: 'sequential-thinking',
@@ -145,7 +196,7 @@ export const MCP_SUGGESTIONS: readonly McpServerSuggestion[] = [
     args: ['-y', '@modelcontextprotocol/server-sequential-thinking'],
     env: [],
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking',
-    prerequisite: 'npx'
+    prerequisite: NPX_PREREQ
   },
   {
     id: 'postgres',
@@ -163,7 +214,7 @@ export const MCP_SUGGESTIONS: readonly McpServerSuggestion[] = [
       }
     ],
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/postgres',
-    prerequisite: 'npx'
+    prerequisite: NPX_PREREQ
   },
   {
     id: 'slack',
@@ -187,7 +238,7 @@ export const MCP_SUGGESTIONS: readonly McpServerSuggestion[] = [
       }
     ],
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/slack',
-    prerequisite: 'npx'
+    prerequisite: NPX_PREREQ
   },
   // ── Hosted (Streamable HTTP) servers ──────────────────────────────
   {

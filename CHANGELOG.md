@@ -7,6 +7,17 @@ semantic versioning.
 ## [Unreleased]
 
 ### Added — Phase 12 polish (post-1.0 wiring)
+- **Prerequisite detection at `/mcps add`** — when the user picks an
+  stdio entry whose required runtime (`npx`, `uvx`, `github-mcp-server`)
+  isn't on PATH, Atlas now opens a dedicated overlay with: install for
+  me (only for vetted-safe installers — currently `uv`'s official
+  `curl|sh`), re-check, open install docs, or skip. New `findOnPath`
+  helper in `@atlas/core` does cross-platform PATH lookup without
+  shelling out to `which`.
+- **GitHub MCP swapped to standalone binary** — replaces the previous
+  Docker-based entry. `github-mcp-server stdio` is a single static Go
+  binary from github/github-mcp-server releases (no Docker daemon, no
+  kernel modules, prebuilt for linux/macOS/windows).
 - **Auto-compaction with `/compact` controls** — when the running token
   count crosses `compaction.threshold` (default 0.8 of 200k), Atlas
   asks a model to roll older turns into a single summary system message

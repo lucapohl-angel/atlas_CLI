@@ -42,6 +42,7 @@ import {
   fetchAnthropicModels,
   fetchCodexModels,
   findSuggestion,
+  findOnPath,
   renderHeaders,
   runAgentLoop,
   type SessionRecord,
@@ -137,6 +138,15 @@ type Overlay =
   | { readonly kind: 'option-freeform'; readonly request: InteractionRequest }
   | { readonly kind: 'autopilot-consent' }
   | { readonly kind: 'mcp-add'; readonly stage: 'pick' }
+  | {
+      readonly kind: 'mcp-add';
+      readonly stage: 'prereq';
+      readonly suggestionId: string;
+      /** True while we're spawning the auto-installer. */
+      readonly installing: boolean;
+      /** Last installer status / error to surface. */
+      readonly statusLine?: string;
+    }
   | {
       readonly kind: 'mcp-add';
       readonly stage: 'env';
@@ -1520,6 +1530,39 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         );
         return;
       }
+      // For stdio entries, verify the prerequisite binary is on PATH.
+      // If it isn't, show a dedicated overlay that either offers a
+      // safe one-line auto-install (currently only `uv`) or links the
+      // user to the docs page for manual install.
+      if (sug.transport === 'stdio') {
+        void (async () => {
+          const found = await findOnPath(sug.prerequisite.bin);
+          if (found) {
+            advanceMcpAfterPrereq(sug.id);
+            return;
+          }
+          setOverlay({
+            kind: 'mcp-add',
+            stage: 'prereq',
+            suggestionId: sug.id,
+            installing: false
+          });
+        })();
+        return;
+      }
+      advanceMcpAfterPrereq(sug.id);
+    },
+    [props.config, pushItem, closeOverlay]
+  );
+
+  /** Move from prereq-check (or pick) to env-collection / confirm. */
+  const advanceMcpAfterPrereq = useCallback(
+    (suggestionId: string): void => {
+      const sug = findSuggestion(suggestionId);
+      if (!sug) {
+        closeOverlay();
+        return;
+      }
       if (sug.env.length === 0) {
         setOverlay({
           kind: 'mcp-add',
@@ -1539,7 +1582,105 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         });
       }
     },
-    [props.config, pushItem, closeOverlay]
+    [closeOverlay]
+  );
+
+  // Handle the action chosen on the prereq-missing overlay (install /
+  // re-check / open docs / skip).
+  const onMcpPrereqAction = useCallback(
+    (item: { value: string }) => {
+      if (overlay.kind !== 'mcp-add' || overlay.stage !== 'prereq') return;
+      const sug = findSuggestion(overlay.suggestionId);
+      if (!sug || sug.transport !== 'stdio') {
+        closeOverlay();
+        return;
+      }
+      const prereq = sug.prerequisite;
+      switch (item.value) {
+        case 'skip':
+          closeOverlay();
+          pushItem('system', `cancelled adding '${sug.name}'.`);
+          return;
+        case 'docs':
+          void openInBrowser(prereq.docsUrl);
+          pushItem('system', `Opened ${prereq.docsUrl}. Install, then re-run /mcps add.`);
+          closeOverlay();
+          return;
+        case 'recheck': {
+          const id = sug.id;
+          void (async () => {
+            const found = await findOnPath(prereq.bin);
+            if (found) {
+              advanceMcpAfterPrereq(id);
+            } else {
+              setOverlay({
+                kind: 'mcp-add',
+                stage: 'prereq',
+                suggestionId: id,
+                installing: false,
+                statusLine: `error: '${prereq.bin}' still not on PATH`
+              });
+            }
+          })();
+          return;
+        }
+        case 'install': {
+          if (!prereq.autoInstall) return;
+          const id = sug.id;
+          const shellCmd = prereq.autoInstall.shell;
+          setOverlay({
+            kind: 'mcp-add',
+            stage: 'prereq',
+            suggestionId: id,
+            installing: true
+          });
+          void (async () => {
+            const isWin = platform() === 'win32';
+            const child = spawn(isWin ? 'cmd' : 'sh', isWin ? ['/c', shellCmd] : ['-c', shellCmd], {
+              stdio: 'ignore'
+            });
+            child.on('exit', (code) => {
+              void (async () => {
+                if (code !== 0) {
+                  setOverlay({
+                    kind: 'mcp-add',
+                    stage: 'prereq',
+                    suggestionId: id,
+                    installing: false,
+                    statusLine: `error: installer exited ${code}`
+                  });
+                  return;
+                }
+                const found = await findOnPath(prereq.bin);
+                if (found) {
+                  pushItem('system', `installed: ${found}`);
+                  advanceMcpAfterPrereq(id);
+                } else {
+                  setOverlay({
+                    kind: 'mcp-add',
+                    stage: 'prereq',
+                    suggestionId: id,
+                    installing: false,
+                    statusLine: `error: still not on PATH after install (you may need to restart your shell)`
+                  });
+                }
+              })();
+            });
+            child.on('error', (err) => {
+              setOverlay({
+                kind: 'mcp-add',
+                stage: 'prereq',
+                suggestionId: id,
+                installing: false,
+                statusLine: `error: ${err.message}`
+              });
+            });
+          })();
+          return;
+        }
+      }
+    },
+    [overlay, closeOverlay, pushItem, advanceMcpAfterPrereq]
   );
 
   const onMcpEnvSubmit = useCallback(() => {
@@ -2360,7 +2501,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         <OverlayBox title="Add MCP server (pick from suggested catalog)">
           <SelectInput
             items={MCP_SUGGESTIONS.map((s) => {
-              const tag = s.transport === 'http' ? 'http' : s.prerequisite;
+              const tag = s.transport === 'http' ? 'http' : (s.prerequisite.label ?? s.prerequisite.bin);
               return {
                 key: s.id,
                 label: `${s.name.padEnd(22)} ${s.summary}  [${tag}]`,
@@ -2379,6 +2520,40 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           </Box>
         </OverlayBox>
       )}
+      {overlay.kind === 'mcp-add' && overlay.stage === 'prereq' && (() => {
+        const sug = findSuggestion(overlay.suggestionId);
+        if (!sug || sug.transport !== 'stdio') return null;
+        const prereq = sug.prerequisite;
+        const ai = prereq.autoInstall;
+        const items = [
+          ...(ai && !overlay.installing
+            ? [{ key: 'install', label: `Install for me  (runs: ${ai.shell})`, value: 'install' }]
+            : []),
+          { key: 'recheck', label: 'I\u2019ve installed it \u2014 re-check PATH', value: 'recheck' },
+          { key: 'docs', label: `Open install docs (${prereq.docsUrl})`, value: 'docs' },
+          { key: 'skip', label: 'Skip / cancel', value: 'skip' }
+        ];
+        return (
+          <OverlayBox title={`${sug.name} needs '${prereq.bin}' \u2014 not found on PATH`}>
+            <Box flexDirection="column" marginBottom={1}>
+              <Text color="gray">
+                {ai
+                  ? `${ai.description} You can have Atlas run the installer, do it yourself, or skip.`
+                  : `Atlas can\u2019t auto-install '${prereq.bin}' safely. Install it via the docs link, then re-check.`}
+              </Text>
+              {overlay.statusLine ? (
+                <Text color={overlay.statusLine.startsWith('error') ? 'red' : 'green'}>
+                  {overlay.statusLine}
+                </Text>
+              ) : null}
+              {overlay.installing ? <Text color="yellow">installing\u2026 (Esc to cancel)</Text> : null}
+            </Box>
+            {!overlay.installing ? (
+              <SelectInput items={items} onSelect={onMcpPrereqAction} />
+            ) : null}
+          </OverlayBox>
+        );
+      })()}
       {overlay.kind === 'mcp-add' && overlay.stage === 'env' && (() => {
         const sug = findSuggestion(overlay.suggestionId);
         const spec = sug?.env[overlay.envIndex];

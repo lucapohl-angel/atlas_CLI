@@ -26,11 +26,13 @@ import {
   providerFromConfigAsync,
   registerMcpTools,
   saveConfig,
+  SessionStore,
   startMcpServers,
   type AtlasConfig,
   type McpStartupResult,
   type ModelInfo,
-  type Provider
+  type Provider,
+  type SessionRecord
 } from '@atlas/core';
 import { TuiApp } from './App.js';
 
@@ -41,6 +43,8 @@ export interface RunTuiOptions {
   readonly provider?: Provider;
   /** Inject config (tests). */
   readonly config?: AtlasConfig;
+  /** Resume an existing session by id, or 'latest' for the most recent. */
+  readonly resume?: string;
 }
 
 export interface RunTuiResult {
@@ -140,12 +144,28 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
   const mcpStartup: McpStartupResult = await (async () => {
     const enabled = cfg?.mcp.servers.filter((s) => s.enabled) ?? [];
     if (enabled.length === 0) return { running: [], failed: [], stopAll: () => {} };
-    const specs = enabled.map((s) => ({
-      name: s.name,
-      command: s.command,
-      args: s.args,
-      env: { ...process.env, ...s.env }
-    }));
+    const specs = enabled.map((s) => {
+      if (s.transport === 'http') {
+        // URL is required for http transport — schema allows .optional()
+        // because of the discriminated shape, but at runtime an enabled
+        // http server without a URL is a config error we surface as a
+        // failed-server entry by routing through a synthetic spec that
+        // will fail `start()` cleanly with a clear message.
+        return {
+          transport: 'http' as const,
+          name: s.name,
+          url: s.url ?? '',
+          headers: s.headers
+        };
+      }
+      return {
+        transport: 'stdio' as const,
+        name: s.name,
+        command: s.command ?? '',
+        args: s.args,
+        env: { ...process.env, ...s.env }
+      };
+    });
     const result = await startMcpServers(specs);
     registerMcpTools(tools, result.running);
     return result;
@@ -188,6 +208,34 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
     );
   }
 
+  // Sessions: SessionStore writes JSON snapshots to ~/.atlas/sessions/.
+  // We always create one on boot so the header has a stable id; if the
+  // user passed --resume we load that record (or the latest if 'latest')
+  // and replay its messages into the App's history.
+  const sessionStore = new SessionStore();
+  let initialSession: SessionRecord | null = null;
+  if (opts.resume) {
+    const loaded =
+      opts.resume === 'latest'
+        ? await sessionStore.latest()
+        : await sessionStore.load(opts.resume);
+    if (loaded.ok && loaded.value) {
+      initialSession = loaded.value;
+    } else {
+      process.stderr.write(
+        `atlas: could not resume session '${opts.resume}'${loaded.ok ? ' (no sessions saved yet)' : `: ${loaded.error.message}`}\n`
+      );
+    }
+  }
+  if (!initialSession) {
+    const created = await sessionStore.create({
+      cwd: process.cwd(),
+      agent: initialAgent,
+      model: defaultModel
+    });
+    if (created.ok) initialSession = created.value;
+  }
+
   const props = {
     provider,
     providers,
@@ -199,6 +247,8 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
     fallbackModels,
     availableModels,
     modelCatalog,
+    sessionStore,
+    ...(initialSession ? { initialSession } : {}),
     mcpStatus: {
       running: mcpStartup.running.map((r) => ({
         name: r.spec.name,

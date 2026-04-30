@@ -41,7 +41,10 @@ import {
   fetchAnthropicModels,
   fetchCodexModels,
   findSuggestion,
+  renderHeaders,
   runAgentLoop,
+  type SessionRecord,
+  SessionStore,
   saveConfig,
   thinkingLevelsFor,
   tryExtractInteraction,
@@ -110,6 +113,15 @@ export interface TuiAppProps {
     readonly running: readonly { name: string; toolCount: number }[];
     readonly failed: readonly { name: string; error: string }[];
   };
+  /**
+   * Persistent session store. When provided, every completed turn is
+   * appended to the session JSON on disk so the user can `/resume` it
+   * later (or pass `--resume <id>` on the next CLI launch). Optional
+   * so non-interactive callers (tests, one-shot scripts) can skip it.
+   */
+  readonly sessionStore?: SessionStore;
+  /** Initial session — created or loaded by runTui before mounting. */
+  readonly initialSession?: SessionRecord;
 }
 
 type Mode = 'plan' | 'build' | 'autopilot';
@@ -137,6 +149,10 @@ type Overlay =
       readonly stage: 'confirm';
       readonly suggestionId: string;
       readonly collected: Readonly<Record<string, string>>;
+    }
+  | {
+      readonly kind: 'session-picker';
+      readonly entries: readonly { id: string; updatedAt: string }[];
     }
   | {
       readonly kind: 'setup';
@@ -268,6 +284,14 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   // means terminal-native click-and-drag selection just works.
 
   const messagesRef = useRef<Message[]>([]);
+  // Session: id is shown in the header; the record is mutated in place
+  // and persisted via SessionStore.write() on every turn_end. When no
+  // store is provided (tests, scripts) we still keep an in-memory id so
+  // the header has something stable to display.
+  const sessionRef = useRef<SessionRecord | null>(props.initialSession ?? null);
+  const [sessionId, setSessionId] = useState<string | null>(
+    props.initialSession?.id ?? null
+  );
   const abortRef = useRef<AbortController | null>(null);
   const transcriptKey = useRef(0);
   const ctrlCTimer = useRef<NodeJS.Timeout | null>(null);
@@ -645,8 +669,9 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                   : fail
                     ? `err`
                     : 'pending';
-              const cmd = [s.command, ...s.args].join(' ');
-              return `  ${status.padEnd(14)}  ${s.name.padEnd(20)} ${cmd}`;
+              const target =
+                s.transport === 'http' ? `http → ${s.url ?? '?'}` : [s.command ?? '?', ...s.args].join(' ');
+              return `  ${status.padEnd(14)}  ${s.name.padEnd(20)} ${target}`;
             });
             const failLines = failed
               .filter((f) => !servers.some((s) => s.name === f.name))
@@ -663,6 +688,44 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           case 'exit':
             app.exit();
             return;
+          case 'sessions':
+          case 'resume': {
+            if (!props.sessionStore) {
+              pushItem('error', 'sessions disabled (no store wired)');
+              return;
+            }
+            const target = rest[0];
+            if (target) {
+              void (async () => {
+                const r = await props.sessionStore!.load(target);
+                if (!r.ok) {
+                  pushItem('error', `failed to load session ${target}: ${r.error.message}`);
+                  return;
+                }
+                sessionRef.current = r.value;
+                messagesRef.current = [...r.value.messages];
+                setSessionId(r.value.id);
+                pushItem(
+                  'system',
+                  `Resumed session ${r.value.id} (${r.value.messages.length} messages).`
+                );
+              })();
+              return;
+            }
+            void (async () => {
+              const list = await props.sessionStore!.list();
+              if (!list.ok) {
+                pushItem('error', `failed to list sessions: ${list.error.message}`);
+                return;
+              }
+              if (list.value.length === 0) {
+                pushItem('system', 'No saved sessions yet.');
+                return;
+              }
+              setOverlay({ kind: 'session-picker', entries: list.value.slice(0, 20) });
+            })();
+            return;
+          }
           default:
             pushItem('error', `unknown command: /${cmd ?? ''}`);
             return;
@@ -866,6 +929,24 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               }
             }
             assistantBuffer = '';
+            // Persist the session after each turn so resuming the
+            // conversation later just works. We mutate the record in
+            // place (it's a private ref, never read across renders) and
+            // fire-and-forget the disk write — sessions are best-effort,
+            // a write failure is logged via pushItem but doesn't break
+            // the chat loop.
+            if (props.sessionStore && sessionRef.current) {
+              const rec = sessionRef.current;
+              rec.messages = [...messagesRef.current];
+              rec.agent = activeAgent.name;
+              rec.model = model;
+              void props.sessionStore.write(rec).then((r) => {
+                if (!r.ok) {
+                  // eslint-disable-next-line no-console
+                  console.error('session write failed:', r.error.message);
+                }
+              });
+            }
             break;
           }
           case 'done':
@@ -1338,7 +1419,6 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         closeOverlay();
         return;
       }
-      const collected = overlay.collected;
       void (async (): Promise<void> => {
         const baseCfg = props.config;
         if (!baseCfg) {
@@ -1346,20 +1426,32 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           closeOverlay();
           return;
         }
-        const next: AtlasConfig = {
-          ...baseCfg,
-          mcp: {
-            ...baseCfg.mcp,
-            servers: [
-              ...baseCfg.mcp.servers,
-              {
+        const collected = overlay.collected;
+        const newServer =
+          sug.transport === 'http'
+            ? {
+                transport: 'http' as const,
+                name: sug.name,
+                url: sug.url,
+                headers: renderHeaders(sug.headerTemplate, collected),
+                args: [],
+                env: {},
+                enabled: true
+              }
+            : {
+                transport: 'stdio' as const,
                 name: sug.name,
                 command: sug.command,
                 args: [...sug.args],
                 env: collected,
+                headers: {},
                 enabled: true
-              }
-            ]
+              };
+        const next: AtlasConfig = {
+          ...baseCfg,
+          mcp: {
+            ...baseCfg.mcp,
+            servers: [...baseCfg.mcp.servers, newServer]
           }
         };
         const saved = await saveConfig(next);
@@ -1745,6 +1837,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         usage={usage}
         streaming={streaming}
         contextWindow={contextWindowFor(model, modelCatalog)}
+        sessionId={sessionId}
       />
       {transcript.length === 0 && overlay.kind !== 'setup' && <Splash defaultModel={model} />}
       <Box flexDirection="column" flexGrow={1}>
@@ -2050,22 +2143,60 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           </Box>
         </Box>
       )}
+      {overlay.kind === 'session-picker' && (
+        <OverlayBox title="Resume a session">
+          <SelectInput
+            items={overlay.entries.map((e) => ({
+              key: e.id,
+              label: `${e.id}    ${new Date(e.updatedAt).toLocaleString()}`,
+              value: e.id
+            }))}
+            onSelect={(item: { value: string }) => {
+              if (!props.sessionStore) {
+                closeOverlay();
+                return;
+              }
+              void (async () => {
+                const r = await props.sessionStore!.load(item.value);
+                closeOverlay();
+                if (!r.ok) {
+                  pushItem('error', `failed to load session ${item.value}: ${r.error.message}`);
+                  return;
+                }
+                sessionRef.current = r.value;
+                messagesRef.current = [...r.value.messages];
+                setSessionId(r.value.id);
+                pushItem(
+                  'system',
+                  `Resumed session ${r.value.id} (${r.value.messages.length} messages).`
+                );
+              })();
+            }}
+          />
+          <Box marginTop={1}>
+            <Text color="gray">Showing the {overlay.entries.length} most recent sessions. Esc to cancel.</Text>
+          </Box>
+        </OverlayBox>
+      )}
       {overlay.kind === 'mcp-add' && overlay.stage === 'pick' && (
         <OverlayBox title="Add MCP server (pick from suggested catalog)">
           <SelectInput
-            items={MCP_SUGGESTIONS.map((s) => ({
-              key: s.id,
-              label: `${s.name.padEnd(22)} ${s.summary}  [${s.prerequisite}]`,
-              value: s.id
-            }))}
+            items={MCP_SUGGESTIONS.map((s) => {
+              const tag = s.transport === 'http' ? 'http' : s.prerequisite;
+              return {
+                key: s.id,
+                label: `${s.name.padEnd(22)} ${s.summary}  [${tag}]`,
+                value: s.id
+              };
+            })}
             onSelect={onMcpPick}
           />
           <Box marginTop={1} flexDirection="column">
             <Text color="gray">
-              Each entry is an official MCP server that runs locally over stdio.
+              stdio entries spawn locally; http entries call hosted endpoints (Higgsfield, Figma).
             </Text>
             <Text color="gray">
-              You'll need the listed prerequisite (`npx`, `docker`, or `uvx`) on your PATH.
+              For stdio, you'll need the listed prerequisite (`npx`, `docker`, or `uvx`) on your PATH.
             </Text>
           </Box>
         </OverlayBox>
@@ -2094,13 +2225,26 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         return (
           <OverlayBox title={`Add MCP server '${sug.name}'?`}>
             <Box flexDirection="column" marginBottom={1}>
-              <Text>
-                <Text color="gray">command: </Text>
-                <Text>{[sug.command, ...sug.args].join(' ')}</Text>
-              </Text>
+              {sug.transport === 'http' ? (
+                <>
+                  <Text>
+                    <Text color="gray">url:     </Text>
+                    <Text>{sug.url}</Text>
+                  </Text>
+                  <Text>
+                    <Text color="gray">headers: </Text>
+                    <Text>{Object.keys(sug.headerTemplate).join(', ')}</Text>
+                  </Text>
+                </>
+              ) : (
+                <Text>
+                  <Text color="gray">command: </Text>
+                  <Text>{[sug.command, ...sug.args].join(' ')}</Text>
+                </Text>
+              )}
               {Object.keys(overlay.collected).length > 0 ? (
                 <Text>
-                  <Text color="gray">env:     </Text>
+                  <Text color="gray">secrets: </Text>
                   <Text>{Object.keys(overlay.collected).join(', ')}</Text>
                 </Text>
               ) : null}
@@ -2283,7 +2427,8 @@ const Header = ({
   thinking,
   usage,
   streaming,
-  contextWindow
+  contextWindow,
+  sessionId
 }: {
   agent: Agent;
   model: string;
@@ -2298,6 +2443,7 @@ const Header = ({
   } | null;
   streaming: boolean;
   contextWindow: number;
+  sessionId: string | null;
 }): React.JSX.Element => {
   const cost =
     usage && usage.promptTokens !== undefined && usage.completionTokens !== undefined
@@ -2326,6 +2472,12 @@ const Header = ({
           <>
             <Text color="gray"> · </Text>
             <Text color="yellow">streaming</Text>
+          </>
+        )}
+        {sessionId && (
+          <>
+            <Text color="gray"> · </Text>
+            <Text color="cyan">{sessionId.slice(-12)}</Text>
           </>
         )}
       </Box>

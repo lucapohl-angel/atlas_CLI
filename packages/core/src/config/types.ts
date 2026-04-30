@@ -51,9 +51,20 @@ export const AnthropicProviderConfigSchema = z
 
 export const McpServerConfigSchema = z.object({
   name: z.string().min(1),
-  command: z.string().min(1),
+  /**
+   * Transport kind. `stdio` (default) spawns `command` as a subprocess.
+   * `http` posts JSON-RPC to `url` (Streamable HTTP transport, spec
+   * 2025-03-26) — used for hosted servers like Higgsfield and Figma.
+   */
+  transport: z.enum(['stdio', 'http']).default('stdio'),
+  // stdio fields:
+  command: z.string().min(1).optional(),
   args: z.array(z.string()).default([]),
   env: z.record(z.string()).default({}),
+  // http fields:
+  url: z.string().url().optional(),
+  /** Static request headers (e.g. `Authorization: Bearer <token>`). */
+  headers: z.record(z.string()).default({}),
   /** When false, the server is listed but not spawned. */
   enabled: z.boolean().default(true)
 });

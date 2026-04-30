@@ -7,6 +7,19 @@ semantic versioning.
 ## [Unreleased]
 
 ### Added — Phase 12 polish (post-1.0 wiring)
+- **MCP HTTP transport (Streamable HTTP, spec 2025-03-26)** — `McpClient`
+  is now transport-agnostic via the new `McpTransport` interface. Stdio
+  is one impl (`StdioTransport`), HTTP is another (`HttpTransport`).
+  HTTP supports JSON or SSE responses, header-based auth (e.g. `Bearer
+  <token>`), `Mcp-Session-Id` lifecycle (echo + drop on 404), and 202
+  notifications. Higgsfield + Figma added to the suggestion catalog as
+  the first two hosted entries.
+- **Sessions: `--resume`, `/resume`, `/sessions`, header session id** —
+  the TUI creates a `SessionRecord` on boot (or loads one with
+  `--resume <id>` / `--resume` for the latest), persists messages to
+  `~/.atlas/sessions/<id>.json` after every turn, and exposes `/resume`
+  (picker overlay) + `/sessions <id>` (direct load) at runtime. The
+  current session id is shown in the header next to the model.
 - **MCP runtime spawning** — `runTui` now spawns every `enabled: true`
   server in `~/.atlas/config.yaml` at boot via `startMcpServers()`,
   graft their tools into the agent's `ToolRegistry` under the

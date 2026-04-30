@@ -72,14 +72,23 @@ export interface StdioSuggestion extends BaseSuggestion {
    * Auth flows the picker should offer before collecting env vars.
    * When omitted, the picker goes straight to env collection (current
    * behaviour). When set, the user picks one of:
-   *  - 'oauth-gh' : pull a token from `gh auth token` (requires `gh`
-   *                 CLI installed and signed in). Maps to the env var
-   *                 named in `oauthEnvKey`.
-   *  - 'pat'      : prompt for the env var(s) declared in `env`.
+   *  - 'oauth-gh'      : pull a token from `gh auth token` (requires
+   *                      the `gh` CLI installed and signed in).
+   *  - 'oauth-browser' : open the user's browser to a service-specific
+   *                      token-creation page (with scopes prefilled
+   *                      where supported), then collect the resulting
+   *                      token via the env step.
+   *  - 'pat'           : prompt for the env var(s) declared in `env`.
    */
-  readonly authMethods?: readonly ('oauth-gh' | 'pat')[];
+  readonly authMethods?: readonly ('oauth-gh' | 'oauth-browser' | 'pat')[];
   /** Which env key receives the OAuth token. Required when 'oauth-gh' is offered. */
   readonly oauthEnvKey?: string;
+  /**
+   * URL to open for the 'oauth-browser' flow. Should land on a
+   * pre-filled token-creation screen. Required when 'oauth-browser'
+   * is offered.
+   */
+  readonly oauthBrowserUrl?: string;
 }
 
 export interface HttpSuggestion extends BaseSuggestion {
@@ -185,8 +194,15 @@ export const MCP_SUGGESTIONS: readonly McpServerSuggestion[] = [
     ],
     docs: 'https://github.com/github/github-mcp-server',
     prerequisite: GITHUB_BIN_PREREQ,
-    authMethods: ['oauth-gh', 'pat'],
-    oauthEnvKey: 'GITHUB_PERSONAL_ACCESS_TOKEN'
+    authMethods: ['oauth-gh', 'oauth-browser', 'pat'],
+    oauthEnvKey: 'GITHUB_PERSONAL_ACCESS_TOKEN',
+    // Pre-fills GitHub's "new fine-grained PAT" page with a friendly
+    // description so the user can review scopes and submit. We can't
+    // do a real OAuth web flow without registering an OAuth app +
+    // running a callback server; this is the closest "browser
+    // authorize" experience that needs zero client_id setup.
+    oauthBrowserUrl:
+      'https://github.com/settings/personal-access-tokens/new?description=Atlas%20CLI'
   },
   {
     id: 'higgsfield',

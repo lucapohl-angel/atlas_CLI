@@ -7,6 +7,17 @@ semantic versioning.
 ## [Unreleased]
 
 ### Added — Phase 12 polish (post-1.0 wiring)
+- **Restart-required prompt after `/mcps add`** — saving a new MCP
+  server now opens a dedicated overlay (`'X' added — restart required`)
+  with two clear options: quit now to restart, or keep chatting (and
+  the new server's tools won't be available until the next launch).
+  Replaces the easy-to-miss chat-line message.
+- **GitHub MCP gets a third auth option: OAuth via browser** — opens
+  https://github.com/settings/personal-access-tokens/new (with the
+  description prefilled) so the user can review scopes and create a
+  fine-grained token, then drops them into the paste step. Keeps the
+  existing gh-CLI and PAT options. Suggestions schema gained
+  `oauthBrowserUrl` for reuse.
 - **github-mcp-server auto-installer** — the prereq overlay for the
   GitHub MCP server now offers "Install for me", which downloads the
   latest release tarball for the user's OS/arch (Linux + macOS, both

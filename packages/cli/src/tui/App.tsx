@@ -170,6 +170,11 @@ type Overlay =
       readonly collected: Readonly<Record<string, string>>;
     }
   | {
+      readonly kind: 'mcp-restart-prompt';
+      readonly serverName: string;
+      readonly configPath: string;
+    }
+  | {
       readonly kind: 'session-picker';
       readonly entries: readonly { id: string; updatedAt: string }[];
     }
@@ -1806,6 +1811,43 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             'Opened https://cli.github.com. Install gh, run `gh auth login`, then re-pick OAuth.'
           );
           return;
+        case 'oauth-browser': {
+          // Open the service's token-creation page in the user's
+          // browser, then drop into the env step so they can paste the
+          // resulting token. Real OAuth web flow would need a
+          // registered client + callback server — this gives the same
+          // "click in browser, get token" UX without that overhead.
+          if (!sug.oauthBrowserUrl) {
+            setOverlay({
+              kind: 'mcp-add',
+              stage: 'auth',
+              suggestionId: id,
+              probing: false,
+              statusLine: 'error: no oauthBrowserUrl configured for this entry'
+            });
+            return;
+          }
+          void openInBrowser(sug.oauthBrowserUrl);
+          pushItem(
+            'system',
+            `Opened ${sug.oauthBrowserUrl}. Review scopes, generate the token, then paste it on the next screen.`
+          );
+          // Skip straight to env collection (token paste).
+          if (sug.env.length === 0) {
+            setOverlay({ kind: 'mcp-add', stage: 'confirm', suggestionId: id, collected: {} });
+          } else {
+            setInput('');
+            setOverlay({
+              kind: 'mcp-add',
+              stage: 'env',
+              suggestionId: id,
+              envIndex: 0,
+              draft: '',
+              collected: {}
+            });
+          }
+          return;
+        }
         case 'oauth-gh': {
           const envKey = sug.oauthEnvKey;
           if (!envKey) {
@@ -1995,9 +2037,17 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         }
         pushItem(
           'system',
-          `Added MCP server '${sug.name}' to ${saved.value.path}.\nRestart atlas to spawn it and pick up its tools.`
+          `Added MCP server '${sug.name}' to ${saved.value.path}.`
         );
-        closeOverlay();
+        // Surface a dedicated restart prompt — the chat-line message
+        // is easy to miss in a busy transcript and users were asking
+        // "where do I see this?". The overlay forces an explicit
+        // ack and gives a one-keystroke quit.
+        setOverlay({
+          kind: 'mcp-restart-prompt',
+          serverName: sug.name,
+          configPath: saved.value.path
+        });
       })();
     },
     [overlay, props.config, pushItem, closeOverlay]
@@ -2246,6 +2296,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         return 10;
       case 'autopilot-consent':
         return 14;
+      case 'mcp-restart-prompt':
+        return 12;
       case 'none':
       default:
         return 0;
@@ -2779,26 +2831,34 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       {overlay.kind === 'mcp-add' && overlay.stage === 'auth' && (() => {
         const sug = findSuggestion(overlay.suggestionId);
         if (!sug || sug.transport !== 'stdio') return null;
+        const methods = sug.authMethods ?? [];
         const items = [
-          { key: 'oauth-gh', label: 'OAuth — pull token from `gh auth token`', value: 'oauth-gh' },
-          { key: 'pat', label: 'Personal Access Token — paste a PAT (ghp_… / github_pat_…)', value: 'pat' },
-          { key: 'docs', label: 'I don\u2019t have `gh` yet — open install docs', value: 'docs' },
+          ...(methods.includes('oauth-gh')
+            ? [{ key: 'oauth-gh', label: 'OAuth via `gh` CLI \u2014 pull token from your existing gh login', value: 'oauth-gh' }]
+            : []),
+          ...(methods.includes('oauth-browser') && sug.oauthBrowserUrl
+            ? [{ key: 'oauth-browser', label: 'OAuth via browser \u2014 open the token-creation page, then paste the token back', value: 'oauth-browser' }]
+            : []),
+          ...(methods.includes('pat')
+            ? [{ key: 'pat', label: 'Personal Access Token \u2014 I already have one, let me paste it', value: 'pat' }]
+            : []),
+          { key: 'docs', label: 'I don\u2019t have `gh` yet \u2014 open install docs', value: 'docs' },
           { key: 'cancel', label: 'Cancel', value: 'cancel' }
         ];
         return (
           <OverlayBox title={`How would you like to authenticate ${sug.name}?`}>
             <Box flexDirection="column" marginBottom={1}>
               <Text color="gray">
-                OAuth uses your existing `gh auth login` session — no token to paste, scopes match
-                what you authorized for `gh`. PAT is fine if you want a scoped, revocable token
-                stored in ~/.atlas/config.yaml.
+                gh CLI = no paste, scopes follow your `gh auth login`. Browser = opens GitHub
+                so you can review scopes and create a token, then paste it back here. PAT =
+                you already have one ready.
               </Text>
               {overlay.statusLine ? (
                 <Text color={overlay.statusLine.startsWith('error') ? 'red' : 'green'}>
                   {overlay.statusLine}
                 </Text>
               ) : null}
-              {overlay.probing ? <Text color="yellow">running `gh auth token`…</Text> : null}
+              {overlay.probing ? <Text color="yellow">{'running `gh auth token`\u2026'}</Text> : null}
             </Box>
             {!overlay.probing ? <SelectInput items={items} onSelect={onMcpAuthSelect} /> : null}
           </OverlayBox>
@@ -2890,6 +2950,37 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           </OverlayBox>
         );
       })()}
+      {overlay.kind === 'mcp-restart-prompt' && (
+        <OverlayBox title={`'${overlay.serverName}' added \u2014 restart required`}>
+          <Box flexDirection="column" marginBottom={1}>
+            <Text>
+              <Text color="green">{'\u2713 saved'}</Text>
+              <Text color="gray"> to {overlay.configPath}</Text>
+            </Text>
+            <Box marginTop={1}>
+              <Text>
+                MCP servers are spawned at startup, so atlas needs a restart to load
+                <Text color="cyan" bold> {overlay.serverName} </Text>
+                and pick up its tools.
+              </Text>
+            </Box>
+          </Box>
+          <SelectInput
+            items={[
+              { key: 'quit', label: 'Quit now (then re-run `atlas`)', value: 'quit' },
+              { key: 'later', label: 'Later \u2014 keep chatting (tools won\u2019t be available yet)', value: 'later' }
+            ]}
+            onSelect={(item) => {
+              if (item.value === 'quit') {
+                pushItem('system', `Quitting so you can restart and load '${overlay.serverName}'.`);
+                app.exit();
+                return;
+              }
+              closeOverlay();
+            }}
+          />
+        </OverlayBox>
+      )}
       {overlay.kind === 'setup' && overlay.stage === 'menu' && (
         <Box flexDirection="column" borderStyle="double" borderColor="cyan" paddingX={1} marginY={1}>
           <Text color="cyan" bold>

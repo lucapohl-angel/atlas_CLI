@@ -31,6 +31,7 @@ import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
 import {
   ATLAS_VERSION,
+  MCP_SUGGESTIONS,
   allowAllPolicy,
   createOpenRouterProvider,
   denyAllPolicy,
@@ -39,6 +40,7 @@ import {
   fetchOpenRouterModels,
   fetchAnthropicModels,
   fetchCodexModels,
+  findSuggestion,
   runAgentLoop,
   saveConfig,
   thinkingLevelsFor,
@@ -98,6 +100,16 @@ export interface TuiAppProps {
   readonly config?: AtlasConfig;
   /** A non-fatal config error message to surface in the setup overlay. */
   readonly setupError?: string;
+  /**
+   * Live status of MCP servers spawned at TUI boot. `running` lists
+   * the servers we successfully connected to (and how many tools each
+   * exposed); `failed` carries spawn/list errors so `/mcps` can show
+   * what went wrong. Both default to empty.
+   */
+  readonly mcpStatus?: {
+    readonly running: readonly { name: string; toolCount: number }[];
+    readonly failed: readonly { name: string; error: string }[];
+  };
 }
 
 type Mode = 'plan' | 'build' | 'autopilot';
@@ -111,6 +123,21 @@ type Overlay =
   | { readonly kind: 'option-picker'; readonly request: InteractionRequest }
   | { readonly kind: 'option-freeform'; readonly request: InteractionRequest }
   | { readonly kind: 'autopilot-consent' }
+  | { readonly kind: 'mcp-add'; readonly stage: 'pick' }
+  | {
+      readonly kind: 'mcp-add';
+      readonly stage: 'env';
+      readonly suggestionId: string;
+      readonly envIndex: number;
+      readonly draft: string;
+      readonly collected: Readonly<Record<string, string>>;
+    }
+  | {
+      readonly kind: 'mcp-add';
+      readonly stage: 'confirm';
+      readonly suggestionId: string;
+      readonly collected: Readonly<Record<string, string>>;
+    }
   | {
       readonly kind: 'setup';
       readonly stage: 'menu' | 'key' | 'info';
@@ -557,22 +584,79 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             return;
           case 'mcps':
           case 'mcp': {
+            const sub = (rest[0] ?? '').toLowerCase();
+            if (sub === 'add') {
+              setOverlay({ kind: 'mcp-add', stage: 'pick' });
+              return;
+            }
+            if (sub === 'remove' || sub === 'rm') {
+              const target = rest[1];
+              if (!target) {
+                pushItem('error', 'usage: /mcps remove <name>');
+                return;
+              }
+              void (async (): Promise<void> => {
+                const baseCfg = props.config;
+                if (!baseCfg) {
+                  pushItem('error', 'no config loaded');
+                  return;
+                }
+                const before = baseCfg.mcp.servers.length;
+                const next: AtlasConfig = {
+                  ...baseCfg,
+                  mcp: {
+                    ...baseCfg.mcp,
+                    servers: baseCfg.mcp.servers.filter((s) => s.name !== target)
+                  }
+                };
+                if (next.mcp.servers.length === before) {
+                  pushItem('error', `no such MCP server: ${target}`);
+                  return;
+                }
+                const saved = await saveConfig(next);
+                if (!saved.ok) {
+                  pushItem('error', `failed to save config: ${saved.error.message}`);
+                  return;
+                }
+                pushItem(
+                  'system',
+                  `Removed MCP server '${target}'. Restart atlas for the change to take effect.`
+                );
+              })();
+              return;
+            }
             const servers = props.config?.mcp?.servers ?? [];
-            if (servers.length === 0) {
+            const running = props.mcpStatus?.running ?? [];
+            const failed = props.mcpStatus?.failed ?? [];
+            if (servers.length === 0 && running.length === 0 && failed.length === 0) {
               pushItem(
                 'system',
-                'No MCP servers configured.\n\nAdd them under `mcp.servers` in ~/.atlas/config.yaml. Example:\n\n  mcp:\n    servers:\n      - name: filesystem\n        command: npx\n        args: ["@modelcontextprotocol/server-filesystem", "."]\n        enabled: true'
+                'No MCP servers configured.\n\nRun /mcps add to pick from the suggested catalog,\nor edit ~/.atlas/config.yaml directly.'
               );
               return;
             }
             const lines = servers.map((s) => {
-              const status = s.enabled ? 'on ' : 'off';
+              const live = running.find((r) => r.name === s.name);
+              const fail = failed.find((f) => f.name === s.name);
+              const status = !s.enabled
+                ? 'off'
+                : live
+                  ? `on  (${live.toolCount} tool${live.toolCount === 1 ? '' : 's'})`
+                  : fail
+                    ? `err`
+                    : 'pending';
               const cmd = [s.command, ...s.args].join(' ');
-              return `  ${status}  ${s.name.padEnd(16)} ${cmd}`;
+              return `  ${status.padEnd(14)}  ${s.name.padEnd(20)} ${cmd}`;
             });
+            const failLines = failed
+              .filter((f) => !servers.some((s) => s.name === f.name))
+              .map((f) => `  err           ${f.name.padEnd(20)} ${f.error}`);
+            const errSection = failed.length > 0
+              ? `\n\nErrors:\n${failed.map((f) => `  ${f.name}: ${f.error}`).join('\n')}`
+              : '';
             pushItem(
               'system',
-              `MCP servers (${servers.length}):\n${lines.join('\n')}\n\nRuntime spawning lands in a later phase.`
+              `MCP servers (${servers.length} configured, ${running.length} running):\n${[...lines, ...failLines].join('\n')}\n\nUse /mcps add to add one from the suggested catalog,\nor /mcps remove <name> to remove one.${errSection}`
             );
             return;
           }
@@ -1158,6 +1242,142 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     [pushItem, closeOverlay]
   );
 
+  // MCP add overlay — pick a curated server suggestion, prompt for any
+  // required env vars one at a time, then write to ~/.atlas/config.yaml.
+  // The server isn't spawned in-session: that happens at next boot via
+  // `runTui.ts`. The user is told to restart.
+  const onMcpPick = useCallback(
+    (item: { value: string }) => {
+      const sug = findSuggestion(item.value);
+      if (!sug) {
+        closeOverlay();
+        pushItem('error', `unknown MCP suggestion: ${item.value}`);
+        return;
+      }
+      const existing = props.config?.mcp.servers.some((s) => s.name === sug.name);
+      if (existing) {
+        closeOverlay();
+        pushItem(
+          'error',
+          `MCP server '${sug.name}' is already configured. Remove it first with /mcps remove ${sug.name}.`
+        );
+        return;
+      }
+      if (sug.env.length === 0) {
+        setOverlay({
+          kind: 'mcp-add',
+          stage: 'confirm',
+          suggestionId: sug.id,
+          collected: {}
+        });
+      } else {
+        setInput('');
+        setOverlay({
+          kind: 'mcp-add',
+          stage: 'env',
+          suggestionId: sug.id,
+          envIndex: 0,
+          draft: '',
+          collected: {}
+        });
+      }
+    },
+    [props.config, pushItem, closeOverlay]
+  );
+
+  const onMcpEnvSubmit = useCallback(() => {
+    if (overlay.kind !== 'mcp-add' || overlay.stage !== 'env') return;
+    const sug = findSuggestion(overlay.suggestionId);
+    if (!sug) {
+      closeOverlay();
+      return;
+    }
+    const spec = sug.env[overlay.envIndex];
+    if (!spec) {
+      closeOverlay();
+      return;
+    }
+    const value = input.trim();
+    if (spec.required && value.length === 0) {
+      pushItem('error', `${spec.key} is required.`);
+      return;
+    }
+    const collected: Record<string, string> = { ...overlay.collected };
+    if (value.length > 0) collected[spec.key] = value;
+    const nextIndex = overlay.envIndex + 1;
+    setInput('');
+    if (nextIndex >= sug.env.length) {
+      setOverlay({
+        kind: 'mcp-add',
+        stage: 'confirm',
+        suggestionId: sug.id,
+        collected
+      });
+    } else {
+      setOverlay({
+        kind: 'mcp-add',
+        stage: 'env',
+        suggestionId: sug.id,
+        envIndex: nextIndex,
+        draft: '',
+        collected
+      });
+    }
+  }, [overlay, input, pushItem, closeOverlay]);
+
+  const onMcpConfirm = useCallback(
+    (item: { value: string }) => {
+      if (overlay.kind !== 'mcp-add' || overlay.stage !== 'confirm') return;
+      if (item.value !== 'yes') {
+        closeOverlay();
+        pushItem('system', 'MCP add cancelled.');
+        return;
+      }
+      const sug = findSuggestion(overlay.suggestionId);
+      if (!sug) {
+        closeOverlay();
+        return;
+      }
+      const collected = overlay.collected;
+      void (async (): Promise<void> => {
+        const baseCfg = props.config;
+        if (!baseCfg) {
+          pushItem('error', 'no config loaded — run /config first');
+          closeOverlay();
+          return;
+        }
+        const next: AtlasConfig = {
+          ...baseCfg,
+          mcp: {
+            ...baseCfg.mcp,
+            servers: [
+              ...baseCfg.mcp.servers,
+              {
+                name: sug.name,
+                command: sug.command,
+                args: [...sug.args],
+                env: collected,
+                enabled: true
+              }
+            ]
+          }
+        };
+        const saved = await saveConfig(next);
+        if (!saved.ok) {
+          pushItem('error', `failed to save config: ${saved.error.message}`);
+          closeOverlay();
+          return;
+        }
+        pushItem(
+          'system',
+          `Added MCP server '${sug.name}' to ${saved.value.path}.\nRestart atlas to spawn it and pick up its tools.`
+        );
+        closeOverlay();
+      })();
+    },
+    [overlay, props.config, pushItem, closeOverlay]
+  );
+
   // Setup overlay: paste API key inside the TUI, persist to ~/.atlas/config.yaml,
   // then materialize a real provider so the next /send works.
   const onSetupKeyChange = useCallback(
@@ -1272,7 +1492,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       }
       // mcp
       const info =
-        'MCP servers are configured in ~/.atlas/config.yaml under\nthe top-level `mcp:` key. Example:\n\n  mcp:\n    servers:\n      - name: filesystem\n        command: npx\n        args: ["@modelcontextprotocol/server-filesystem", "."]\n        enabled: true\n\nUse `/mcps` to list configured servers.\nIn-TUI editing + runtime spawning land in a later phase.';
+        'MCP servers can be added from the suggested catalog with /mcps add\n(or edited directly in ~/.atlas/config.yaml under the `mcp:` key).\n\nUse /mcps to list configured servers and their live tool counts.\nUse /mcps remove <name> to remove one.';
       setOverlay({ kind: 'setup', stage: 'info', draftKey: '', target, infoText: info });
     },
     [props.config, model, pushItem, closeOverlay]
@@ -1830,6 +2050,72 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           </Box>
         </Box>
       )}
+      {overlay.kind === 'mcp-add' && overlay.stage === 'pick' && (
+        <OverlayBox title="Add MCP server (pick from suggested catalog)">
+          <SelectInput
+            items={MCP_SUGGESTIONS.map((s) => ({
+              key: s.id,
+              label: `${s.name.padEnd(22)} ${s.summary}  [${s.prerequisite}]`,
+              value: s.id
+            }))}
+            onSelect={onMcpPick}
+          />
+          <Box marginTop={1} flexDirection="column">
+            <Text color="gray">
+              Each entry is an official MCP server that runs locally over stdio.
+            </Text>
+            <Text color="gray">
+              You'll need the listed prerequisite (`npx`, `docker`, or `uvx`) on your PATH.
+            </Text>
+          </Box>
+        </OverlayBox>
+      )}
+      {overlay.kind === 'mcp-add' && overlay.stage === 'env' && (() => {
+        const sug = findSuggestion(overlay.suggestionId);
+        const spec = sug?.env[overlay.envIndex];
+        if (!sug || !spec) return null;
+        return (
+          <OverlayBox title={`${sug.name} → ${spec.key}${spec.required ? ' (required)' : ' (optional)'}`}>
+            <Box flexDirection="column" marginBottom={1}>
+              <Text color="gray">{spec.description}</Text>
+            </Box>
+            <TextInput
+              value={input}
+              onChange={setInput}
+              onSubmit={onMcpEnvSubmit}
+              placeholder={spec.placeholder ?? ''}
+            />
+          </OverlayBox>
+        );
+      })()}
+      {overlay.kind === 'mcp-add' && overlay.stage === 'confirm' && (() => {
+        const sug = findSuggestion(overlay.suggestionId);
+        if (!sug) return null;
+        return (
+          <OverlayBox title={`Add MCP server '${sug.name}'?`}>
+            <Box flexDirection="column" marginBottom={1}>
+              <Text>
+                <Text color="gray">command: </Text>
+                <Text>{[sug.command, ...sug.args].join(' ')}</Text>
+              </Text>
+              {Object.keys(overlay.collected).length > 0 ? (
+                <Text>
+                  <Text color="gray">env:     </Text>
+                  <Text>{Object.keys(overlay.collected).join(', ')}</Text>
+                </Text>
+              ) : null}
+              <Text color="gray">docs:    {sug.docs}</Text>
+            </Box>
+            <SelectInput
+              items={[
+                { key: 'no', label: 'No — cancel', value: 'no' },
+                { key: 'yes', label: 'Yes — save to ~/.atlas/config.yaml', value: 'yes' }
+              ]}
+              onSelect={onMcpConfirm}
+            />
+          </OverlayBox>
+        );
+      })()}
       {overlay.kind === 'setup' && overlay.stage === 'menu' && (
         <Box flexDirection="column" borderStyle="double" borderColor="cyan" paddingX={1} marginY={1}>
           <Text color="cyan" bold>
@@ -2631,7 +2917,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'mode', args: 'plan|build|autopilot', summary: 'set permission mode' },
   { name: 'thinking', args: 'off|low|medium|high|xhigh', summary: 'set reasoning effort (model-aware)' },
   { name: 'config', summary: 'open the config menu (API keys, OAuth, integrations)' },
-  { name: 'mcps', summary: 'list configured MCP servers' },
+  { name: 'mcps', args: '[add|remove <name>]', summary: 'list / add / remove MCP servers' },
   { name: 'exit', summary: 'leave atlas' }
 ];
 

@@ -13,6 +13,7 @@
  * can render incrementally without buffering whole turns.
  */
 import { atlasError, type AtlasError } from '../errors.js';
+import { runHooks, type HookRegistry } from '../hooks/index.js';
 import { childLogger } from '../logger.js';
 import {
   invokeTool,
@@ -43,6 +44,12 @@ export interface AgentLoopOptions {
   readonly reasoning?: ReasoningOptions;
   /** Hard cap on tool-use rounds. Defaults to 24. */
   readonly maxRounds?: number;
+  /**
+   * Optional hook registry. When provided, the loop fires `beforeTool`
+   * (which can block or rewrite the input), `afterTool`, and
+   * `afterMessage` for the assistant turn.
+   */
+  readonly hooks?: HookRegistry;
   readonly signal?: AbortSignal;
 }
 
@@ -138,6 +145,18 @@ export const runAgentLoop = async function* (
     messages.push(assistantMessage);
     yield { type: 'turn_end', assistantMessage };
 
+    if (opts.hooks) {
+      // Best-effort observation point: hooks can't (yet) rewrite the
+      // assistant message — they'd need to retract a stream that's
+      // already been emitted. Block here is a no-op for the same reason.
+      await runHooks(opts.hooks, 'afterMessage', {
+        event: 'afterMessage',
+        role: 'assistant',
+        content: assistantText,
+        ...(opts.signal ? { signal: opts.signal } : {})
+      });
+    }
+
     if (turnToolCalls.length === 0) {
       yield {
         type: 'done',
@@ -173,7 +192,31 @@ export const runAgentLoop = async function* (
         continue;
       }
 
-      const result = await invokeTool(opts.tools, call.name, parsed, opts.toolContext);
+      let toolInput: unknown = parsed;
+      if (opts.hooks) {
+        const decision = await runHooks(opts.hooks, 'beforeTool', {
+          event: 'beforeTool',
+          tool: call.name,
+          input: toolInput,
+          ...(opts.signal ? { signal: opts.signal } : {})
+        });
+        if (decision.action === 'block') {
+          const error = atlasError('TOOL_DENIED_BY_USER', `hook blocked ${call.name}: ${decision.reason}`, {
+            context: { name: call.name, reason: decision.reason }
+          });
+          messages.push({
+            role: 'tool',
+            content: `error: ${error.message}`,
+            toolCallId: call.id,
+            name: call.name
+          });
+          yield { type: 'tool_call_done', call, outcome: { type: 'error', error } };
+          continue;
+        }
+        if (decision.action === 'modify') toolInput = decision.payload;
+      }
+
+      const result = await invokeTool(opts.tools, call.name, toolInput, opts.toolContext);
       if (result.ok) {
         messages.push({
           role: 'tool',
@@ -199,6 +242,17 @@ export const runAgentLoop = async function* (
           call,
           outcome: { type: 'error', error: result.error }
         };
+      }
+      if (opts.hooks) {
+        await runHooks(opts.hooks, 'afterTool', {
+          event: 'afterTool',
+          tool: call.name,
+          input: toolInput,
+          result: result.ok
+            ? result.value
+            : { type: 'error', message: result.error.message },
+          ...(opts.signal ? { signal: opts.signal } : {})
+        });
       }
     }
   }

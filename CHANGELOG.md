@@ -6,6 +6,24 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added — Phase 12 polish (post-1.0 wiring)
+- **MCP runtime spawning** — `runTui` now spawns every `enabled: true`
+  server in `~/.atlas/config.yaml` at boot via `startMcpServers()`,
+  graft their tools into the agent's `ToolRegistry` under the
+  `mcp__<server>__<tool>` namespace, and stops them on exit. The agent
+  loop calls them transparently alongside built-in tools.
+- **`/mcps add` TUI flow** — pick from a curated catalog
+  (`MCP_SUGGESTIONS`: filesystem, fetch, github, brave-search, sqlite,
+  memory, time, sequential-thinking, postgres, slack), prompt for any
+  required env vars one at a time, persist to `~/.atlas/config.yaml`.
+- **`/mcps remove <name>`** — delete a configured server.
+- **`/mcps`** — now reports running vs. failed vs. disabled with live
+  tool counts, not just a static config dump.
+- **Hooks wired into the agent loop** — `runAgentLoop` accepts an
+  optional `HookRegistry` and fires `beforeTool` (allow/block/modify),
+  `afterTool`, and `afterMessage` at the right points. Phase 4's
+  contract is now live, not just a library.
+
 ### Added — Phase 0 (Foundation)
 - pnpm monorepo: `@atlas/core`, `atlas-cli`
 - TypeScript strict mode, ESM-only, Vitest

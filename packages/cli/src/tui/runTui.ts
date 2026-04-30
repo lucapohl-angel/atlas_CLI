@@ -24,8 +24,11 @@ import {
   loadSkills,
   loadClaudeCodeCredentials,
   providerFromConfigAsync,
+  registerMcpTools,
   saveConfig,
+  startMcpServers,
   type AtlasConfig,
+  type McpStartupResult,
   type ModelInfo,
   type Provider
 } from '@atlas/core';
@@ -129,6 +132,25 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
   const skills = new SkillRegistry(skillsResult.ok ? skillsResult.value : []);
   const tools = builtinToolRegistry();
 
+  // Spawn every enabled MCP server in parallel and graft their tools
+  // onto the registry so the agent loop can call them transparently.
+  // Failures are non-fatal: a misconfigured server doesn't block boot,
+  // it just won't appear in `/mcps`. Collected so the App can render
+  // status and so we can stop the children on exit.
+  const mcpStartup: McpStartupResult = await (async () => {
+    const enabled = cfg?.mcp.servers.filter((s) => s.enabled) ?? [];
+    if (enabled.length === 0) return { running: [], failed: [], stopAll: () => {} };
+    const specs = enabled.map((s) => ({
+      name: s.name,
+      command: s.command,
+      args: s.args,
+      env: { ...process.env, ...s.env }
+    }));
+    const result = await startMcpServers(specs);
+    registerMcpTools(tools, result.running);
+    return result;
+  })();
+
   const fallbackPool =
     cfg?.defaultProvider === 'anthropic' ? ANTHROPIC_NATIVE_MODELS : OPENROUTER_FALLBACK_MODELS;
   const defaultModel =
@@ -177,6 +199,16 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
     fallbackModels,
     availableModels,
     modelCatalog,
+    mcpStatus: {
+      running: mcpStartup.running.map((r) => ({
+        name: r.spec.name,
+        toolCount: r.tools.length
+      })),
+      failed: mcpStartup.failed.map((f) => ({
+        name: f.spec.name,
+        error: f.error.message
+      }))
+    },
     ...(initialAgent ? { initialAgentName: initialAgent } : {}),
     ...(cfg ? { config: cfg } : {}),
     ...(setupError ? { setupError } : {})
@@ -192,6 +224,7 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
   }
 
   const restore = (): void => {
+    mcpStartup.stopAll();
     if (useAltScreen) process.stdout.write('\x1b[?1049l');
   };
   process.on('exit', restore);

@@ -5,7 +5,7 @@
  * don't pay the spawn cost.
  */
 import { access, constants } from 'node:fs/promises';
-import { platform } from 'node:os';
+import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 
 export const findOnPath = async (bin: string): Promise<string | null> => {
@@ -16,7 +16,14 @@ export const findOnPath = async (bin: string): Promise<string | null> => {
   const exts = isWin
     ? (process.env['PATHEXT'] ?? '.EXE;.CMD;.BAT;.COM').split(';')
     : [''];
-  for (const dir of PATH.split(sep).filter(Boolean)) {
+  // XDG-standard "user-local bins" — atlas's own auto-installers (e.g.
+  // the github-mcp-server tarball installer) drop binaries here. Many
+  // distros + Homebrew already prepend it to PATH, but we probe it
+  // unconditionally so a fresh shell that hasn't sourced it yet still
+  // resolves the binary.
+  const extraDirs = isWin ? [] : [join(homedir(), '.local', 'bin')];
+  const allDirs = [...PATH.split(sep).filter(Boolean), ...extraDirs];
+  for (const dir of allDirs) {
     for (const ext of exts) {
       const p = join(dir, bin + ext);
       try {

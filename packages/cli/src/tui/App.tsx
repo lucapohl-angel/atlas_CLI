@@ -1948,6 +1948,18 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           return;
         }
         const collected = overlay.collected;
+        // For stdio entries, resolve the command to an absolute path
+        // when possible. findOnPath also probes ~/.local/bin (where our
+        // auto-installer drops binaries) so the spawned MCP server
+        // works even if the user's shell hasn't picked up that dir on
+        // PATH yet. Falls back to the bare name if not found — the
+        // user gets a clear "command not found" error at startup
+        // instead of silent failure.
+        let resolvedCommand = sug.transport === 'stdio' ? sug.command : '';
+        if (sug.transport === 'stdio') {
+          const abs = await findOnPath(sug.command);
+          if (abs) resolvedCommand = abs;
+        }
         const newServer =
           sug.transport === 'http'
             ? {
@@ -1962,7 +1974,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             : {
                 transport: 'stdio' as const,
                 name: sug.name,
-                command: sug.command,
+                command: resolvedCommand,
                 args: [...sug.args],
                 env: collected,
                 headers: {},

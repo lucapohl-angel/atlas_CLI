@@ -104,7 +104,36 @@ const NPX_PREREQ: PrerequisiteSpec = {
 const GITHUB_BIN_PREREQ: PrerequisiteSpec = {
   bin: 'github-mcp-server',
   label: 'binary',
-  docsUrl: 'https://github.com/github/github-mcp-server/releases'
+  docsUrl: 'https://github.com/github/github-mcp-server/releases',
+  // Downloads the latest release tarball for the user's OS/arch from
+  // github/github-mcp-server, extracts the binary into ~/.local/bin
+  // (XDG-standard, on PATH by default on Linux + Homebrew macOS), and
+  // chmods it. Idempotent: re-running just overwrites the binary.
+  // Windows is intentionally omitted — the user gets the docs link.
+  autoInstall: {
+    description:
+      'Atlas will fetch the latest github-mcp-server release for your OS/arch and place it in ~/.local/bin.',
+    shell: [
+      'set -e',
+      'mkdir -p "$HOME/.local/bin"',
+      'OS=$(uname -s)',
+      'ARCH=$(uname -m)',
+      'case "$OS" in Darwin) PLAT=Darwin;; Linux) PLAT=Linux;; *) echo "unsupported OS: $OS" >&2; exit 1;; esac',
+      'case "$ARCH" in x86_64|amd64) A=x86_64;; arm64|aarch64) A=arm64;; *) echo "unsupported arch: $ARCH" >&2; exit 1;; esac',
+      // Pull the asset URL from the GitHub releases API. Falls back to
+      // matching `_${PLAT}_${A}.tar.gz` so future filename tweaks still
+      // resolve as long as the convention stays the same.
+      'URL=$(curl -fsSL https://api.github.com/repos/github/github-mcp-server/releases/latest | grep -o "https://[^\\\"]*_${PLAT}_${A}\\.tar\\.gz" | head -n1)',
+      '[ -n "$URL" ] || { echo "no release asset for ${PLAT}_${A}" >&2; exit 1; }',
+      'TMP=$(mktemp -d)',
+      'curl -fsSL "$URL" -o "$TMP/gh-mcp.tar.gz"',
+      'tar -xzf "$TMP/gh-mcp.tar.gz" -C "$TMP"',
+      'mv "$TMP/github-mcp-server" "$HOME/.local/bin/github-mcp-server"',
+      'chmod +x "$HOME/.local/bin/github-mcp-server"',
+      'rm -rf "$TMP"',
+      'echo "installed to $HOME/.local/bin/github-mcp-server"'
+    ].join(' && ')
+  }
 };
 
 /**

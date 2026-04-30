@@ -7,6 +7,14 @@ semantic versioning.
 ## [Unreleased]
 
 ### Added — Phase 12 polish (post-1.0 wiring)
+- **github-mcp-server auto-installer** — the prereq overlay for the
+  GitHub MCP server now offers "Install for me", which downloads the
+  latest release tarball for the user's OS/arch (Linux + macOS, both
+  x86_64 and arm64) into `~/.local/bin` and chmods it. `findOnPath`
+  now also probes `~/.local/bin` so the recheck step succeeds even if
+  the user's shell hasn't picked it up. The MCP add flow stores the
+  resolved absolute path in `~/.atlas/config.yaml` so spawning works
+  on next start regardless of PATH.
 - **GitHub MCP auth picker (OAuth or PAT)** — picking `github` in
   `/mcps add` now opens an auth-method chooser. **OAuth** shells out
   to `gh auth token` (requires the `gh` CLI installed and signed in)

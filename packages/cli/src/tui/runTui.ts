@@ -16,6 +16,7 @@ import {
   createAnthropicProvider,
   createCodexProvider,
   createOpenRouterProvider,
+  DEFAULT_BUILTIN_MCP_SERVERS,
   fetchAnthropicModels,
   fetchCodexModels,
   fetchOpenRouterModels,
@@ -107,6 +108,32 @@ const maybeAutoDetectClaudeCode = async (cfg: AtlasConfig): Promise<AtlasConfig>
   };
 };
 
+/**
+ * On first launch, seed the user's config with the curated set of
+ * built-in MCP servers (currently just `memory` so the agent has
+ * persistent notes across sessions out-of-the-box). The
+ * `mcp.builtinsSeeded` flag prevents us from re-adding entries the
+ * user explicitly removes later.
+ */
+const maybeSeedDefaultMcps = async (cfg: AtlasConfig): Promise<AtlasConfig> => {
+  if (cfg.mcp.builtinsSeeded) return cfg;
+  const existing = new Set(cfg.mcp.servers.map((s) => s.name));
+  const additions = DEFAULT_BUILTIN_MCP_SERVERS.filter((s) => !existing.has(s.name));
+  const next: AtlasConfig = {
+    ...cfg,
+    mcp: {
+      ...cfg.mcp,
+      servers: [...cfg.mcp.servers, ...additions],
+      builtinsSeeded: true
+    }
+  };
+  // Persist so the flag survives restarts even if the user wipes the
+  // server list. Failures are silent — we still return the in-memory
+  // copy so the current run benefits from the seed.
+  await saveConfig(next).catch(() => {});
+  return next;
+};
+
 export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> => {
   let provider: Provider | null = null;
   let cfg: AtlasConfig | null = null;
@@ -121,6 +148,7 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
       setupError = cfgResult.error.message;
     } else {
       cfg = await maybeAutoDetectClaudeCode(cfgResult.value);
+      cfg = await maybeSeedDefaultMcps(cfg);
       const provResult = await providerFromConfigAsync(cfg);
       if (provResult.ok) {
         provider = provResult.value;

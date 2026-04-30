@@ -132,7 +132,7 @@ const MODE_CYCLE: readonly Mode[] = ['plan', 'build', 'autopilot'];
 type Overlay =
   | { readonly kind: 'none' }
   | { readonly kind: 'agent-picker' }
-  | { readonly kind: 'model-picker' }
+  | { readonly kind: 'model-picker'; readonly purpose?: 'chat' | 'compact' }
   | { readonly kind: 'model-freeform' }
   | { readonly kind: 'option-picker'; readonly request: InteractionRequest }
   | { readonly kind: 'option-freeform'; readonly request: InteractionRequest }
@@ -676,6 +676,49 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               })();
               return;
             }
+            if (sub === 'enable' || sub === 'disable') {
+              const target = rest[1];
+              if (!target) {
+                pushItem('error', `usage: /mcps ${sub} <name>`);
+                return;
+              }
+              const enable = sub === 'enable';
+              void (async (): Promise<void> => {
+                const baseCfg = props.config;
+                if (!baseCfg) {
+                  pushItem('error', 'no config loaded');
+                  return;
+                }
+                const found = baseCfg.mcp.servers.find((s) => s.name === target);
+                if (!found) {
+                  pushItem('error', `no such MCP server: ${target}`);
+                  return;
+                }
+                if (found.enabled === enable) {
+                  pushItem('system', `'${target}' is already ${enable ? 'enabled' : 'disabled'}.`);
+                  return;
+                }
+                const next: AtlasConfig = {
+                  ...baseCfg,
+                  mcp: {
+                    ...baseCfg.mcp,
+                    servers: baseCfg.mcp.servers.map((s) =>
+                      s.name === target ? { ...s, enabled: enable } : s
+                    )
+                  }
+                };
+                const saved = await saveConfig(next);
+                if (!saved.ok) {
+                  pushItem('error', `failed to save config: ${saved.error.message}`);
+                  return;
+                }
+                pushItem(
+                  'system',
+                  `${enable ? 'Enabled' : 'Disabled'} MCP server '${target}'. Restart atlas for the change to take effect.`
+                );
+              })();
+              return;
+            }
             const servers = props.config?.mcp?.servers ?? [];
             const running = props.mcpStatus?.running ?? [];
             const failed = props.mcpStatus?.failed ?? [];
@@ -708,7 +751,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               : '';
             pushItem(
               'system',
-              `MCP servers (${servers.length} configured, ${running.length} running):\n${[...lines, ...failLines].join('\n')}\n\nUse /mcps add to add one from the suggested catalog,\nor /mcps remove <name> to remove one.${errSection}`
+              `MCP servers (${servers.length} configured, ${running.length} running):\n${[...lines, ...failLines].join('\n')}\n\nUse /mcps add to add one from the suggested catalog,\n/mcps enable|disable <name> to toggle, or /mcps remove <name> to remove one.${errSection}`
             );
             return;
           }
@@ -789,7 +832,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             if (sub === 'model') {
               const arg = rest[1];
               if (!arg) {
-                pushItem('error', 'usage: /compact model <id> | /compact model default');
+                // No id given → open the model picker scoped to compaction.
+                setOverlay({ kind: 'model-picker', purpose: 'compact' });
                 return;
               }
               const newModel = arg === 'default' ? null : arg;
@@ -1320,6 +1364,25 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       if (providerKind === 'unknown') {
         providerKind = providerKindFor(modelId, modelCatalog);
       }
+      // Branch: when the picker was opened to pin a compaction model
+      // (via `/compact model`), assign the selection to the compaction
+      // config and persist instead of switching the chat model.
+      if (overlay.kind === 'model-picker' && overlay.purpose === 'compact') {
+        compactModelRef.current = modelId;
+        const baseCfg = props.config;
+        if (baseCfg) {
+          const next: AtlasConfig = {
+            ...baseCfg,
+            compaction: { ...baseCfg.compaction, model: modelId }
+          };
+          void saveConfig(next).then((r) => {
+            if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+          });
+        }
+        pushItem('system', `compaction model set to ${modelId}.`);
+        closeOverlay();
+        return;
+      }
       // Swap to the matching provider instance if we have one for that
       // kind. If not (e.g. user picked a Codex model but Codex provider
       // isn't wired yet), refuse the switch entirely so we don't send
@@ -1341,7 +1404,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       pushItem('system', `model → ${modelId}`);
       closeOverlay();
     },
-    [pushItem, closeOverlay, props.providers, modelCatalog]
+    [pushItem, closeOverlay, props.providers, props.config, modelCatalog, overlay]
   );
 
   const onCustomModelSubmit = useCallback(
@@ -1857,7 +1920,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               baseUrl: 'https://chatgpt.com/backend-api/codex'
             }
           },
-          mcp: { servers: [] },
+          mcp: { servers: [], builtinsSeeded: false },
           github: {},
           compaction: { enabled: true, threshold: 0.8, contextTokens: 200_000 }
         };
@@ -1943,7 +2006,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           baseUrl: 'https://chatgpt.com/backend-api/codex'
         }
       },
-      mcp: { servers: [] },
+      mcp: { servers: [], builtinsSeeded: false },
       github: {},
       compaction: { enabled: true, threshold: 0.8, contextTokens: 200_000 }
     };
@@ -2189,7 +2252,13 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         </OverlayBox>
       )}
       {overlay.kind === 'model-picker' && (
-        <OverlayBox title="Switch model (↑/↓ to navigate, ↵ select)">
+        <OverlayBox
+          title={
+            overlay.purpose === 'compact'
+              ? 'Pick summarizer model for /compact (↑/↓, ↵ select)'
+              : 'Switch model (↑/↓ to navigate, ↵ select)'
+          }
+        >
           {(() => {
             const catalog = modelCatalog ?? [];
             const items: PickerEntry[] = [];
@@ -2501,10 +2570,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         <OverlayBox title="Add MCP server (pick from suggested catalog)">
           <SelectInput
             items={MCP_SUGGESTIONS.map((s) => {
-              const tag = s.transport === 'http' ? 'http' : (s.prerequisite.label ?? s.prerequisite.bin);
+              const runtime = s.transport === 'http' ? 'http' : (s.prerequisite.label ?? s.prerequisite.bin);
               return {
                 key: s.id,
-                label: `${s.name.padEnd(22)} ${s.summary}  [${tag}]`,
+                label: `${s.name.padEnd(14)} [${s.pricing.padEnd(8)}] [${runtime}]  ${s.summary}`,
                 value: s.id
               };
             })}
@@ -2512,10 +2581,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           />
           <Box marginTop={1} flexDirection="column">
             <Text color="gray">
-              Tag in [brackets] = how it runs: [npx]/[uvx]/[docker] spawn locally, [http] hits a hosted endpoint.
+              Tags: [free] local • [byo] free tool, you supply credentials • [freemium] free tier + paid • [paid] costs money.
             </Text>
             <Text color="gray">
-              For local entries, the listed runtime must be on your PATH (we'll warn if it isn't).
+              Runtime [npx]/[binary]/[http]: how the server runs. We auto-check the binary on PATH and offer install options.
             </Text>
           </Box>
         </OverlayBox>
@@ -3424,10 +3493,10 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'mode', args: 'plan|build|autopilot', summary: 'set permission mode' },
   { name: 'thinking', args: 'off|low|medium|high|xhigh', summary: 'set reasoning effort (model-aware)' },
   { name: 'config', summary: 'open the config menu (API keys, OAuth, integrations)' },
-  { name: 'mcps', args: '[add|remove <name>]', summary: 'list / add / remove MCP servers' },
+  { name: 'mcps', args: '[add|enable <name>|disable <name>|remove <name>]', summary: 'list / add / toggle / remove MCP servers' },
   { name: 'sessions', args: '[id]', summary: 'list / resume saved sessions' },
   { name: 'resume', args: '[id]', summary: 'resume a session (alias of /sessions)' },
-  { name: 'compact', args: '[now|status|on|off|model <id>|threshold <0..1>]', summary: 'auto-compaction controls' },
+  { name: 'compact', args: '[now|status|on|off|model [id]|threshold <0..1>]', summary: 'auto-compaction controls' },
   { name: 'exit', summary: 'leave atlas' }
 ];
 

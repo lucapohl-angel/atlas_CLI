@@ -7,6 +7,22 @@ semantic versioning.
 ## [Unreleased]
 
 ### Added — Phase 12 polish (post-1.0 wiring)
+- **`/compact model` (no id) opens the model picker** — picking a model
+  now scopes to compaction (persists `compaction.model` in
+  `~/.atlas/config.yaml`) instead of switching the chat model. The
+  picker title changes to make the scope explicit.
+- **`/mcps enable <name>` and `/mcps disable <name>`** — toggle the
+  `enabled` flag on any configured MCP server without removing it. The
+  `/mcps` list footer now mentions the new commands.
+- **Pricing tags + narrowed catalog** — `/mcps add` now shows a
+  `[free|byo|freemium|paid]` tag next to each entry and the curated
+  list is reduced to four high-signal servers: filesystem (free),
+  github (byo), higgsfield (paid), figma (freemium). Power users can
+  still edit `~/.atlas/config.yaml` directly to add anything else.
+- **Memory MCP enabled by default** — fresh installs are seeded with
+  `@modelcontextprotocol/server-memory` so the agent has persistent
+  notes across sessions out-of-the-box. A new `mcp.builtinsSeeded`
+  flag prevents re-seeding if the user later removes it.
 - **Prerequisite detection at `/mcps add`** — when the user picks an
   stdio entry whose required runtime (`npx`, `uvx`, `github-mcp-server`)
   isn't on PATH, Atlas now opens a dedicated overlay with: install for

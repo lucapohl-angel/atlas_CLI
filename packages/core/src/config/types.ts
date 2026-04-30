@@ -71,7 +71,14 @@ export const McpServerConfigSchema = z.object({
 
 export const McpConfigSchema = z
   .object({
-    servers: z.array(McpServerConfigSchema).default([])
+    servers: z.array(McpServerConfigSchema).default([]),
+    /**
+     * Set to true the first time atlas auto-seeds the default built-in
+     * MCP servers (currently: `memory`). Prevents re-adding them if the
+     * user later removes them. Users who never want defaults can set
+     * this to true manually in their config.
+     */
+    builtinsSeeded: z.boolean().default(false)
   })
   .default({});
 

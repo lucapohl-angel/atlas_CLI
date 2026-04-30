@@ -31,6 +31,7 @@ import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
 import {
   ATLAS_VERSION,
+  DEFAULT_BUILTIN_MCP_SERVERS,
   MCP_SUGGESTIONS,
   allowAllPolicy,
   compactIfNeeded,
@@ -173,6 +174,18 @@ type Overlay =
       readonly kind: 'mcp-restart-prompt';
       readonly serverName: string;
       readonly configPath: string;
+    }
+  | {
+      /** Browse / manage the currently-configured MCP servers. */
+      readonly kind: 'mcp-list';
+      readonly statusLine?: string;
+    }
+  | {
+      /** Per-server actions menu opened from `mcp-list` (or from picking
+       *  an already-configured suggestion in the add picker). */
+      readonly kind: 'mcp-manage';
+      readonly serverName: string;
+      readonly statusLine?: string;
     }
   | {
       readonly kind: 'session-picker';
@@ -660,32 +673,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 return;
               }
               void (async (): Promise<void> => {
-                const baseCfg = props.config;
-                if (!baseCfg) {
-                  pushItem('error', 'no config loaded');
-                  return;
-                }
-                const before = baseCfg.mcp.servers.length;
-                const next: AtlasConfig = {
-                  ...baseCfg,
-                  mcp: {
-                    ...baseCfg.mcp,
-                    servers: baseCfg.mcp.servers.filter((s) => s.name !== target)
-                  }
-                };
-                if (next.mcp.servers.length === before) {
-                  pushItem('error', `no such MCP server: ${target}`);
-                  return;
-                }
-                const saved = await saveConfig(next);
-                if (!saved.ok) {
-                  pushItem('error', `failed to save config: ${saved.error.message}`);
-                  return;
-                }
-                pushItem(
-                  'system',
-                  `Removed MCP server '${target}'. Restart atlas for the change to take effect.`
-                );
+                const status = await removeMcp(target);
+                if (status.startsWith('error:')) pushItem('error', status.slice(7));
               })();
               return;
             }
@@ -697,75 +686,17 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               }
               const enable = sub === 'enable';
               void (async (): Promise<void> => {
-                const baseCfg = props.config;
-                if (!baseCfg) {
-                  pushItem('error', 'no config loaded');
-                  return;
-                }
-                const found = baseCfg.mcp.servers.find((s) => s.name === target);
-                if (!found) {
-                  pushItem('error', `no such MCP server: ${target}`);
-                  return;
-                }
-                if (found.enabled === enable) {
-                  pushItem('system', `'${target}' is already ${enable ? 'enabled' : 'disabled'}.`);
-                  return;
-                }
-                const next: AtlasConfig = {
-                  ...baseCfg,
-                  mcp: {
-                    ...baseCfg.mcp,
-                    servers: baseCfg.mcp.servers.map((s) =>
-                      s.name === target ? { ...s, enabled: enable } : s
-                    )
-                  }
-                };
-                const saved = await saveConfig(next);
-                if (!saved.ok) {
-                  pushItem('error', `failed to save config: ${saved.error.message}`);
-                  return;
-                }
-                pushItem(
-                  'system',
-                  `${enable ? 'Enabled' : 'Disabled'} MCP server '${target}'. Restart atlas for the change to take effect.`
-                );
+                const status = await setMcpEnabled(target, enable);
+                if (status.startsWith('error:')) pushItem('error', status.slice(7));
+                else if (status.startsWith('already ')) pushItem('system', `'${target}' is ${status}.`);
               })();
               return;
             }
-            const servers = props.config?.mcp?.servers ?? [];
-            const running = props.mcpStatus?.running ?? [];
-            const failed = props.mcpStatus?.failed ?? [];
-            if (servers.length === 0 && running.length === 0 && failed.length === 0) {
-              pushItem(
-                'system',
-                'No MCP servers configured.\n\nRun /mcps add to pick from the suggested catalog,\nor edit ~/.atlas/config.yaml directly.'
-              );
-              return;
-            }
-            const lines = servers.map((s) => {
-              const live = running.find((r) => r.name === s.name);
-              const fail = failed.find((f) => f.name === s.name);
-              const status = !s.enabled
-                ? 'off'
-                : live
-                  ? `on  (${live.toolCount} tool${live.toolCount === 1 ? '' : 's'})`
-                  : fail
-                    ? `err`
-                    : 'pending';
-              const target =
-                s.transport === 'http' ? `http → ${s.url ?? '?'}` : [s.command ?? '?', ...s.args].join(' ');
-              return `  ${status.padEnd(14)}  ${s.name.padEnd(20)} ${target}`;
-            });
-            const failLines = failed
-              .filter((f) => !servers.some((s) => s.name === f.name))
-              .map((f) => `  err           ${f.name.padEnd(20)} ${f.error}`);
-            const errSection = failed.length > 0
-              ? `\n\nErrors:\n${failed.map((f) => `  ${f.name}: ${f.error}`).join('\n')}`
-              : '';
-            pushItem(
-              'system',
-              `MCP servers (${servers.length} configured, ${running.length} running):\n${[...lines, ...failLines].join('\n')}\n\nUse /mcps add to add one from the suggested catalog,\n/mcps enable|disable <name> to toggle, or /mcps remove <name> to remove one.${errSection}`
-            );
+            // Default `/mcps` (no sub-command) opens an interactive
+            // overlay listing the configured servers — the old
+            // chat-printout was easy to scroll past and didn't
+            // expose the per-server actions.
+            setOverlay({ kind: 'mcp-list' });
             return;
           }
           case 'exit':
@@ -1599,11 +1530,9 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       }
       const existing = props.config?.mcp.servers.some((s) => s.name === sug.name);
       if (existing) {
-        closeOverlay();
-        pushItem(
-          'error',
-          `MCP server '${sug.name}' is already configured. Remove it first with /mcps remove ${sug.name}.`
-        );
+        // Don't error — just route the user to the per-server actions
+        // overlay so they can disable / re-enable / remove (or back out).
+        setOverlay({ kind: 'mcp-manage', serverName: sug.name });
         return;
       }
       // For stdio entries, verify the prerequisite binary is on PATH.
@@ -2055,6 +1984,62 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
 
   // Setup overlay: paste API key inside the TUI, persist to ~/.atlas/config.yaml,
   // then materialize a real provider so the next /send works.
+  // Shared helpers used by the `mcp-list` / `mcp-manage` overlays.
+  // Each returns a status line to surface in-overlay; callers also
+  // push a transcript line so the action is visible after closing.
+  const builtinNames = useMemo(
+    () => new Set(DEFAULT_BUILTIN_MCP_SERVERS.map((s) => s.name)),
+    []
+  );
+  const setMcpEnabled = useCallback(
+    async (name: string, enable: boolean): Promise<string> => {
+      const baseCfg = props.config;
+      if (!baseCfg) return 'error: no config loaded';
+      const found = baseCfg.mcp.servers.find((s) => s.name === name);
+      if (!found) return `error: no such server '${name}'`;
+      if (found.enabled === enable) return `already ${enable ? 'enabled' : 'disabled'}`;
+      const next: AtlasConfig = {
+        ...baseCfg,
+        mcp: {
+          ...baseCfg.mcp,
+          servers: baseCfg.mcp.servers.map((s) => (s.name === name ? { ...s, enabled: enable } : s))
+        }
+      };
+      const saved = await saveConfig(next);
+      if (!saved.ok) return `error: ${saved.error.message}`;
+      pushItem(
+        'system',
+        `${enable ? 'Enabled' : 'Disabled'} MCP server '${name}'. Restart atlas for the change to take effect.`
+      );
+      return `\u2713 ${enable ? 'enabled' : 'disabled'} \u2014 restart atlas to apply`;
+    },
+    [props.config, pushItem]
+  );
+  const removeMcp = useCallback(
+    async (name: string): Promise<string> => {
+      const baseCfg = props.config;
+      if (!baseCfg) return 'error: no config loaded';
+      if (builtinNames.has(name)) return `error: '${name}' is a built-in (disable instead of removing)`;
+      const before = baseCfg.mcp.servers.length;
+      const next: AtlasConfig = {
+        ...baseCfg,
+        mcp: {
+          ...baseCfg.mcp,
+          servers: baseCfg.mcp.servers.filter((s) => s.name !== name)
+        }
+      };
+      if (next.mcp.servers.length === before) return `error: no such server '${name}'`;
+      const saved = await saveConfig(next);
+      if (!saved.ok) return `error: ${saved.error.message}`;
+      pushItem(
+        'system',
+        `Removed MCP server '${name}'. Restart atlas for the change to take effect.`
+      );
+      return `\u2713 removed \u2014 restart atlas to apply`;
+    },
+    [props.config, pushItem, builtinNames]
+  );
+
   const onSetupKeyChange = useCallback(
     (value: string) => {
       if (overlay.kind !== 'setup') return;
@@ -2298,6 +2283,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         return 14;
       case 'mcp-restart-prompt':
         return 12;
+      case 'mcp-list':
+        return 16;
+      case 'mcp-manage':
+        return 14;
       case 'none':
       default:
         return 0;
@@ -2776,12 +2765,17 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           <SelectInput
             items={MCP_SUGGESTIONS.map((s) => {
               const runtime = s.transport === 'http' ? 'http' : (s.prerequisite.label ?? s.prerequisite.bin);
+              const installed = props.config?.mcp.servers.some((cs) => cs.name === s.name) ?? false;
+              // Use SetupMenuItem's `\u0001` sentinel to render the
+              // `\u2022 connected` tail in green when already added.
+              const tail = installed ? ' \u0001\u2022 connected' : '';
               return {
                 key: s.id,
-                label: `${s.name.padEnd(14)} [${s.pricing.padEnd(8)}] [${runtime}]  ${s.summary}`,
+                label: `${s.name.padEnd(14)} [${s.pricing.padEnd(8)}] [${runtime}]  ${s.summary}${tail}`,
                 value: s.id
               };
             })}
+            itemComponent={SetupMenuItem}
             onSelect={onMcpPick}
           />
           <Box marginTop={1} flexDirection="column">
@@ -2981,6 +2975,180 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           />
         </OverlayBox>
       )}
+      {overlay.kind === 'mcp-list' && (() => {
+        const servers = props.config?.mcp?.servers ?? [];
+        const running = props.mcpStatus?.running ?? [];
+        const failed = props.mcpStatus?.failed ?? [];
+        // Status mark + label tail per server. Use SetupMenuItem's
+        // `\u0001` sentinel so the tail renders in green.
+        const items = servers.map((s) => {
+          const live = running.find((r) => r.name === s.name);
+          const fail = failed.find((f) => f.name === s.name);
+          const tail = !s.enabled
+            ? '\u0001\u25cb disabled'
+            : live
+              ? `\u0001\u2022 connected (${live.toolCount} tool${live.toolCount === 1 ? '' : 's'})`
+              : fail
+                ? `\u0001\u2717 error`
+                : '\u0001\u2026 pending';
+          return {
+            key: `srv:${s.name}`,
+            label: `${s.name.padEnd(20)} ${tail}`,
+            value: `srv:${s.name}`
+          };
+        });
+        // Failed entries that aren't in the saved list (shouldn't normally
+        // happen, but surface them anyway so they're not invisible).
+        for (const f of failed) {
+          if (!servers.some((s) => s.name === f.name)) {
+            items.push({
+              key: `srv:${f.name}`,
+              label: `${f.name.padEnd(20)} \u0001\u2717 error`,
+              value: `srv:${f.name}`
+            });
+          }
+        }
+        items.push(
+          { key: 'add', label: '+ Add new server\u2026', value: '__add__' },
+          { key: 'close', label: 'Close', value: '__close__' }
+        );
+        const title = `MCP servers (${servers.length} configured, ${running.length} running)`;
+        return (
+          <OverlayBox title={title}>
+            {servers.length === 0 ? (
+              <Box marginBottom={1}>
+                <Text color="gray">
+                  {'No MCP servers configured yet. Pick \u201c+ Add new server\u2026\u201d to install one from the catalog.'}
+                </Text>
+              </Box>
+            ) : null}
+            <SelectInput
+              itemComponent={SetupMenuItem}
+              items={items}
+              onSelect={(item) => {
+                if (item.value === '__close__') {
+                  closeOverlay();
+                  return;
+                }
+                if (item.value === '__add__') {
+                  setOverlay({ kind: 'mcp-add', stage: 'pick' });
+                  return;
+                }
+                const name = item.value.startsWith('srv:') ? item.value.slice(4) : item.value;
+                setOverlay({ kind: 'mcp-manage', serverName: name });
+              }}
+            />
+            {overlay.statusLine ? (
+              <Box marginTop={1}>
+                <Text color={overlay.statusLine.startsWith('error') ? 'red' : 'green'}>
+                  {overlay.statusLine}
+                </Text>
+              </Box>
+            ) : null}
+            <Box marginTop={1}>
+              <Text color="gray">{'\u25b2/\u25bc to navigate \u00b7 \u21b5 to open \u00b7 Esc to close'}</Text>
+            </Box>
+          </OverlayBox>
+        );
+      })()}
+      {overlay.kind === 'mcp-manage' && (() => {
+        const servers = props.config?.mcp?.servers ?? [];
+        const running = props.mcpStatus?.running ?? [];
+        const failed = props.mcpStatus?.failed ?? [];
+        const cfg = servers.find((s) => s.name === overlay.serverName);
+        const live = running.find((r) => r.name === overlay.serverName);
+        const fail = failed.find((f) => f.name === overlay.serverName);
+        const isBuiltin = builtinNames.has(overlay.serverName);
+        const enabled = cfg?.enabled ?? false;
+        const target = !cfg
+          ? '(not configured)'
+          : cfg.transport === 'http'
+            ? `http \u2192 ${cfg.url ?? '?'}`
+            : [cfg.command ?? '?', ...cfg.args].join(' ');
+        const statusBits: React.JSX.Element[] = [];
+        if (!cfg) {
+          statusBits.push(
+            <Text key="missing" color="red">{'\u2717 not configured'}</Text>
+          );
+        } else if (!enabled) {
+          statusBits.push(<Text key="off" color="yellow">{'\u25cb disabled'}</Text>);
+        } else if (live) {
+          statusBits.push(
+            <Text key="on" color="green">
+              {`\u2022 connected (${live.toolCount} tool${live.toolCount === 1 ? '' : 's'})`}
+            </Text>
+          );
+        } else if (fail) {
+          statusBits.push(<Text key="err" color="red">{`\u2717 error: ${fail.error}`}</Text>);
+        } else {
+          statusBits.push(<Text key="pending" color="gray">{'\u2026 pending'}</Text>);
+        }
+        const items: { key: string; label: string; value: string }[] = [];
+        if (cfg) {
+          items.push(
+            enabled
+              ? { key: 'disable', label: 'Disable', value: 'disable' }
+              : { key: 'enable', label: 'Enable', value: 'enable' }
+          );
+          if (!isBuiltin) {
+            items.push({ key: 'remove', label: 'Remove\u2026', value: 'remove' });
+          }
+        }
+        items.push({ key: 'back', label: 'Back to list', value: 'back' });
+        items.push({ key: 'close', label: 'Close', value: 'close' });
+        return (
+          <OverlayBox title={`MCP server \u00b7 ${overlay.serverName}`}>
+            <Box flexDirection="column" marginBottom={1}>
+              <Text>
+                <Text color="gray">status: </Text>
+                {statusBits}
+              </Text>
+              <Text>
+                <Text color="gray">runs:  </Text>
+                <Text>{target}</Text>
+              </Text>
+              {isBuiltin ? (
+                <Text color="gray">{'(built-in: cannot be removed, only disabled)'}</Text>
+              ) : null}
+            </Box>
+            <SelectInput
+              items={items}
+              onSelect={(item) => {
+                const name = overlay.serverName;
+                if (item.value === 'back') {
+                  setOverlay({ kind: 'mcp-list' });
+                  return;
+                }
+                if (item.value === 'close') {
+                  closeOverlay();
+                  return;
+                }
+                if (item.value === 'enable' || item.value === 'disable') {
+                  void (async (): Promise<void> => {
+                    const status = await setMcpEnabled(name, item.value === 'enable');
+                    setOverlay({ kind: 'mcp-list', statusLine: `'${name}': ${status}` });
+                  })();
+                  return;
+                }
+                if (item.value === 'remove') {
+                  void (async (): Promise<void> => {
+                    const status = await removeMcp(name);
+                    setOverlay({ kind: 'mcp-list', statusLine: `'${name}': ${status}` });
+                  })();
+                  return;
+                }
+              }}
+            />
+            {overlay.statusLine ? (
+              <Box marginTop={1}>
+                <Text color={overlay.statusLine.startsWith('error') ? 'red' : 'green'}>
+                  {overlay.statusLine}
+                </Text>
+              </Box>
+            ) : null}
+          </OverlayBox>
+        );
+      })()}
       {overlay.kind === 'setup' && overlay.stage === 'menu' && (
         <Box flexDirection="column" borderStyle="double" borderColor="cyan" paddingX={1} marginY={1}>
           <Text color="cyan" bold>

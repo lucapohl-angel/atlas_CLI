@@ -7,6 +7,24 @@ semantic versioning.
 ## [Unreleased]
 
 ### Added — Phase 12 polish (post-1.0 wiring)
+- **`/mcps` is now an interactive overlay, not a chat dump** — the
+  bare `/mcps` command opens a TUI list of all configured servers
+  with a green dot for connected (and tool count), yellow circle
+  for disabled, and a red mark for failed. Selecting a server opens
+  a per-server actions overlay with Enable/Disable, Remove (hidden
+  for built-ins like `memory`), and Back. Replaces the easy-to-miss
+  text printout. The list also has a "+ Add new server…" entry that
+  jumps straight into the add picker.
+- **Add picker no longer errors on already-configured servers** —
+  catalog entries that are already installed now show a green
+  `• connected` tag and selecting them opens the per-server manage
+  overlay (instead of the old "remove it first with /mcps remove …"
+  error message).
+- **Built-in MCP servers cannot be accidentally removed** — the
+  seeded `memory` server (and any future built-ins listed in
+  `DEFAULT_BUILTIN_MCP_SERVERS`) only expose Enable/Disable in the
+  manage overlay and reject `/mcps remove`. They can still be
+  toggled off without losing their config.
 - **Restart-required prompt after `/mcps add`** — saving a new MCP
   server now opens a dedicated overlay (`'X' added — restart required`)
   with two clear options: quit now to restart, or keep chatting (and

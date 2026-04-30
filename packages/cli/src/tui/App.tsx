@@ -11,7 +11,7 @@
  *   ├─────────────────────────────────────────────┤
  *   │ Input (multiline) — slash autocomplete
  *   ├─────────────────────────────────────────────┤
- *   │ Status bar (keybinding hints, Ctrl-C twice to exit)
+ *   │ Status bar (keybinding hints, Ctrl-D twice to exit)
  *   └─────────────────────────────────────────────┘
  *
  * Keybindings:
@@ -21,7 +21,9 @@
  *   Ctrl-T       cycle thinking effort
  *   Ctrl-P       cycle mode: plan → build → autopilot (autopilot prompts for consent once)
  *   Esc          cancel current stream
- *   Ctrl-C ×2    exit (within 1s)
+ *   Ctrl-C       cancel current stream (no-op when idle — leaves Ctrl+C free
+ *                for terminal text-copy shortcuts)
+ *   Ctrl-D ×2    exit (within 1s)
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
@@ -483,12 +485,18 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     abortRef.current?.abort();
   }, []);
 
-  // Ctrl-C twice in 1s exits.
+  // Ctrl-C: cancel current stream when one is running. Otherwise it's
+  // a no-op so the terminal emulator can use Ctrl+C for copy when text
+  // is selected. (Use Ctrl-D twice to actually exit atlas.)
   const handleCtrlC = useCallback((): void => {
     if (streaming) {
       cancelStream();
-      return;
     }
+  }, [streaming, cancelStream]);
+
+  // Ctrl-D twice in 1s exits. Standard shell-style EOF; doesn't clash
+  // with the terminal's copy/paste keybindings.
+  const handleCtrlD = useCallback((): void => {
     if (pendingExit) {
       app.exit();
       return;
@@ -496,7 +504,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     setPendingExit(true);
     if (ctrlCTimer.current) clearTimeout(ctrlCTimer.current);
     ctrlCTimer.current = setTimeout(() => setPendingExit(false), 1000);
-  }, [streaming, cancelStream, pendingExit, app]);
+  }, [pendingExit, app]);
 
   // Submit a user message — kicks off the agent loop.
   const submit = useCallback(
@@ -1205,6 +1213,12 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   useInput((char, key) => {
     if (key.ctrl && (char === 'c' || char === '\u0003')) {
       handleCtrlC();
+      return;
+    }
+    // Ctrl-D twice exits. Single-press is swallowed (so it doesn't
+    // accidentally type EOT bytes into the input).
+    if (key.ctrl && (char === 'd' || char === '\u0004')) {
+      handleCtrlD();
       return;
     }
     // Ctrl+Y — copy the LATEST fenced code block from the transcript
@@ -4408,8 +4422,8 @@ const StatusBar = ({
   <Box>
     <Text color="gray" dimColor>
       Tab agent · Ctrl-O model · Ctrl-T think · Ctrl-P mode · PgUp/PgDn scroll · Ctrl-Y copy ·{' '}
-      {streaming ? 'Esc cancel' : '↵ send'} ·{' '}
-      {pendingExit ? <Text color="yellow">Ctrl-C again to exit</Text> : 'Ctrl-C ×2 exit'}
+      {streaming ? 'Esc/Ctrl-C cancel' : '↵ send'} ·{' '}
+      {pendingExit ? <Text color="yellow">Ctrl-D again to exit</Text> : 'Ctrl-D ×2 exit'}
     </Text>
     {mode === 'autopilot' && (
       <Text color="red" bold>
@@ -4656,7 +4670,7 @@ const Splash = ({ defaultModel }: { defaultModel: string }): React.JSX.Element =
       <Box marginTop={1} flexDirection="column">
         <Text color="gray">model · <Text color="white">{defaultModel}</Text></Text>
         <Text color="gray">type <Text color="cyan">/</Text> for commands · <Text color="cyan">Tab</Text> to switch agent</Text>
-        <Text color="gray">press <Text color="cyan">Ctrl-C</Text> twice to exit</Text>
+        <Text color="gray">press <Text color="cyan">Ctrl-D</Text> twice to exit (Ctrl-C cancels)</Text>
       </Box>
     </Box>
   </Box>

@@ -6,8 +6,11 @@ semantic versioning.
 
 ## [Unreleased]
 
-### Added — Phase 12 polish (post-1.0 wiring)
-- **Real GitHub OAuth via Device Flow** — picking *OAuth via browser*
+### Added — Phase 12 polish (post-1.0 wiring)- **Exit shortcut moved from Ctrl-C to Ctrl-D** \u2014 pressing
+  Ctrl-D twice within 1s now exits atlas (standard shell-style EOF).
+  Ctrl-C is now a single-press stream cancel only and is a no-op when
+  idle, so it no longer competes with the terminal emulator's
+  copy-on-Ctrl-C behaviour. Status bar and welcome screen updated.- **Real GitHub OAuth via Device Flow** — picking *OAuth via browser*
   in the GitHub MCP auth menu now runs the standard device-code flow:
   Atlas requests a short user code, opens
   `https://github.com/login/device` in your browser, and polls until

@@ -7,6 +7,15 @@ semantic versioning.
 ## [Unreleased]
 
 ### Added — Phase 12 polish (post-1.0 wiring)
+- **Real GitHub OAuth via Device Flow** — picking *OAuth via browser*
+  in the GitHub MCP auth menu now runs the standard device-code flow:
+  Atlas requests a short user code, opens
+  `https://github.com/login/device` in your browser, and polls until
+  you sign in, type the code, and click **Authorize**. The access
+  token is captured automatically — no PAT to create or paste. Esc
+  cancels at any time. Defaults to GitHub CLI's well-known public
+  client_id (consent screen reads "GitHub CLI"); set
+  `ATLAS_GITHUB_CLIENT_ID` to use your own registered OAuth App.
 - **Custom MCP server flow with sandboxed AI helper** — the `/mcps add`
   picker now ends with a `custom…` row that opens a sub-menu:
   *Manual* prints concise YAML instructions for `~/.atlas/config.yaml`,

@@ -30,6 +30,7 @@ import Spinner from 'ink-spinner';
 import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
 import { runAiAddMcp, type AiAddMcpEvent } from './mcp-ai-add.js';
+import { runGithubDeviceFlow } from './github-oauth.js';
 import {
   ATLAS_VERSION,
   DEFAULT_BUILTIN_MCP_SERVERS,
@@ -170,6 +171,18 @@ type Overlay =
       readonly stage: 'confirm';
       readonly suggestionId: string;
       readonly collected: Readonly<Record<string, string>>;
+    }
+  | {
+      /** GitHub OAuth Device Flow in progress. The user_code + URL are
+       *  shown, the browser is opened, and we poll until they accept,
+       *  deny, the code expires, or they cancel via Esc. */
+      readonly kind: 'mcp-add';
+      readonly stage: 'oauth-device';
+      readonly suggestionId: string;
+      readonly userCode?: string;
+      readonly verificationUri?: string;
+      readonly statusLine?: string;
+      readonly statusKind?: 'info' | 'pending' | 'error' | 'ok';
     }
   | {
       readonly kind: 'mcp-restart-prompt';
@@ -1243,6 +1256,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         if (overlay.kind === 'mcp-custom-running' && !overlay.finished) {
           aiAddMcpAbortRef.current?.abort();
         }
+        // Cancel an in-progress GitHub OAuth device flow.
+        if (overlay.kind === 'mcp-add' && overlay.stage === 'oauth-device') {
+          githubOauthAbortRef.current?.abort();
+        }
         closeOverlay();
       }
       return;
@@ -1734,6 +1751,117 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     [overlay, closeOverlay, pushItem, advanceMcpAfterPrereq]
   );
 
+  // AbortController for the running GitHub OAuth device flow. Declared
+  // above onMcpAuthSelect so the callback can reference launchGithubDeviceFlow.
+  const githubOauthAbortRef = useRef<AbortController | null>(null);
+
+  const launchGithubDeviceFlow = useCallback(
+    (suggestionId: string): void => {
+      const sug = findSuggestion(suggestionId);
+      if (!sug || sug.transport !== 'stdio' || !sug.oauthEnvKey) {
+        closeOverlay();
+        return;
+      }
+      const envKey = sug.oauthEnvKey;
+      const ctrl = new AbortController();
+      githubOauthAbortRef.current?.abort();
+      githubOauthAbortRef.current = ctrl;
+      setOverlay({
+        kind: 'mcp-add',
+        stage: 'oauth-device',
+        suggestionId,
+        statusLine: 'requesting device code\u2026',
+        statusKind: 'pending'
+      });
+      void (async (): Promise<void> => {
+        try {
+          for await (const ev of runGithubDeviceFlow({ signal: ctrl.signal })) {
+            if (ctrl.signal.aborted) return;
+            if (ev.type === 'code') {
+              void openInBrowser(ev.verificationUri);
+              setOverlay({
+                kind: 'mcp-add',
+                stage: 'oauth-device',
+                suggestionId,
+                userCode: ev.userCode,
+                verificationUri: ev.verificationUri,
+                statusLine: `opened ${ev.verificationUri} \u2014 enter the code and click Authorize (waiting\u2026)`,
+                statusKind: 'pending'
+              });
+              continue;
+            }
+            if (ev.type === 'polling') {
+              setOverlay((cur) =>
+                cur.kind === 'mcp-add' && cur.stage === 'oauth-device'
+                  ? {
+                      ...cur,
+                      statusLine: `waiting for you to authorize in the browser\u2026 (${ev.elapsedSeconds}s)`,
+                      statusKind: 'pending'
+                    }
+                  : cur
+              );
+              continue;
+            }
+            if (ev.type === 'authorized') {
+              pushItem(
+                'system',
+                `GitHub OAuth authorized (${ev.accessToken.length}-char token, scopes: ${ev.scope}).`
+              );
+              setOverlay({
+                kind: 'mcp-add',
+                stage: 'confirm',
+                suggestionId,
+                collected: { [envKey]: ev.accessToken }
+              });
+              return;
+            }
+            if (ev.type === 'denied') {
+              setOverlay({
+                kind: 'mcp-add',
+                stage: 'auth',
+                suggestionId,
+                probing: false,
+                statusLine: 'error: authorization denied in browser. Pick another method or retry.'
+              });
+              return;
+            }
+            if (ev.type === 'expired') {
+              setOverlay({
+                kind: 'mcp-add',
+                stage: 'auth',
+                suggestionId,
+                probing: false,
+                statusLine: 'error: device code expired. Pick OAuth again to start a new code.'
+              });
+              return;
+            }
+            if (ev.type === 'cancelled') {
+              return;
+            }
+            if (ev.type === 'error') {
+              setOverlay((cur) =>
+                cur.kind === 'mcp-add' && cur.stage === 'oauth-device'
+                  ? { ...cur, statusLine: `error: ${ev.message}`, statusKind: 'error' }
+                  : cur
+              );
+            }
+          }
+        } catch (e) {
+          if (ctrl.signal.aborted) return;
+          const msg = e instanceof Error ? e.message : String(e);
+          setOverlay({
+            kind: 'mcp-add',
+            stage: 'auth',
+            suggestionId,
+            probing: false,
+            statusLine: `error: ${msg}`
+          });
+        }
+      })();
+    },
+    [closeOverlay, pushItem]
+  );
+
   // Handle the choice on the auth-method picker (currently github only:
   // "OAuth via gh" vs "Personal Access Token" vs cancel).
   const onMcpAuthSelect = useCallback(
@@ -1775,11 +1903,16 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           );
           return;
         case 'oauth-browser': {
-          // Open the service's token-creation page in the user's
-          // browser, then drop into the env step so they can paste the
-          // resulting token. Real OAuth web flow would need a
-          // registered client + callback server — this gives the same
-          // "click in browser, get token" UX without that overhead.
+          // For github we run a real OAuth Device Flow: the user opens
+          // the browser, signs in once, types the displayed code, and
+          // clicks "Authorize" — atlas captures the token via polling.
+          // Nothing to copy/paste.
+          if (sug.id === 'github') {
+            launchGithubDeviceFlow(id);
+            return;
+          }
+          // Fallback for any future suggestion that just wants to open
+          // a token-creation page and have the user paste the result.
           if (!sug.oauthBrowserUrl) {
             setOverlay({
               kind: 'mcp-add',
@@ -1889,7 +2022,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         }
       }
     },
-    [overlay, closeOverlay, pushItem]
+    [overlay, closeOverlay, pushItem, launchGithubDeviceFlow]
   );
 
   const onMcpEnvSubmit = useCallback(() => {
@@ -2966,8 +3099,15 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           ...(methods.includes('oauth-gh')
             ? [{ key: 'oauth-gh', label: 'OAuth via `gh` CLI \u2014 pull token from your existing gh login', value: 'oauth-gh' }]
             : []),
-          ...(methods.includes('oauth-browser') && sug.oauthBrowserUrl
-            ? [{ key: 'oauth-browser', label: 'OAuth via browser \u2014 open the token-creation page, then paste the token back', value: 'oauth-browser' }]
+          ...(methods.includes('oauth-browser') && (sug.id === 'github' || sug.oauthBrowserUrl)
+            ? [{
+                key: 'oauth-browser',
+                label:
+                  sug.id === 'github'
+                    ? 'OAuth via browser \u2014 sign in & click Authorize, no token to paste'
+                    : 'OAuth via browser \u2014 open the token-creation page, then paste the token back',
+                value: 'oauth-browser'
+              }]
             : []),
           ...(methods.includes('pat')
             ? [{ key: 'pat', label: 'Personal Access Token \u2014 I already have one, let me paste it', value: 'pat' }]
@@ -2980,8 +3120,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             <Box flexDirection="column" marginBottom={1}>
               <Text color="gray">
                 gh CLI = no paste, scopes follow your `gh auth login`. Browser = opens GitHub
-                so you can review scopes and create a token, then paste it back here. PAT =
-                you already have one ready.
+                so you can sign in and click Authorize \u2014 atlas captures the token, no PAT
+                to copy. PAT = you already have one ready.
               </Text>
               {overlay.statusLine ? (
                 <Text color={overlay.statusLine.startsWith('error') ? 'red' : 'green'}>
@@ -2991,6 +3131,40 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               {overlay.probing ? <Text color="yellow">{'running `gh auth token`\u2026'}</Text> : null}
             </Box>
             {!overlay.probing ? <SelectInput items={items} onSelect={onMcpAuthSelect} /> : null}
+          </OverlayBox>
+        );
+      })()}
+      {overlay.kind === 'mcp-add' && overlay.stage === 'oauth-device' && (() => {
+        const sug = findSuggestion(overlay.suggestionId);
+        if (!sug) return null;
+        const statusColor =
+          overlay.statusKind === 'error'
+            ? 'red'
+            : overlay.statusKind === 'ok'
+              ? 'green'
+              : 'yellow';
+        return (
+          <OverlayBox title={`Sign in to GitHub \u2014 OAuth device flow`}>
+            <Box flexDirection="column" marginBottom={1}>
+              {overlay.userCode ? (
+                <>
+                  <Text color="gray">{'1. Browser opened to:'}</Text>
+                  <Text color="cyan">{`   ${overlay.verificationUri ?? 'https://github.com/login/device'}`}</Text>
+                  <Text color="gray">{'2. Enter this code, then click Authorize:'}</Text>
+                  <Box marginTop={1} marginBottom={1} marginLeft={3}>
+                    <Text color="green" bold>
+                      {overlay.userCode}
+                    </Text>
+                  </Box>
+                </>
+              ) : (
+                <Text color="gray">{'requesting device code from GitHub\u2026'}</Text>
+              )}
+              {overlay.statusLine ? (
+                <Text color={statusColor}>{overlay.statusLine}</Text>
+              ) : null}
+              <Text color="gray">{'Press Esc to cancel.'}</Text>
+            </Box>
           </OverlayBox>
         );
       })()}

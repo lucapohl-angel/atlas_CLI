@@ -7,6 +7,14 @@ semantic versioning.
 ## [Unreleased]
 
 ### Added — Phase 12 polish (post-1.0 wiring)
+- **Auto-compaction with `/compact` controls** — when the running token
+  count crosses `compaction.threshold` (default 0.8 of 200k), Atlas
+  asks a model to roll older turns into a single summary system message
+  before the next turn fires. By default the **active** chat model does
+  the summarization (no separate dependency); set `compaction.model` in
+  `~/.atlas/config.yaml` or run `/compact model <id>` in the TUI to
+  pin a cheaper summarizer. Other slash commands: `/compact` (force
+  now), `/compact status`, `/compact on|off`, `/compact threshold <v>`.
 - **MCP HTTP transport (Streamable HTTP, spec 2025-03-26)** — `McpClient`
   is now transport-agnostic via the new `McpTransport` interface. Stdio
   is one impl (`StdioTransport`), HTTP is another (`HttpTransport`).

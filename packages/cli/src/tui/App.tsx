@@ -33,6 +33,7 @@ import {
   ATLAS_VERSION,
   MCP_SUGGESTIONS,
   allowAllPolicy,
+  compactIfNeeded,
   createOpenRouterProvider,
   denyAllPolicy,
   loadClaudeCodeCredentials,
@@ -295,6 +296,22 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   const abortRef = useRef<AbortController | null>(null);
   const transcriptKey = useRef(0);
   const ctrlCTimer = useRef<NodeJS.Timeout | null>(null);
+
+  // Auto-compaction live overrides. Defaults come from `props.config.compaction`
+  // (loaded from ~/.atlas/config.yaml). `/compact` slash commands mutate
+  // these in place AND persist via saveConfig so the choice sticks.
+  const compactEnabledRef = useRef<boolean>(
+    props.config?.compaction?.enabled ?? true
+  );
+  const compactModelRef = useRef<string | null>(
+    props.config?.compaction?.model ?? null
+  );
+  const compactThresholdRef = useRef<number>(
+    props.config?.compaction?.threshold ?? 0.8
+  );
+  const compactContextTokensRef = useRef<number>(
+    props.config?.compaction?.contextTokens ?? 200_000
+  );
 
   const pushItem = useCallback(
     (kind: TranscriptItem['kind'], text: string, author?: string): void => {
@@ -688,6 +705,130 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           case 'exit':
             app.exit();
             return;
+          case 'compact': {
+            const sub = rest[0];
+            // /compact            → run now (force)
+            // /compact status     → show current settings
+            // /compact on|off     → toggle
+            // /compact model <id> → override summarizer model (and persist)
+            // /compact model default → clear override (use active model)
+            // /compact threshold <0..1>
+            if (!sub || sub === 'now') {
+              if (!provider) {
+                pushItem('error', 'no provider configured');
+                return;
+              }
+              if (messagesRef.current.length < 2) {
+                pushItem('system', 'nothing to compact yet.');
+                return;
+              }
+              const summarizerModel = compactModelRef.current ?? model;
+              pushItem('system', `compacting with ${summarizerModel}…`);
+              void (async (): Promise<void> => {
+                const r = await compactIfNeeded(messagesRef.current, {
+                  provider: provider!,
+                  summarizerModel,
+                  limits: {
+                    // Force: drop threshold to 0 so planCompaction always picks.
+                    contextTokens: compactContextTokensRef.current,
+                    compactThreshold: 0
+                  }
+                });
+                if (!r.ok) {
+                  pushItem('error', `compaction failed: ${r.error.message}`);
+                  return;
+                }
+                if (r.value.compacted) {
+                  messagesRef.current = [...r.value.messages];
+                  pushItem(
+                    'system',
+                    `compacted ${r.value.summarized} turn${r.value.summarized === 1 ? '' : 's'}.`
+                  );
+                } else {
+                  pushItem('system', 'nothing eligible to compact.');
+                }
+              })();
+              return;
+            }
+            if (sub === 'status') {
+              const m = compactModelRef.current ?? `(active model: ${model})`;
+              pushItem(
+                'system',
+                `compaction: ${compactEnabledRef.current ? 'on' : 'off'}\n` +
+                  `  model:     ${m}\n` +
+                  `  threshold: ${compactThresholdRef.current} of ${compactContextTokensRef.current} tokens`
+              );
+              return;
+            }
+            if (sub === 'on' || sub === 'off') {
+              const enabled = sub === 'on';
+              compactEnabledRef.current = enabled;
+              const baseCfg = props.config;
+              if (baseCfg) {
+                const next: AtlasConfig = {
+                  ...baseCfg,
+                  compaction: { ...baseCfg.compaction, enabled }
+                };
+                void saveConfig(next).then((r) => {
+                  if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+                });
+              }
+              pushItem('system', `auto-compaction ${enabled ? 'enabled' : 'disabled'}.`);
+              return;
+            }
+            if (sub === 'model') {
+              const arg = rest[1];
+              if (!arg) {
+                pushItem('error', 'usage: /compact model <id> | /compact model default');
+                return;
+              }
+              const newModel = arg === 'default' ? null : arg;
+              compactModelRef.current = newModel;
+              const baseCfg = props.config;
+              if (baseCfg) {
+                const nextCompaction = { ...baseCfg.compaction };
+                if (newModel) nextCompaction.model = newModel;
+                else delete (nextCompaction as { model?: string }).model;
+                const next: AtlasConfig = { ...baseCfg, compaction: nextCompaction };
+                void saveConfig(next).then((r) => {
+                  if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+                });
+              }
+              pushItem(
+                'system',
+                newModel
+                  ? `compaction model set to ${newModel}.`
+                  : 'compaction model cleared (will use active model).'
+              );
+              return;
+            }
+            if (sub === 'threshold') {
+              const arg = rest[1];
+              const v = arg ? Number(arg) : NaN;
+              if (!Number.isFinite(v) || v <= 0 || v > 1) {
+                pushItem('error', 'usage: /compact threshold <fraction 0<v≤1>');
+                return;
+              }
+              compactThresholdRef.current = v;
+              const baseCfg = props.config;
+              if (baseCfg) {
+                const next: AtlasConfig = {
+                  ...baseCfg,
+                  compaction: { ...baseCfg.compaction, threshold: v }
+                };
+                void saveConfig(next).then((r) => {
+                  if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+                });
+              }
+              pushItem('system', `compaction threshold set to ${v}.`);
+              return;
+            }
+            pushItem(
+              'error',
+              'usage: /compact [now|status|on|off|model <id|default>|threshold <0..1>]'
+            );
+            return;
+          }
           case 'sessions':
           case 'resume': {
             if (!props.sessionStore) {
@@ -762,6 +903,41 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       const ac = new AbortController();
       abortRef.current = ac;
       setStreaming(true);
+
+      // Auto-compaction: if enabled and the running token count is above
+      // the configured threshold, ask a model (the active one by default,
+      // or `compaction.model` if overridden) to roll older turns into a
+      // single summary system message. Falls through silently on error.
+      if (compactEnabledRef.current && messagesRef.current.length >= 6) {
+        const summarizerModel = compactModelRef.current ?? effectiveModel;
+        const compRes = await compactIfNeeded(messagesRef.current, {
+          provider: provider!,
+          summarizerModel,
+          limits: {
+            contextTokens: compactContextTokensRef.current,
+            compactThreshold: compactThresholdRef.current
+          },
+          signal: ac.signal
+        });
+        if (compRes.ok && compRes.value.compacted) {
+          messagesRef.current = [...compRes.value.messages];
+          // Rebuild `seeded` so the freshly compacted history is what
+          // we send to the provider, not the pre-compaction snapshot.
+          seeded.length = 0;
+          seeded.push(
+            { role: 'system', content: systemContent },
+            ...messagesRef.current
+          );
+          pushItem(
+            'system',
+            `(auto-compacted ${compRes.value.summarized} older turn${
+              compRes.value.summarized === 1 ? '' : 's'
+            } using ${summarizerModel})`
+          );
+        } else if (!compRes.ok) {
+          pushItem('error', `compaction skipped: ${compRes.error.message}`);
+        }
+      }
 
       const reasoningOpt =
         thinking === 'off'
@@ -1541,7 +1717,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             }
           },
           mcp: { servers: [] },
-          github: {}
+          github: {},
+          compaction: { enabled: true, threshold: 0.8, contextTokens: 200_000 }
         };
         const nextCfg: AtlasConfig = {
           ...baseCfg,
@@ -1626,7 +1803,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         }
       },
       mcp: { servers: [] },
-      github: {}
+      github: {},
+      compaction: { enabled: true, threshold: 0.8, contextTokens: 200_000 }
     };
 
     const target = overlay.target;
@@ -3072,6 +3250,9 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'thinking', args: 'off|low|medium|high|xhigh', summary: 'set reasoning effort (model-aware)' },
   { name: 'config', summary: 'open the config menu (API keys, OAuth, integrations)' },
   { name: 'mcps', args: '[add|remove <name>]', summary: 'list / add / remove MCP servers' },
+  { name: 'sessions', args: '[id]', summary: 'list / resume saved sessions' },
+  { name: 'resume', args: '[id]', summary: 'resume a session (alias of /sessions)' },
+  { name: 'compact', args: '[now|status|on|off|model <id>|threshold <0..1>]', summary: 'auto-compaction controls' },
   { name: 'exit', summary: 'leave atlas' }
 ];
 

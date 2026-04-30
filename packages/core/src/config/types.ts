@@ -75,6 +75,28 @@ export const McpConfigSchema = z
   })
   .default({});
 
+export const CompactionConfigSchema = z
+  .object({
+    /** Master switch. When false, no auto-compaction is attempted. */
+    enabled: z.boolean().default(true),
+    /**
+     * Override model id used for the summarizer. When omitted, Atlas
+     * uses the **active** chat model (no separate cheap summarizer).
+     */
+    model: z.string().min(1).optional(),
+    /**
+     * Fraction of the context window that triggers compaction. Default
+     * 0.8 (compact when ≥ 80% full). Clamped to (0, 1].
+     */
+    threshold: z.number().gt(0).lte(1).default(0.8),
+    /**
+     * Assumed context window size in tokens (used for the threshold
+     * calculation when the provider doesn't report it). Default 200k.
+     */
+    contextTokens: z.number().int().positive().default(200_000)
+  })
+  .default({});
+
 export const GitHubAuthConfigSchema = z
   .object({
     /** OAuth access token obtained via the device-flow setup. */
@@ -125,7 +147,8 @@ export const AtlasConfigSchema = z
     fallbackModels: z.array(z.string().min(1)).default([]),
     providers: ProvidersConfigSchema,
     mcp: McpConfigSchema,
-    github: GitHubAuthConfigSchema
+    github: GitHubAuthConfigSchema,
+    compaction: CompactionConfigSchema
   })
   .default({});
 
@@ -136,5 +159,6 @@ export type OpenAICodexAuth = z.infer<typeof OpenAICodexAuthSchema>;
 export type ProvidersConfig = z.infer<typeof ProvidersConfigSchema>;
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 export type McpConfig = z.infer<typeof McpConfigSchema>;
+export type CompactionConfig = z.infer<typeof CompactionConfigSchema>;
 export type GitHubAuthConfig = z.infer<typeof GitHubAuthConfigSchema>;
 export type AtlasConfig = z.infer<typeof AtlasConfigSchema>;

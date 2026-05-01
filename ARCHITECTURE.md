@@ -138,6 +138,102 @@ packages/cli/src/
 └── format/                  — text formatting, syntax highlight, diff display
 ```
 
+## SDD pipeline (post-1.0)
+
+The post-1.0 track adds spec-driven-delivery primitives on top of the core
+runtime. Each primitive is a small typed engine with a YAML-on-disk format
+and built-in starter content.
+
+### Templates (`packages/core/src/templates/`)
+
+Handlebars-over-YAML document generator with first-class typed inputs.
+
+- **Schema**: `id`, `version`, `title`, `owner` (agent), `editors`,
+  `inputs` (typed: string/text/number/boolean/list/object), `output`
+  (default path), `whenToUse`, `preamble` (verbatim byte-0 emission for
+  formats like DESIGN.md), `sections[]`.
+- **Section schema**: `id`, `title`, `instruction`, `elicit` (gate),
+  `examples`, `condition` (truthy / `==` / `!=`), `repeatable`, `body`
+  (Handlebars), `sections[]` (nested).
+- **Helpers**: `eq`, `upper`, `lower`, `default`. Kept tiny on purpose.
+- **Owner enforcement** (`TEMPLATE_OWNER_MISMATCH`) and **elicitation
+  gate** (`TEMPLATE_INPUT_MISSING`) fail render rather than producing
+  half-empty artifacts.
+- **Loader**: `~/.atlas/templates/*.yaml`, deduplicated by id (newest
+  version wins, lex-newer path on tie).
+- **Starter set**: 16 templates including `product-brief`, `prd`,
+  `architecture`, `epic`, `story`, `ux-spec`, `design-system`,
+  `release-notes`, `adr`, `bug-report`, etc.
+
+### Checklists (`packages/core/src/checklists/`)
+
+Structural counterpart to templates: gate review, not creation.
+
+- **Schema**: `id`, `version`, `title`, `owner`, `appliesTo`, `items[]`
+  with per-item `severity` (`blocker` / `warning` / `info`) and `hint`.
+- **Engine**: surfaces items to the agent, aggregates verdicts, computes
+  `verdict: pass | fail` (pass iff no blocker fails). Does not
+  auto-evaluate semantic items — the agent supplies pass/fail per item.
+- **Starter set**: 17 checklists — 14 per-template (one per artifact) +
+  3 cross-cutting (`security-review`, `definition-of-done`,
+  `release-readiness`).
+- **DESIGN.md adoption**: pegged to
+  [google-labs-code/design.md](https://github.com/google-labs-code/design.md)
+  v0.1.0; `npm` is a declared engine requirement so Aphrodite can shell
+  out to `npx @google/design.md lint` deterministically.
+
+### Workflows (`packages/core/src/workflows/`)
+
+Declarative routing table — kept *outside* of agent code so it's
+testable, inspectable, and overridable without rebuilding.
+
+- **Chain step**: `(fromAgent, command?) → (toAgent, nextCommand?, reason?)`.
+- **File**: `<cwd>/.atlas/workflows/chains.yaml` (project) overrides
+  `~/.atlas/workflows/chains.yaml` (user) overrides built-ins.
+- **Resolution priority** in `recommendNext`:
+  1. **Handoff queue** — oldest unconsumed handoff wins. Handoff files
+     are gray-matter frontmatter envelopes left by upstream agents.
+  2. **Chain table** — when `fromAgent` is supplied; specific command
+     match beats wildcard.
+  3. **Static state fallback** — `recommendAgent(state)` based on
+     detected artifacts.
+- **Discriminator**: `source: 'handoff' | 'chain' | 'state'` so the TUI
+  can explain *why* the next agent was picked.
+
+### Stories (`packages/core/src/stories/`)
+
+Mixed-mode authorization for a single shared artifact (the story file).
+Each agent declares `authorizedSections` / `forbiddenSections`; the
+`story_update` tool enforces them at the boundary so Hercules can write
+"Implementation Notes" but never "Acceptance Criteria".
+
+### Project state (`packages/core/src/orchestrator/`)
+
+Pure side-effecting reads (no decisions). Detects `hasGit`, `hasPRD`,
+`hasArchitecture`, `hasStories`, `storyCount`,
+`hasUncommittedChanges`. The `decide.ts` module is a pure function
+mapping state → recommended agent; the split keeps both unit-testable.
+
+## Comparison: Atlas vs BMAD-METHOD
+
+Atlas overlaps with [BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD)
+in scope (multi-agent SDD pipeline) but diverges deliberately:
+
+| Capability | Atlas | BMAD |
+| ---------- | ----- | ---- |
+| Stack | TS strict + Zod boundaries | JS + Python + uv |
+| Agent format | TS object literal (kind: framework/user) | Markdown + TOML + JSON manifest |
+| Workflow definition | Declarative `chains.yaml` table | XML-in-markdown step machine inside each SKILL.md |
+| Checklist engine | Typed runner with per-item severity + verdict | Inert markdown read by LLM |
+| Spec adherence | DESIGN.md byte-spec test (`@google/design.md`) | None equivalent |
+| Templates | Handlebars-over-YAML, single render | Section-bound `<template-output>` directives, streaming |
+| Customization | Built-in only (Phase 11 will add overlays) | base → team → user TOML deep-merge |
+| Status file | Handoff queue (Phase 9 will add state file) | `sprint-status.yaml` shared mutable state |
+
+Phases 8–11 close the remaining gaps (sectioned templates, project state
+file, workflow gates + activation hooks, customization overlays) without
+adopting BMAD's XML-in-markdown DSL or its multi-runtime requirement.
+
 ## Phase plan
 
 See README.md. Each phase ships a working CLI; phases are not allowed to

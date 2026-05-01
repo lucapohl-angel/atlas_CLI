@@ -32,6 +32,31 @@ more capability.
 | 11    | ✅     | Built-in agents + starter skills (`atlas init`) |
 | 12    | ✅     | Polish: docs, changelog, lint, publish-ready scripts |
 
+### Post-1.0 SDD pipeline (current track)
+
+A second 12-phase track turns Atlas into a complete spec-driven-delivery
+crew. Phases 1–6 are shipped; 7–11 are queued (installer/module system
+deferred). Each post-1.0 phase ships a working, fully tested slice.
+
+| Phase | Status | Capability |
+| ----- | ------ | ---------- |
+| 1     | ✅     | Persona DNA: voice, activation, boundaries, examples, dataRefs |
+| 2     | ✅     | Tool quality: `whenToUse`, contract, blocked-by, examples |
+| 3     | ✅     | Templates engine + 16 starter templates (Handlebars + Zod) |
+| 4     | ✅     | Checklists engine + 17 starter checklists + DESIGN.md adoption |
+| 5     | ✅     | Workflow chains + handoff-aware orchestrator (`*next`, `atlas status`) |
+| 6     | ✅     | Skill versioning, `/skills` toggle, `atlas *next` |
+| 7     | ✅     | Docs + examples (this section, `examples/`, ARCHITECTURE refresh) |
+| 8     | ⏳     | Sectioned long-form templates (per-section render/write for PRD/architecture) |
+| 9     | ⏳     | Project state file (`<cwd>/.atlas/state.yaml` — sprint/artifact status) |
+| 10    | ⏳     | Workflow gates + activation hooks (`requires`, HALT, prepend/append/on_complete) |
+| 11    | ⏳     | Customization overlays (built-in → user → project deep-merge) |
+| 12    | ⏸     | Installer + module system (deferred) |
+
+See [`examples/sdd-walkthrough.md`](./examples/sdd-walkthrough.md) for an
+end-to-end run: brief → PRD → architecture → UX → design system → epics →
+story → implementation → QA.
+
 ## Quick start
 
 ```bash

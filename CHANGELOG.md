@@ -6,6 +6,84 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added — Post-1.0 Phase 7 (Docs + examples)
+- README phase table extended with the post-1.0 SDD pipeline track
+  (phases 1–11; phase 12 deferred).
+- `ARCHITECTURE.md` gained an "SDD pipeline (post-1.0)" section
+  documenting templates, checklists, workflows, stories, and project
+  state engines.
+- `ARCHITECTURE.md` gained an "Atlas vs BMAD-METHOD" comparison table
+  capturing where Atlas already differs and what phases 8–11 will close.
+- New `examples/sdd-walkthrough.md` — end-to-end run of the Greek-god
+  pipeline on a fictional product (brief → PRD → architecture → UX →
+  design system → epic → story → implementation → QA), showing every
+  built-in template, checklist, and chain transition along the way.
+
+### Added — Post-1.0 Phase 6 (Skill versioning + `*next`)
+- Skill loader deduplicates by name with newest `createdAt` winning.
+- `/skills` slash command toggles individual skills on/off without
+  removing them.
+- `atlas *next` shells the orchestrator's recommendation, including the
+  source (`handoff` / `chain` / `state`) and reason.
+
+### Added — Post-1.0 Phase 5 (Workflow chains + handoff orchestrator)
+- New `workflows/` module: `ChainStepSchema`
+  (`fromAgent` / `command?` / `toAgent` / `nextCommand?` / `reason?`),
+  `ChainsFileSchema`, `parseChains`, `loadChains`, `lookupChain`.
+- `loadChains` resolution order: explicit `dir` →
+  `<cwd>/.atlas/workflows/chains.yaml` →
+  `~/.atlas/workflows/chains.yaml`. Missing files silently fall through.
+- `recommendNext({ cwd, fromAgent, lastCommand })` returns
+  `{ source: 'handoff' | 'chain' | 'state', agent, command?, reason? }`.
+  Priority: pending handoff queue (oldest unconsumed) → chain table →
+  static `recommendAgent(state)` fallback.
+- Built-in `workflows/chains.yaml` encoding the canonical Greek-god
+  pipeline (athena → prometheus → aphrodite → hermes → hestia →
+  hercules → nemesis → … plus the iris/apollo fan-in).
+- `atlas status` rewritten to surface `pending handoffs`, the
+  recommended next agent, and the source/reason. JSON mode includes the
+  full handoff list.
+
+### Added — Post-1.0 Phase 4 (Checklists + DESIGN.md adoption)
+- New `checklists/` module: typed runner with per-item severity
+  (`blocker` / `warning` / `info`), aggregate counts, and a
+  `verdict: pass | fail` derived from blocker fails only.
+- 17 starter checklists shipped: 14 per-template (one per artifact) plus
+  3 cross-cutting (`security-review`, `definition-of-done`,
+  `release-readiness`).
+- `design-system` template emits a v0.1.0-spec-compliant `DESIGN.md`
+  with frontmatter + canonical section order; locked by a render-time
+  byte-spec conformance test.
+- `npm` is now a declared engine requirement (root `package.json`) so
+  Aphrodite can shell out to `npx @google/design.md lint DESIGN.md`
+  unconditionally; persona body updated to remove the prior "if Node is
+  available" caveat.
+
+### Added — Post-1.0 Phase 3 (Templates engine + 16 starter templates)
+- New `templates/` module: `TemplateSchema` (id/version/owner/editors/
+  inputs/output/whenToUse/preamble/sections), Handlebars compiler, owner
+  enforcement (`TEMPLATE_OWNER_MISMATCH`), elicitation gate
+  (`TEMPLATE_INPUT_MISSING`), conditional sections, repeatable sections.
+- 16 built-in templates (`product-brief`, `prd`, `architecture`, `epic`,
+  `story`, `ux-spec`, `design-system`, `release-notes`, `adr`,
+  `bug-report`, etc.) embedded as strings, written by `atlas init`.
+
+### Added — Post-1.0 Phase 2 (Tool quality)
+- All built-in tool descriptions extended with `whenToUse`, `contract`,
+  `blockedBy`, and concrete `examples` so the model picks the right
+  tool the first time.
+
+### Added — Post-1.0 Phase 1 (Persona DNA)
+- `AgentFrontmatterSchema` extended with `voiceDna`, `activation`,
+  `capabilityBoundaries`, `dataRefs`, `examples`, `templates`,
+  `checklists`, `authorizedSections`, `forbiddenSections`,
+  `personaAlias`, `kind` (`framework` / `user`).
+- `buildSystemPrompt` renders these into clearly-labelled sections so
+  the model produces output that *sounds* like the persona, not just
+  talks about being it.
+- All 9 framework agents (athena, prometheus, aphrodite, hermes, hestia,
+  hercules, nemesis, iris, apollo) enriched with full DNA.
+
 ### Added — Phase 12 polish (post-1.0 wiring)
 - **Self-improvement loop (Hermes-style learned skills)** — Atlas now
   watches each turn and, when a heuristic fires (≥5 rounds, ≥2 tool

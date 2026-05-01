@@ -56,6 +56,11 @@ export type AtlasErrorCode =
   | 'CHECKLIST_INPUT_INVALID'
   // Workflow
   | 'CHAIN_PARSE_FAILED'
+  // Project state
+  | 'STATE_PARSE_FAILED'
+  | 'STATE_WRITE_FAILED'
+  | 'STATE_STORY_NOT_FOUND'
+  | 'STATE_EPIC_NOT_FOUND'
   // Generic
   | 'INTERNAL'
   | 'CANCELLED'

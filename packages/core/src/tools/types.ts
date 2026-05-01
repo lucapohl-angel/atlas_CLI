@@ -24,6 +24,17 @@ export interface ToolContext {
    * are auto-approved (e.g. `--yes` flag, hook-driven decisions).
    */
   readonly approve: ApprovalPolicy;
+  /**
+   * Optional identity of the agent currently driving the loop. Tools that
+   * enforce per-agent boundaries (e.g. `story_update`) consult this to
+   * decide whether a write is authorized. Omit for direct user tool
+   * invocations or contexts without a specific agent.
+   */
+  readonly callingAgent?: {
+    readonly name: string;
+    readonly authorizedSections?: readonly string[];
+    readonly forbiddenSections?: readonly string[];
+  };
 }
 
 export type ApprovalDecision =

@@ -1312,6 +1312,15 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           toolContext: {
             ...props.toolContext,
             approve: mode === 'plan' ? denyAllPolicy : allowAllPolicy,
+            callingAgent: {
+              name: activeAgent.name,
+              ...(activeAgent.authorizedSections
+                ? { authorizedSections: activeAgent.authorizedSections }
+                : {}),
+              ...(activeAgent.forbiddenSections
+                ? { forbiddenSections: activeAgent.forbiddenSections }
+                : {})
+            },
             signal: ac.signal
           },
           initialMessages: seeded,

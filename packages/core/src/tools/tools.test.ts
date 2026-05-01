@@ -156,3 +156,125 @@ describe('composeToolDescription', () => {
     expect(out).toBe('a minimal tool');
   });
 });
+
+describe('story tools', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'atlas-story-tools-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('story_create scaffolds a file under cwd/docs/stories', async () => {
+    const r = await invokeTool(
+      builtinToolRegistry(),
+      'story_create',
+      { id: 'login', title: 'Login flow' },
+      { cwd: dir, approve: allowAllPolicy }
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const data = r.value.data as { path: string };
+    const onDisk = await readFile(data.path, 'utf8');
+    expect(onDisk).toContain('## Goals');
+    expect(onDisk).toContain('## Tasks');
+    expect(onDisk).toContain('id: login');
+  });
+
+  it('story_update hard-fails on forbiddenSections', async () => {
+    const c = await invokeTool(
+      builtinToolRegistry(),
+      'story_create',
+      { id: 's', title: 'S' },
+      { cwd: dir, approve: allowAllPolicy }
+    );
+    if (!c.ok) throw new Error('setup failed');
+    const path = (c.value.data as { path: string }).path;
+
+    const r = await invokeTool(
+      builtinToolRegistry(),
+      'story_update',
+      { path, sectionTitle: 'Goals', content: 'x' },
+      {
+        cwd: dir,
+        approve: allowAllPolicy,
+        callingAgent: {
+          name: 'hercules',
+          authorizedSections: ['Tasks'],
+          forbiddenSections: ['Goals']
+        }
+      }
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('STORY_SECTION_FORBIDDEN');
+    const onDisk = await readFile(path, 'utf8');
+    expect(onDisk).not.toContain('\nx\n');
+  });
+
+  it('story_update warn+writes on unauthorized-but-not-forbidden', async () => {
+    const c = await invokeTool(
+      builtinToolRegistry(),
+      'story_create',
+      { id: 's', title: 'S' },
+      { cwd: dir, approve: allowAllPolicy }
+    );
+    if (!c.ok) throw new Error('setup failed');
+    const path = (c.value.data as { path: string }).path;
+
+    const r = await invokeTool(
+      builtinToolRegistry(),
+      'story_update',
+      { path, sectionTitle: 'Test Strategy', content: 'covered by integration' },
+      {
+        cwd: dir,
+        approve: allowAllPolicy,
+        callingAgent: {
+          name: 'hercules',
+          authorizedSections: ['Tasks'],
+          forbiddenSections: ['Goals']
+        }
+      }
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.summary).toContain('warning:');
+    const onDisk = await readFile(path, 'utf8');
+    expect(onDisk).toContain('covered by integration');
+    expect(onDisk).toContain('soft-boundary cross');
+  });
+
+  it('handoff_emit + handoff_consume round-trip via toAgent', async () => {
+    const e = await invokeTool(
+      builtinToolRegistry(),
+      'handoff_emit',
+      { fromAgent: 'athena', toAgent: 'prometheus', command: 'write-architecture' },
+      { cwd: dir, approve: allowAllPolicy }
+    );
+    expect(e.ok).toBe(true);
+
+    const c = await invokeTool(
+      builtinToolRegistry(),
+      'handoff_consume',
+      { toAgent: 'prometheus' },
+      { cwd: dir, approve: allowAllPolicy }
+    );
+    expect(c.ok).toBe(true);
+    if (!c.ok) return;
+    expect(c.value.summary).toContain('athena');
+    expect(c.value.summary).toContain('prometheus');
+
+    // Second consume should return HANDOFF_NOT_FOUND.
+    const c2 = await invokeTool(
+      builtinToolRegistry(),
+      'handoff_consume',
+      { toAgent: 'prometheus' },
+      { cwd: dir, approve: allowAllPolicy }
+    );
+    expect(c2.ok).toBe(false);
+    if (!c2.ok) expect(c2.error.code).toBe('HANDOFF_NOT_FOUND');
+  });
+});

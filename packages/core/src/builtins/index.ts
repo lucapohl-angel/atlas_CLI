@@ -15,6 +15,7 @@
 
 import { BUILTIN_TEMPLATES } from './templates.js';
 import { BUILTIN_CHECKLISTS } from './checklists.js';
+import { BUILTIN_WORKFLOWS } from './workflows.js';
 
 export interface BuiltinFile {
   readonly relPath: string; // e.g. 'agents/athena/AGENT.md'
@@ -785,7 +786,8 @@ process spawn, and timers.`
   )
 ];
 
-export const ALL_BUILTINS: readonly BuiltinFile[] = [...BUILTIN_AGENTS, ...BUILTIN_SKILLS, ...BUILTIN_TEMPLATES, ...BUILTIN_CHECKLISTS];
+export const ALL_BUILTINS: readonly BuiltinFile[] = [...BUILTIN_AGENTS, ...BUILTIN_SKILLS, ...BUILTIN_TEMPLATES, ...BUILTIN_CHECKLISTS, ...BUILTIN_WORKFLOWS];
 
 export { BUILTIN_TEMPLATES } from './templates.js';
 export { BUILTIN_CHECKLISTS } from './checklists.js';
+export { BUILTIN_WORKFLOWS } from './workflows.js';

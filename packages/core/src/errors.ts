@@ -52,6 +52,8 @@ export type AtlasErrorCode =
   | 'CHECKLIST_PARSE_FAILED'
   | 'CHECKLIST_OWNER_MISMATCH'
   | 'CHECKLIST_INPUT_INVALID'
+  // Workflow
+  | 'CHAIN_PARSE_FAILED'
   // Generic
   | 'INTERNAL'
   | 'CANCELLED'

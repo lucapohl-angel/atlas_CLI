@@ -232,3 +232,75 @@ export const renderTemplate = (
     elicited
   });
 };
+
+// ────────────────────────── Sectioned rendering ──────────────────────────
+//
+// `renderTemplateSection` produces the markdown for a single named section
+// (and its nested children) without the template-level preamble or title
+// header. Use this with `applySectionToFile` to grow long-form artifacts
+// (PRD, architecture) one section at a time, each with fresh inputs.
+
+export interface RenderTemplateSectionOptions extends RenderTemplateOptions {
+  /** Section identifier (`id` field). Top-level sections only. */
+  readonly sectionId: string;
+}
+
+export interface RenderedSection {
+  readonly templateId: string;
+  readonly version: number;
+  readonly sectionId: string;
+  readonly content: string;
+  readonly elicited: readonly string[];
+}
+
+const findTopLevelSection = (
+  template: Template,
+  sectionId: string
+): TemplateSection | undefined =>
+  template.sections.find((s) => s.id === sectionId);
+
+export const renderTemplateSection = (
+  options: RenderTemplateSectionOptions
+): Result<RenderedSection, AtlasError> => {
+  const { template, inputs, callingAgent, sectionId } = options;
+
+  if (template.owner && callingAgent && callingAgent.name !== template.owner) {
+    const editorOk = template.editors?.includes(callingAgent.name) ?? false;
+    if (!editorOk) {
+      return err(
+        atlasError(
+          'TEMPLATE_OWNER_MISMATCH',
+          `template "${template.id}" is owned by ${template.owner}; ${callingAgent.name} is not authorized to render it`,
+          { context: { template: template.id, owner: template.owner, caller: callingAgent.name } }
+        )
+      );
+    }
+  }
+
+  const section = findTopLevelSection(template, sectionId);
+  if (!section) {
+    return err(
+      atlasError(
+        'TEMPLATE_SECTION_NOT_FOUND',
+        `template "${template.id}" has no top-level section "${sectionId}"`,
+        { context: { template: template.id, sectionId } }
+      )
+    );
+  }
+
+  const validated = validateInputs(template.inputs, inputs);
+  if (!validated.ok) return err(validated.error);
+
+  const elicited: string[] = [];
+  const scope: Record<string, unknown> = { ...inputs };
+  const r = renderSection(section, scope, 0, elicited);
+  if (!r.ok) return err(r.error);
+
+  return ok({
+    templateId: template.id,
+    version: template.version,
+    sectionId,
+    content: r.value.trimEnd() + '\n',
+    elicited
+  });
+};

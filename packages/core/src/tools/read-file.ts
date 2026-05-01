@@ -23,6 +23,24 @@ export const readFileTool: Tool<z.infer<typeof Input>> = {
   description: 'Read a UTF-8 text file from the project. Path is relative to cwd.',
   approval: 'auto',
   schema: Input,
+  whenToUse:
+    'Whenever you need to look at the actual contents of a source file, config, README, or test before reasoning about it. Always read before editing — never patch a file blind. Prefer this over `terminal cat` for plain reads (faster, no shell, deterministic truncation).',
+  outputContract:
+    'On success, `summary` starts with `read <relpath> (<bytes> bytes[, truncated])` followed by a blank line and the file content (preview capped at ~4KB). `data.content` carries the full UTF-8 text up to `maxBytes`.',
+  blockedOps: [
+    'paths that escape cwd via `..` (refused)',
+    'files larger than `maxBytes` (truncated, never errored)'
+  ],
+  examples: [
+    {
+      input: '{"path":"package.json"}',
+      result: 'returns the file contents'
+    },
+    {
+      input: '{"path":"src/big.log","maxBytes":50000}',
+      result: 'reads the first 50000 bytes of a large file'
+    }
+  ],
   async execute(input, ctx) {
     const abs = isAbsolute(input.path) ? input.path : resolve(ctx.cwd, input.path);
     const rel = relative(ctx.cwd, abs);

@@ -85,6 +85,31 @@ export const gitTool: Tool<z.infer<typeof GitInput>> = {
     'add, rm, mv) require user approval. Destructive flags (--force, --hard, --mirror) always require approval.',
   approval: 'ask',
   schema: GitInput,
+  whenToUse:
+    'Use for ALL git work (status, log, diff, branching, committing, merging) instead of `terminal git ...`. The structured `args` array eliminates shell-quoting bugs (commit messages with quotes, paths with spaces, multi-line bodies). Approval gating distinguishes read-only inspection from mutations.',
+  outputContract:
+    'Same shape as `terminal`: `summary` starts with `$ git <args...>`, includes `exit: <code>`, then `stdout:` / `stderr:` blocks. `data` carries `{exitCode, signal, stdout, stderr}`. Inspect `exitCode` — a clean exit (0) means the git command succeeded.',
+  blockedOps: [
+    'git push --force / --force-with-lease (allowed but inspect target branch first)',
+    'git reset --hard (loses uncommitted work)',
+    'git clean -fd (deletes untracked files)',
+    'git push to a protected branch (will be rejected by remote, not by Atlas)'
+  ],
+  examples: [
+    {
+      input: '{"args":["status","--porcelain"]}',
+      result: 'machine-readable working tree status, auto-approved'
+    },
+    {
+      input: '{"args":["commit","-m","feat: add foo\\n\\nWhy this matters..."]}',
+      result: 'commit with multi-line message, asks for approval',
+      note: 'Multi-line commit messages work because no shell quoting is involved.'
+    },
+    {
+      input: '{"args":["log","--oneline","-20"]}',
+      result: 'last 20 commits, auto-approved'
+    }
+  ],
   async execute(input, ctx) {
     const safe = isGitRead(input.args) && !hasDestructiveFlag(input.args);
     if (safe) {
@@ -139,6 +164,30 @@ export const ghTool: Tool<z.infer<typeof GhInput>> = {
     'auto-approve; everything else asks for approval.',
   approval: 'ask',
   schema: GhInput,
+  whenToUse:
+    'Use for any GitHub-side action: opening / commenting on / merging PRs, filing or triaging issues, viewing CI status, creating releases, managing repo settings. Always prefer `gh` over hand-built REST calls — it handles auth + pagination correctly. Use `--json` for machine-parseable output.',
+  outputContract:
+    'Same shape as `terminal` and `git`: `summary` begins with `$ gh <args...>`, includes `exit: <code>`, then `stdout:` / `stderr:`. `data` carries `{exitCode, signal, stdout, stderr}`. With `--json` flags, the stdout block is a JSON array/object the next tool call can read directly.',
+  blockedOps: [
+    'gh repo delete (unrecoverable on the server side)',
+    'gh release delete (alters published artifacts)',
+    'gh pr merge --delete-branch (loses local + remote branch ref)',
+    'gh secret set (writes credentials — confirm scope before running)'
+  ],
+  examples: [
+    {
+      input: '{"args":["pr","list","--state","open","--json","number,title,author"]}',
+      result: 'JSON array of open PRs, auto-approved'
+    },
+    {
+      input: '{"args":["pr","create","--title","feat: add foo","--body","Closes #123"]}',
+      result: 'opens a PR from the current branch, asks for approval'
+    },
+    {
+      input: '{"args":["pr","checks","42"]}',
+      result: 'CI status for PR #42, auto-approved'
+    }
+  ],
   async execute(input, ctx) {
     void isGhRead; // reserved for future fine-grained approval routing
     return await spawnCli('gh', input.args, ctx, input.timeoutMs, input.cwd);

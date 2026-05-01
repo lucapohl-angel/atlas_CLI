@@ -46,8 +46,27 @@ export type ToolFail = { readonly type: 'error'; readonly error: AtlasError };
 
 export type ToolResult = ToolOk | ToolFail;
 
+/**
+ * One concrete usage example. Surfaces a JSON-encoded input, a one-line
+ * outcome, and an optional `note` so the model can pattern-match the
+ * tool's actual contract instead of guessing from the schema alone.
+ */
+export interface ToolExample {
+  /** What the input would look like, encoded as a JSON string. */
+  readonly input: string;
+  /** One-line description of what happens / what comes back. */
+  readonly result: string;
+  /** Optional caveat, edge case, or "do this instead" pointer. */
+  readonly note?: string;
+}
+
 export interface Tool<I = unknown> {
   readonly name: string;
+  /**
+   * One-line summary. Kept short so it works in dense lists. The richer,
+   * model-facing description is composed via `composeToolDescription`
+   * from this field plus the optional fields below.
+   */
   readonly description: string;
   readonly approval: ApprovalMode;
   /**
@@ -56,5 +75,69 @@ export interface Tool<I = unknown> {
    * without fighting input-vs-output variance.
    */
   readonly schema: z.ZodType<I, z.ZodTypeDef, unknown>;
+  /**
+   * When the model SHOULD reach for this tool. Free-form prose. Surfaces
+   * verbatim in the composed description so the agent has guidance, not
+   * just a schema. Recommended length: 1–3 sentences.
+   */
+  readonly whenToUse?: string;
+  /**
+   * Operations the tool will refuse / require approval for, listed as
+   * human-readable phrases ("force-push", "rm -rf", "DROP TABLE"). Used
+   * by the description composer so the model knows the boundaries; not
+   * (yet) machine-enforced beyond the existing approval policy.
+   */
+  readonly blockedOps?: readonly string[];
+  /**
+   * What the tool's `summary` field looks like on success — the shape
+   * the model should expect to parse / re-quote. Keeps the contract
+   * explicit instead of letting the model infer it from a sample.
+   */
+  readonly outputContract?: string;
+  /** A handful of canonical examples. Ordered by importance. */
+  readonly examples?: readonly ToolExample[];
   execute(input: I, ctx: ToolContext): Promise<Result<ToolOk, AtlasError>>;
 }
+
+/**
+ * Compose the rich, model-facing description from the tool's fields.
+ * Used by the provider tool-spec serializer so every provider sees the
+ * same enriched contract — never the bare one-liner.
+ *
+ * Format (sections omitted when fields are empty):
+ *
+ *   <description>
+ *
+ *   When to use: <whenToUse>
+ *
+ *   Output contract: <outputContract>
+ *
+ *   Blocked operations: <blockedOps joined>
+ *
+ *   Examples:
+ *     - input: <example.input>
+ *       result: <example.result>
+ *       note: <example.note>
+ */
+export const composeToolDescription = (tool: Tool<unknown>): string => {
+  const parts: string[] = [tool.description.trim()];
+  if (tool.whenToUse && tool.whenToUse.trim().length > 0) {
+    parts.push(`When to use: ${tool.whenToUse.trim()}`);
+  }
+  if (tool.outputContract && tool.outputContract.trim().length > 0) {
+    parts.push(`Output contract: ${tool.outputContract.trim()}`);
+  }
+  if (tool.blockedOps && tool.blockedOps.length > 0) {
+    parts.push(
+      `Blocked operations (require approval / refused): ${tool.blockedOps.join('; ')}`
+    );
+  }
+  if (tool.examples && tool.examples.length > 0) {
+    const lines = tool.examples.map((e) => {
+      const head = `  - input: ${e.input}\n    result: ${e.result}`;
+      return e.note ? `${head}\n    note: ${e.note}` : head;
+    });
+    parts.push(`Examples:\n${lines.join('\n')}`);
+  }
+  return parts.join('\n\n');
+};

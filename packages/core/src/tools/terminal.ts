@@ -24,6 +24,30 @@ export const terminalTool: Tool<z.infer<typeof Input>> = {
   description: 'Run a shell command. Captures stdout/stderr + exit code. Requires approval.',
   approval: 'ask',
   schema: Input,
+  whenToUse:
+    'Use for any operation outside file read/write — running tests, installing packages, building, formatting, scaffolding, inspecting processes. Prefer the dedicated `git` / `gh` tools for VCS work (cleaner approval gating).',
+  outputContract:
+    'On success, `summary` starts with `$ <command>` then `exit: <code>` then optional `stdout:` / `stderr:` blocks (each capped at 64KB, `…(truncated)` appended when over). `data` carries `{exitCode, signal, stdout, stderr}`. Note: a non-zero `exitCode` is still a successful tool result — inspect `exitCode` to decide whether the command itself succeeded.',
+  blockedOps: [
+    'commands exceeding `timeoutMs` (default 60s, max 600s) are killed and returned as TOOL_EXECUTION_FAILED',
+    'rm -rf, force-pushes, dropping data — allowed if user approves but inspect carefully before running',
+    'long-running servers / interactive prompts (no stdin connected) — will hang until timeout'
+  ],
+  examples: [
+    {
+      input: '{"command":"pnpm test:run"}',
+      result: 'runs the test suite, returns exit code + truncated output'
+    },
+    {
+      input: '{"command":"jq .name package.json","timeoutMs":5000}',
+      result: 'short utility command with a tight timeout'
+    },
+    {
+      input: '{"command":"npm install","cwd":"packages/cli"}',
+      result: 'installs into a sub-package',
+      note: 'Use `cwd` to scope without `cd && ...` in the command string.'
+    }
+  ],
   async execute(input, ctx) {
     return await new Promise((resolvePromise) => {
       const child = spawn(input.command, {

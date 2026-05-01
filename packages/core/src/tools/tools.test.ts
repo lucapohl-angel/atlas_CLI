@@ -127,3 +127,32 @@ describe('tool pipeline', () => {
     if (!r.ok) expect(r.error.code).toBe('TOOL_CANCELLED');
   });
 });
+
+describe('composeToolDescription', () => {
+  it('builds a richer description from optional fields', async () => {
+    const { composeToolDescription, readFileTool, writeFileTool, terminalTool, gitTool, ghTool } =
+      await import('./index.js');
+    for (const tool of [readFileTool, writeFileTool, terminalTool, gitTool, ghTool]) {
+      const composed = composeToolDescription(tool);
+      expect(composed).toContain(tool.description);
+      expect(composed).toContain('When to use:');
+      expect(composed).toContain('Output contract:');
+      expect(composed).toContain('Examples:');
+      expect(composed.length).toBeGreaterThanOrEqual(200);
+    }
+  });
+
+  it('omits sections when fields are absent', async () => {
+    const { composeToolDescription } = await import('./index.js');
+    const z = await import('zod');
+    const minimal = {
+      name: 'min',
+      description: 'a minimal tool',
+      approval: 'auto' as const,
+      schema: z.z.object({}),
+      execute: async () => ({ ok: false }) as never
+    };
+    const out = composeToolDescription(minimal);
+    expect(out).toBe('a minimal tool');
+  });
+});

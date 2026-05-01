@@ -22,6 +22,25 @@ export const writeFileTool: Tool<z.infer<typeof Input>> = {
   description: 'Write a UTF-8 text file under the project cwd. Requires approval.',
   approval: 'ask',
   schema: Input,
+  whenToUse:
+    'Use to create a new file or to wholesale-replace an existing one. Always read the file first if it exists so the new content is intentional, not a guess. For surgical edits to a large file, prefer a smaller targeted patch via terminal + git apply.',
+  outputContract:
+    'On success, `summary` is `wrote <relpath> (<bytes> bytes)`. `data` carries `{path, bytes}`. Failure returns a `TOOL_EXECUTION_FAILED` AtlasError.',
+  blockedOps: [
+    'paths that escape cwd via `..` (refused)',
+    'paths outside the project root (refused unless absolute matches cwd)'
+  ],
+  examples: [
+    {
+      input: '{"path":"docs/prd.md","content":"# PRD\\n\\n..."}',
+      result: 'creates docs/ if missing then writes prd.md'
+    },
+    {
+      input: '{"path":"src/foo.ts","content":"export const x = 1;\\n","createDirs":false}',
+      result: 'fails if src/ does not already exist',
+      note: 'Default `createDirs` is true — only override when you specifically want to fail-fast.'
+    }
+  ],
   async execute(input, ctx) {
     const abs = isAbsolute(input.path) ? input.path : resolve(ctx.cwd, input.path);
     const rel = relative(ctx.cwd, abs);

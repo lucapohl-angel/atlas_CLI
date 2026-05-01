@@ -3,7 +3,7 @@
  * wire format. Uses zod-to-json-schema for accurate JSON Schema output.
  */
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import type { Tool, ToolRegistry } from '../tools/index.js';
+import { composeToolDescription, type Tool, type ToolRegistry } from '../tools/index.js';
 import type { ToolSpec } from './types.js';
 
 export const toolToSpec = (tool: Tool<unknown>): ToolSpec => {
@@ -19,7 +19,7 @@ export const toolToSpec = (tool: Tool<unknown>): ToolSpec => {
   void _drop;
   return {
     name: tool.name,
-    description: tool.description,
+    description: composeToolDescription(tool),
     parameters: rest
   };
 };

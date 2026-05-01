@@ -33,7 +33,22 @@ export const SkillFrontmatterSchema = z.object({
   /** Session id this skill was distilled from. */
   createdFromSession: z.string().optional(),
   /** One-line "why was this created" shown to the user when reviewing. */
-  createdReason: z.string().optional()
+  createdReason: z.string().optional(),
+  /**
+   * Semantic version of the skill body. Hand-authored skills default to
+   * `0.1.0`; learned skills get bumped automatically when re-distilled.
+   * Used by the `/skills history` UI and future skill-merging logic.
+   */
+  version: z.string().default('0.1.0'),
+  /** ISO-8601 UTC timestamp of creation. Auto-set by `saveLearnedSkill`. */
+  createdAt: z.string().optional(),
+  /**
+   * When `true`, the loader keeps the file on disk but excludes the
+   * skill from every registry (and therefore every system prompt).
+   * Toggled via `/skills disable <name>` / `/skills enable <name>`.
+   * Lets users mute a noisy learned skill without losing it.
+   */
+  disabled: z.boolean().optional()
 });
 
 export type SkillFrontmatter = z.infer<typeof SkillFrontmatterSchema>;

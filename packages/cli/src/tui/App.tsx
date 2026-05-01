@@ -77,7 +77,8 @@ import {
   isFrameworkAgent,
   estimateCost,
   formatCost,
-  saveLearnedSkill
+  saveLearnedSkill,
+  setSkillDisabled
 } from '@atlas/core';
 
 export type ThinkingEffort = 'off' | ReasoningEffort | 'xhigh';
@@ -754,6 +755,71 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               return;
             }
             void launchLearnReflection('manual /learn');
+            return;
+          }
+          case 'skills': {
+            const sub = (rest[0] ?? 'list').toLowerCase();
+            const target = rest.slice(1).join(' ').trim();
+            const all = props.skills.list();
+            if (sub === 'list' || sub === '') {
+              if (all.length === 0) {
+                pushItem('system', 'no skills installed.');
+                return;
+              }
+              const lines = all.map((s) => {
+                const tag = s.kind === 'learned' ? 'learned' : s.kind === 'builtin' ? 'builtin' : 'user';
+                const ver = s.version ?? '0.1.0';
+                return `${s.name.padEnd(36)} ${tag.padEnd(8)} v${ver}  — ${s.description}`;
+              });
+              pushItem('system', lines.join('\n'));
+              return;
+            }
+            if (sub === 'disable' || sub === 'enable') {
+              if (target.length === 0) {
+                pushItem('error', `usage: /skills ${sub} <name>`);
+                return;
+              }
+              // Match by exact name first, then by case-insensitive prefix.
+              const exact = all.find((s) => s.name === target);
+              const fuzzy = exact ?? all.find((s) => s.name.toLowerCase().startsWith(target.toLowerCase()));
+              if (!fuzzy) {
+                pushItem('error', `no such skill: ${target}`);
+                return;
+              }
+              void (async (): Promise<void> => {
+                const r = await setSkillDisabled(fuzzy.path, sub === 'disable');
+                if (!r.ok) {
+                  pushItem('error', `failed to ${sub} ${fuzzy.name}: ${r.error.message}`);
+                  return;
+                }
+                if (sub === 'disable') {
+                  // Remove from in-memory registry so the next turn's
+                  // system prompt sees the change without a restart.
+                  // SkillRegistry has no `remove`; rebuild via re-add of
+                  // a "tombstoned" entry would be ugly. Simplest: leave
+                  // the user to restart, but reflect the state in the
+                  // confirmation message.
+                  pushItem(
+                    'system',
+                    `disabled ${fuzzy.name} (${r.value}). Restart Atlas to drop it from the active session.`
+                  );
+                } else {
+                  pushItem(
+                    'system',
+                    `enabled ${fuzzy.name} (${r.value}). Restart Atlas to load it into the active session.`
+                  );
+                }
+              })();
+              return;
+            }
+            pushItem('error', `usage: /skills [list|disable <name>|enable <name>]`);
+            return;
+          }
+          case 'next': {
+            // Ask the orchestrator/persona to narrate the next handoff.
+            // The convention is the `*next` agent command — we inject it
+            // verbatim so the model picks it up via the persona prompt.
+            void submit('*next');
             return;
           }
           case 'history':
@@ -4815,6 +4881,8 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'resume', args: '[id]', summary: 'resume a session (alias of /sessions)' },
   { name: 'compact', args: '[now|status|on|off|model [id]|threshold <0..1>]', summary: 'auto-compaction controls' },
   { name: 'learn', args: '[on|off|status]', summary: 'self-improvement loop: distill the current turn into a learned skill' },
+  { name: 'skills', args: '[list|disable <name>|enable <name>]', summary: 'inspect / disable / enable installed skills' },
+  { name: 'next', summary: 'ask Atlas which agent or command to run next' },
   { name: 'exit', summary: 'leave atlas' }
 ];
 

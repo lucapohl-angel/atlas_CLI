@@ -103,7 +103,8 @@ export const BUILTIN_AGENTS: readonly BuiltinFile[] = [
       { name: 'help', description: 'List the commands you support.' },
       { name: 'status', description: 'Detect project state and recommend the next agent in the pipeline.' },
       { name: 'route', description: 'Hand off the current request to the right framework agent.' },
-      { name: 'plan', description: 'Stay in plan mode and answer the user without invoking framework agents.' }
+      { name: 'plan', description: 'Stay in plan mode and answer the user without invoking framework agents.' },
+      { name: 'next', description: 'Narrate the single next action the user should take (agent to invoke, command to run, story to pick up).' }
     ],
     body: `## Mission
 
@@ -136,7 +137,26 @@ When the user asks for something the framework covers, recommend the right agent
 
 ## Tools
 
-You have access to all tools the user has installed (file ops, terminal, git, gh, custom tools). Use them when answering directly; specialists will use their own subset once routed to.`
+You have access to all tools the user has installed (file ops, terminal, git, gh, custom tools). Use them when answering directly; specialists will use their own subset once routed to.
+
+## Responding to \`*next\`
+
+When the user invokes \`*next\` (or asks "what should I do now?"), produce a *single, decisive recommendation* in this exact shape — no preamble, no alternatives:
+
+\`\`\`
+NEXT: <one-line action>
+WHY:  <one-line reason grounded in observable project state>
+HOW:  <exact command, agent name, or file path the user should act on>
+\`\`\`
+
+Decide the action by inspecting, in order:
+1. Open handoffs in the current session (if any).
+2. Files under \`docs/\` (prd.md → architecture.md → ux-spec.md → epics/ → stories/).
+3. Story status markers (\`Status: Draft\` → ready for Hercules; \`Status: In Review\` → ready for Nemesis).
+4. Uncommitted git changes (suggest Iris to commit + write release notes).
+5. Missing README / examples (suggest Apollo).
+
+If none of those signals are present, recommend Athena to start a PRD. Never recommend "ask the user for clarification" as the next action — pick the most useful default and surface it.`
   }),
 
   agent({

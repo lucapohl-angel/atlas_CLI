@@ -34,6 +34,13 @@ export type AtlasErrorCode =
   // Session
   | 'SESSION_NOT_FOUND'
   | 'SESSION_CORRUPT'
+  // Story / Handoff
+  | 'STORY_NOT_FOUND'
+  | 'STORY_PARSE_FAILED'
+  | 'STORY_SECTION_FORBIDDEN'
+  | 'STORY_SECTION_MISSING'
+  | 'HANDOFF_NOT_FOUND'
+  | 'HANDOFF_PARSE_FAILED'
   // Generic
   | 'INTERNAL'
   | 'CANCELLED'

@@ -126,7 +126,7 @@ describe('skills', () => {
     expect(onDisk).toContain('createdAt: ');
   });
 
-  it('saveLearnedSkill twice with different suffixes keeps both iterations on disk', async () => {
+  it('saveLearnedSkill twice keeps both iterations on disk; loadSkills returns the newer one', async () => {
     const a = await saveLearnedSkill({
       name: 'lesson',
       description: 'd',
@@ -134,6 +134,7 @@ describe('skills', () => {
       body: 'first',
       createdBy: 'hermes',
       slugSuffix: 'v1',
+      now: '2026-01-01T00:00:00.000Z',
       dir
     });
     const b = await saveLearnedSkill({
@@ -144,15 +145,24 @@ describe('skills', () => {
       createdBy: 'hermes',
       slugSuffix: 'v2',
       version: '0.2.0',
+      now: '2026-02-01T00:00:00.000Z',
       dir
     });
     expect(a.ok && b.ok).toBe(true);
     const loaded = await loadSkills({ dir });
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
-    // Both iterations parse, both share the same `name` slug.
+    // Both iterations exist on disk (same `name` slug, different dirs).
+    const onDiskA = await readFile(join(dir, 'lesson-v1', 'SKILL.md'), 'utf8');
+    const onDiskB = await readFile(join(dir, 'lesson-v2', 'SKILL.md'), 'utf8');
+    expect(onDiskA).toContain('first');
+    expect(onDiskB).toContain('second');
+    // But loadSkills dedupes by name, picking the newer createdAt.
     const matching = loaded.value.filter((s) => s.name === 'lesson');
-    expect(matching).toHaveLength(2);
+    expect(matching).toHaveLength(1);
+    expect(matching[0]?.body).toBe('second');
+    expect(matching[0]?.version).toBe('0.2.0');
+    expect(matching[0]?.createdAt).toBe('2026-02-01T00:00:00.000Z');
   });
 
   it('loadSkills excludes skills with disabled: true', async () => {

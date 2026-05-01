@@ -56,7 +56,24 @@ export const loadSkills = async (
       log.warn({ skillPath, err: e }, 'skipping unreadable SKILL.md');
     }
   }
-  return ok(skills);
+  // Deduplicate by name: when multiple iterations of the same skill exist
+  // on disk (e.g. learned-skill-a, learned-skill-b), keep the one with the
+  // latest `createdAt`. Skills missing `createdAt` are treated as oldest so
+  // a freshly-stamped iteration always wins. Tie-break by path for stability.
+  const winners = new Map<string, Skill>();
+  for (const s of skills) {
+    const existing = winners.get(s.name);
+    if (existing === undefined) {
+      winners.set(s.name, s);
+      continue;
+    }
+    const a = existing.createdAt ?? '';
+    const b = s.createdAt ?? '';
+    if (b > a || (b === a && s.path > existing.path)) {
+      winners.set(s.name, s);
+    }
+  }
+  return ok([...winners.values()]);
 };
 
 export class SkillRegistry {

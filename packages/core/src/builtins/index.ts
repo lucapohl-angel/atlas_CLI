@@ -28,11 +28,39 @@ interface AgentSpec {
   readonly thinkingEffort?: 'off' | 'low' | 'medium' | 'high';
   readonly handoffs?: ReadonlyArray<{ readonly to: string; readonly when: string }>;
   readonly commands?: ReadonlyArray<{ readonly name: string; readonly description: string }>;
+  readonly voiceDna?: readonly string[];
+  readonly activation?: string;
+  readonly capabilityBoundaries?: readonly string[];
+  readonly templates?: readonly string[];
+  readonly checklists?: readonly string[];
+  readonly dataRefs?: readonly string[];
+  readonly authorizedSections?: readonly string[];
+  readonly forbiddenSections?: readonly string[];
   readonly body: string;
 }
 
 const yamlString = (key: string, value: string | undefined): string =>
-  value === undefined ? '' : `${key}: ${value}\n`;
+  value === undefined ? '' : `${key}: ${yamlScalar(value)}\n`;
+
+/**
+ * Quote a YAML scalar when it contains characters that would otherwise
+ * confuse the parser (colons, quotes, leading dashes, etc.). Uses
+ * double-quoted form with backslash-escaped backslashes and quotes.
+ */
+const yamlScalar = (raw: string): string => {
+  if (raw.length === 0) return '""';
+  // Safe bareword: starts with letter, only [\w/.-], no special yaml tokens.
+  if (/^[A-Za-z][\w./-]*$/.test(raw)) return raw;
+  return `"${raw.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+};
+
+const yamlScalarList = (
+  key: string,
+  items: readonly string[] | undefined
+): string => {
+  if (!items || items.length === 0) return '';
+  return `${key}:\n${items.map((i) => `  - ${yamlScalar(i)}`).join('\n')}\n`;
+};
 
 const yamlList = <T>(
   key: string,
@@ -47,19 +75,27 @@ const agent = (spec: AgentSpec): BuiltinFile => {
   const fm =
     '---\n' +
     `name: ${spec.name}\n` +
-    `role: ${spec.role}\n` +
-    `description: ${spec.description}\n` +
+    `role: ${yamlScalar(spec.role)}\n` +
+    `description: ${yamlScalar(spec.description)}\n` +
     yamlString('personaAlias', spec.personaAlias) +
     yamlString('model', spec.model) +
     yamlString('mode', spec.mode ?? 'build') +
     yamlString('thinkingEffort', spec.thinkingEffort ?? 'off') +
     'kind: framework\n' +
-    yamlList('handoffs', spec.handoffs, (h) => `  - to: ${h.to}\n    when: ${h.when}`) +
+    yamlList('handoffs', spec.handoffs, (h) => `  - to: ${h.to}\n    when: ${yamlScalar(h.when)}`) +
     yamlList(
       'commands',
       spec.commands,
-      (c) => `  - name: ${c.name}\n    description: ${c.description}`
+      (c) => `  - name: ${c.name}\n    description: ${yamlScalar(c.description)}`
     ) +
+    yamlScalarList('voiceDna', spec.voiceDna) +
+    yamlString('activation', spec.activation) +
+    yamlScalarList('capabilityBoundaries', spec.capabilityBoundaries) +
+    yamlScalarList('templates', spec.templates) +
+    yamlScalarList('checklists', spec.checklists) +
+    yamlScalarList('dataRefs', spec.dataRefs) +
+    yamlScalarList('authorizedSections', spec.authorizedSections) +
+    yamlScalarList('forbiddenSections', spec.forbiddenSections) +
     '---\n';
   return {
     relPath: `agents/${spec.name}/AGENT.md`,
@@ -105,6 +141,21 @@ export const BUILTIN_AGENTS: readonly BuiltinFile[] = [
       { name: 'route', description: 'Hand off the current request to the right framework agent.' },
       { name: 'plan', description: 'Stay in plan mode and answer the user without invoking framework agents.' },
       { name: 'next', description: 'Narrate the single next action the user should take (agent to invoke, command to run, story to pick up).' }
+    ],
+    voiceDna: [
+      'Speak as a calm, deliberate router — never a salesperson for any one specialist.',
+      "Use the user's vocabulary back to them; do not rebrand their request.",
+      'Prefer short, declarative sentences over hedging.',
+      'When recommending a handoff, name the role first (Architect, PM, Dev) — the Greek alias is optional flavour, never the headline.'
+    ],
+    activation:
+      'On your first turn of any session, do NOT introduce yourself unless asked. Read the user message; if it is a routable spec-driven request, propose the right specialist and ask for confirmation. If it is a quick question or one-off task, answer it directly.',
+    capabilityBoundaries: [
+      'Never write production code yourself — that belongs to Hercules (the Developer).',
+      'Never author PRDs, architectures, UX specs, epics, or stories — route to the matching specialist.',
+      'Never push, tag, or release — that belongs to Iris (the Release Engineer).',
+      'Never run destructive operations (`rm -rf`, force-push, drop-table) without explicit user confirmation.',
+      'Never silently switch agents mid-conversation — always announce the handoff.'
     ],
     body: `## Mission
 

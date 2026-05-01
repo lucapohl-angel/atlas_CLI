@@ -124,12 +124,68 @@ export const buildSystemPrompt = (
     );
   }
 
+  if (agent.voiceDna && agent.voiceDna.length > 0) {
+    sections.push(
+      `## Voice DNA\n\nWrite in this voice — every turn, every artefact:\n\n${agent.voiceDna.map((v) => `- ${v}`).join('\n')}`
+    );
+  }
+
+  if (agent.activation && agent.activation.trim().length > 0) {
+    sections.push(`## Activation\n\n${agent.activation.trim()}`);
+  }
+
+  if (agent.capabilityBoundaries && agent.capabilityBoundaries.length > 0) {
+    sections.push(
+      `## Boundaries\n\nThese are out of scope for you. Do NOT do them — even when asked. Recommend the right specialist instead.\n\n${agent.capabilityBoundaries.map((b) => `- ${b}`).join('\n')}`
+    );
+  }
+
   if (agent.commands.length > 0) {
     const cmdList = agent.commands
       .map((c) => `- \`*${c.name}\` — ${c.description}`)
       .join('\n');
     sections.push(
       `## Commands\n\nThe user can invoke any of the following with the \`*<command>\` syntax. When you see one in the user's message, execute it directly — do not ask for confirmation unless the command itself is destructive.\n\n${cmdList}`
+    );
+  }
+
+  if (agent.templates && agent.templates.length > 0) {
+    sections.push(
+      `## Templates\n\nWhen producing one of these artefacts, render the matching template instead of free-writing:\n\n${agent.templates.map((t) => `- \`${t}\``).join('\n')}`
+    );
+  }
+
+  if (agent.checklists && agent.checklists.length > 0) {
+    sections.push(
+      `## Checklists (definition-of-done)\n\nBefore handing off, run each of these and resolve every blocking item:\n\n${agent.checklists.map((c) => `- \`${c}\``).join('\n')}`
+    );
+  }
+
+  if (agent.dataRefs && agent.dataRefs.length > 0) {
+    sections.push(
+      `## Data references\n\nThese are reference libraries you can consult on demand (read with \`read_file\` if you need the contents):\n\n${agent.dataRefs.map((d) => `- \`${d}\``).join('\n')}`
+    );
+  }
+
+  if (agent.examples && agent.examples.length > 0) {
+    const blocks = agent.examples.map((e, i) => {
+      const note = e.note ? `\n_Why it works_: ${e.note}` : '';
+      return `### Example ${i + 1}\n\n_Input_: ${e.input}\n\n_Output_:\n\n${e.output}${note}`;
+    });
+    sections.push(`## Reference outputs\n\n${blocks.join('\n\n')}`);
+  }
+
+  if (agent.authorizedSections && agent.authorizedSections.length > 0) {
+    sections.push(
+      `## Story authoring\n\nYou are authorized to write to these sections of a story / spec file: ${agent.authorizedSections.map((s) => `\`${s}\``).join(', ')}.${
+        agent.forbiddenSections && agent.forbiddenSections.length > 0
+          ? ` You are FORBIDDEN from touching: ${agent.forbiddenSections.map((s) => `\`${s}\``).join(', ')}.`
+          : ''
+      } The \`story_update\` tool enforces this at the boundary.`
+    );
+  } else if (agent.forbiddenSections && agent.forbiddenSections.length > 0) {
+    sections.push(
+      `## Story authoring\n\nYou are FORBIDDEN from writing to these sections of a story / spec file: ${agent.forbiddenSections.map((s) => `\`${s}\``).join(', ')}. The \`story_update\` tool enforces this at the boundary.`
     );
   }
 

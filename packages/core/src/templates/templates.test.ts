@@ -221,4 +221,57 @@ describe('templates: builtins', () => {
       expect(r.value.owner, `${t.relPath} missing owner`).toBeTruthy();
     }
   });
+
+  it('design-system template renders DESIGN.md matching google-labs-code/design.md format', () => {
+    const file = BUILTIN_TEMPLATES.find((t) => t.relPath.endsWith('design-system.yaml'));
+    expect(file, 'design-system template missing').toBeTruthy();
+    const parsed = parseTemplate(file!.content, file!.relPath);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const r = renderTemplate({
+      template: parsed.value,
+      inputs: {
+        name: 'Heritage',
+        description: 'Premium broadsheet aesthetic.',
+        frontmatter_yaml:
+          'colors:\n  primary: "#1A1C1E"\ntypography:\n  h1:\n    fontFamily: Public Sans\n    fontSize: 3rem',
+        overview: 'Architectural Minimalism.',
+        colors_prose: '- **Primary:** Deep ink.',
+        typography_prose: '- **h1:** Headlines.'
+      }
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const out = r.value.content;
+
+    // Spec: YAML frontmatter must be at byte 0, fenced by ---.
+    expect(out.startsWith('---\n')).toBe(true);
+    // Frontmatter block closes with --- followed by a blank line before the markdown body.
+    expect(out).toContain('\n---\n\n## Overview\n');
+    // name field present in frontmatter.
+    expect(out).toMatch(/^---\nname: Heritage\n/);
+    // description survives substitution unescaped.
+    expect(out).toContain('description: Premium broadsheet aesthetic.');
+    // Verbatim YAML body must NOT be HTML-escaped (would break `"#1A1C1E"`).
+    expect(out).toContain('primary: "#1A1C1E"');
+    // Section headings use ## per spec.
+    expect(out).toContain('## Overview');
+    expect(out).toContain('## Colors');
+    expect(out).toContain('## Typography');
+    // Sections must appear in canonical order.
+    const order = ['## Overview', '## Colors', '## Typography'];
+    let cursor = 0;
+    for (const h of order) {
+      const idx = out.indexOf(h, cursor);
+      expect(idx, `heading ${h} out of order`).toBeGreaterThanOrEqual(cursor);
+      cursor = idx + h.length;
+    }
+    // Optional sections absent when input not provided (spec: omit is allowed).
+    expect(out).not.toContain('## Layout');
+    expect(out).not.toContain("## Do's and Don'ts");
+    // No duplicate `##` headings (spec: duplicate section is a parse error).
+    const h2s = out.match(/^## .+$/gm) ?? [];
+    expect(new Set(h2s).size).toBe(h2s.length);
+  });
 });

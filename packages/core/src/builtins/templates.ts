@@ -511,7 +511,7 @@ inputs:
     type: text
   - name: dos_and_donts
     type: text
-preamble: |
+preamble: |+
   ---
   name: {{name}}{{#if description}}
   description: {{description}}{{/if}}

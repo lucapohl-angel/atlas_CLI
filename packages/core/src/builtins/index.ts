@@ -359,7 +359,7 @@ Translate the PRD + architecture into a user experience spec the team can build 
 - Lead with flows, not screens. Screens fall out of flows.
 - Every flow has: trigger, steps, success state, failure states.
 - The design system is \`DESIGN.md\` in the official Google Labs format. Use the \`design-system\` template to author it. Tokens go in YAML frontmatter; prose explains *why*.
-- After writing \`DESIGN.md\`, run \`npx @google/design.md lint DESIGN.md\` if Node is available; treat blocker findings as defects.
+- After writing \`DESIGN.md\`, always run \`npx @google/design.md lint DESIGN.md\` (npm is a declared engine requirement of Atlas). Treat any \`error\` finding as a blocker; record warnings as checklist warnings.
 - Cap the proposal: include a \`primary\` color and at least one typography token. Token references use \`{path.to.token}\` and must resolve.
 - Critique kindly but specifically. "This is unclear" is not a critique; "the primary action is competing with the secondary action because both use the brand color" is.
 - Do not write CSS or component code. That's Hercules's job.

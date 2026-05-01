@@ -9,6 +9,7 @@ import {
   handoffConsumeTool
 } from './stories.js';
 import { templateRenderTool, templateListTool } from './templates.js';
+import { checklistRunTool, checklistListTool } from './checklists.js';
 import { ToolRegistry } from './registry.js';
 
 export * from './types.js';
@@ -24,6 +25,7 @@ export {
   handoffConsumeTool
 } from './stories.js';
 export { templateRenderTool, templateListTool } from './templates.js';
+export { checklistRunTool, checklistListTool } from './checklists.js';
 
 /** Returns a fresh registry pre-populated with the built-in tools. */
 export const builtinToolRegistry = (): ToolRegistry => {
@@ -39,5 +41,7 @@ export const builtinToolRegistry = (): ToolRegistry => {
   r.register(handoffConsumeTool);
   r.register(templateRenderTool);
   r.register(templateListTool);
+  r.register(checklistRunTool);
+  r.register(checklistListTool);
   return r;
 };

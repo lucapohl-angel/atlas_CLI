@@ -468,53 +468,100 @@ sections:
 `
   ),
   tpl(
-    'design-tokens',
+    'design-system',
     `
-id: design-tokens
+id: design-system
 version: 1
-title: Design Tokens
-description: Minimal token set - colors, type, spacing, motion.
+title: DESIGN.md
+description: "Design system in google-labs-code/design.md format (alpha 0.1.0). YAML token frontmatter + canonical markdown sections."
 owner: aphrodite
-output: docs/design-tokens.md
-whenToUse: "Use when no design system exists. Cap the proposal: <=8 colors, 3 type sizes, a 4-px spacing grid, 2 motion durations."
+output: DESIGN.md
+whenToUse: "Use to author or refresh the project's design system in the DESIGN.md format consumed by the @google/design.md linter and exporters. Lint with \`npx @google/design.md lint DESIGN.md\` after writing."
 inputs:
-  - name: project_name
+  - name: name
     type: string
     required: true
-  - name: colors
-    type: list
+    description: "Design system name (frontmatter \`name\` field)."
+  - name: description
+    type: string
+    description: "Optional one-sentence description for the frontmatter."
+  - name: frontmatter_yaml
+    type: text
     required: true
-    description: "Each entry {name, hex, role}."
-  - name: type_scale
-    type: list
+    description: "Verbatim YAML body for the frontmatter (colors, typography, rounded?, spacing?, components?). Must include a \`primary\` color and at least one typography token. Token references use {path.to.token}."
+  - name: overview
+    type: text
     required: true
-  - name: spacing_unit_px
-    type: number
+    description: "Brand voice + style intent in one short paragraph."
+  - name: colors_prose
+    type: text
     required: true
-  - name: motion
-    type: list
+    description: "Markdown bullets explaining the role of each color token."
+  - name: typography_prose
+    type: text
     required: true
+    description: "Markdown describing each type token's role."
+  - name: layout_prose
+    type: text
+  - name: elevation_prose
+    type: text
+  - name: shapes_prose
+    type: text
+  - name: components_prose
+    type: text
+  - name: dos_and_donts
+    type: text
+preamble: |
+  ---
+  name: {{name}}{{#if description}}
+  description: {{description}}{{/if}}
+  {{frontmatter_yaml}}
+  ---
+
 sections:
+  - id: overview
+    title: Overview
+    elicit: true
+    instruction: One short paragraph naming the brand voice and visual intent.
+    body: |
+      {{overview}}
   - id: colors
     title: Colors
     elicit: true
-    repeatable: true
+    instruction: Bullet each color token with its role; cite by name, not hex (the frontmatter is the source of truth).
     body: |
-      - \`{{item.name}}\` \`{{item.hex}}\` - {{item.role}}
-  - id: type
-    title: Type Scale
-    repeatable: true
+      {{colors_prose}}
+  - id: typography
+    title: Typography
+    elicit: true
+    instruction: Describe each type token's role (e.g. h1 for headlines, body-md for prose).
     body: |
-      - {{item}}
-  - id: spacing
-    title: Spacing
+      {{typography_prose}}
+  - id: layout
+    title: Layout
+    condition: layout_prose
     body: |
-      Base unit: {{spacing_unit_px}}px (multiples: 1x, 2x, 3x, 4x, 6x, 8x).
-  - id: motion
-    title: Motion
-    repeatable: true
+      {{layout_prose}}
+  - id: elevation
+    title: Elevation & Depth
+    condition: elevation_prose
     body: |
-      - {{item}}
+      {{elevation_prose}}
+  - id: shapes
+    title: Shapes
+    condition: shapes_prose
+    body: |
+      {{shapes_prose}}
+  - id: components
+    title: Components
+    condition: components_prose
+    body: |
+      {{components_prose}}
+  - id: dos-and-donts
+    title: Do's and Don'ts
+    condition: dos_and_donts
+    body: |
+      {{dos_and_donts}}
 `
   ),
 

@@ -14,6 +14,7 @@
  */
 
 import { BUILTIN_TEMPLATES } from './templates.js';
+import { BUILTIN_CHECKLISTS } from './checklists.js';
 
 export interface BuiltinFile {
   readonly relPath: string; // e.g. 'agents/athena/AGENT.md'
@@ -326,7 +327,7 @@ Read \`docs/prd.md\` and produce \`docs/architecture.md\` covering: **Components
     commands: [
       { name: 'help', description: 'List the commands you support.' },
       { name: 'write-ux-spec', description: 'Draft `docs/ux-spec.md` with key flows and screens.' },
-      { name: 'design-tokens', description: 'Propose `docs/design-tokens.md` (colors, type, spacing, motion).' },
+      { name: 'design-system', description: 'Author or refresh `DESIGN.md` (google-labs-code/design.md format) — tokens + canonical sections.' },
       { name: 'critique', description: 'Review an existing UI/UX artifact and list specific improvements.' },
       { name: 'handoff', description: 'Hand off to the PO with the UX spec ready.' }
     ],
@@ -341,29 +342,31 @@ Read \`docs/prd.md\` and produce \`docs/architecture.md\` covering: **Components
     capabilityBoundaries: [
       'Never write CSS, component code, or markup — that belongs to Hercules.',
       'Never edit the PRD\'s Problem / Users / Goals — propose changes back to Athena.',
-      'Never invent design tokens that contradict an existing `docs/design-tokens.md` without flagging the conflict.',
+      'Never invent design tokens that contradict an existing `DESIGN.md` without flagging the conflict.',
       'Never describe a flow without naming its failure states — incomplete UX is rejected at handoff.'
     ],
-    templates: ['ux-spec'],
-    checklists: ['ux-spec-ready'],
-    dataRefs: ['docs/prd.md', 'docs/architecture.md', 'docs/design-tokens.md'],
+    templates: ['ux-spec', 'design-system'],
+    checklists: ['ux-spec-ready', 'design-system-ready'],
+    dataRefs: ['docs/prd.md', 'docs/architecture.md', 'DESIGN.md'],
     authorizedSections: ['Users'],
     forbiddenSections: ['Architecture', 'Tech Stack', 'Tasks', 'Implementation Notes', 'Test Strategy', 'QA Notes', 'Release Notes'],
     body: `## Mission
 
-Translate the PRD + architecture into a user experience spec the team can build against. Output lives at \`docs/ux-spec.md\` plus optional \`docs/design-tokens.md\`.
+Translate the PRD + architecture into a user experience spec the team can build against. The UX spec lives at \`docs/ux-spec.md\`. The design system lives at \`DESIGN.md\` (repo root) in the [google-labs-code/design.md](https://github.com/google-labs-code/design.md) format — YAML token frontmatter + canonical markdown sections (Overview, Colors, Typography, Layout, Elevation & Depth, Shapes, Components, Do's and Don'ts).
 
 ## Operating principles
 
 - Lead with flows, not screens. Screens fall out of flows.
 - Every flow has: trigger, steps, success state, failure states.
-- Tokens beat ad-hoc styling. If the project has no design system, propose minimal tokens (≤8 colors, 3 type sizes, a 4-px spacing grid, 2 motion durations).
+- The design system is \`DESIGN.md\` in the official Google Labs format. Use the \`design-system\` template to author it. Tokens go in YAML frontmatter; prose explains *why*.
+- After writing \`DESIGN.md\`, run \`npx @google/design.md lint DESIGN.md\` if Node is available; treat blocker findings as defects.
+- Cap the proposal: include a \`primary\` color and at least one typography token. Token references use \`{path.to.token}\` and must resolve.
 - Critique kindly but specifically. "This is unclear" is not a critique; "the primary action is competing with the secondary action because both use the brand color" is.
 - Do not write CSS or component code. That's Hercules's job.
 
 ## Tools
 
-\`read_file\`, \`write_file\` for \`docs/ux-spec.md\` and \`docs/design-tokens.md\`.`
+\`read_file\`, \`write_file\` for \`docs/ux-spec.md\` and \`DESIGN.md\`. \`template_render\` for the \`ux-spec\` and \`design-system\` templates. \`checklist_run\` for \`ux-spec-ready\` and \`design-system-ready\`.`
   }),
 
   agent({
@@ -782,6 +785,7 @@ process spawn, and timers.`
   )
 ];
 
-export const ALL_BUILTINS: readonly BuiltinFile[] = [...BUILTIN_AGENTS, ...BUILTIN_SKILLS, ...BUILTIN_TEMPLATES];
+export const ALL_BUILTINS: readonly BuiltinFile[] = [...BUILTIN_AGENTS, ...BUILTIN_SKILLS, ...BUILTIN_TEMPLATES, ...BUILTIN_CHECKLISTS];
 
 export { BUILTIN_TEMPLATES } from './templates.js';
+export { BUILTIN_CHECKLISTS } from './checklists.js';

@@ -69,6 +69,13 @@ export const TemplateSchema = z.object({
   inputs: z.array(TemplateInputSchema).default([]),
   /** Human-readable advice on when to invoke this template. */
   whenToUse: z.string().optional(),
+  /**
+   * Optional Handlebars-compiled preamble emitted verbatim at the very
+   * start of the rendered file. When set, the default `# <title>` +
+   * generator comment header is suppressed. Use for formats that require
+   * something specific at byte 0 (e.g. DESIGN.md's `---` frontmatter).
+   */
+  preamble: z.string().optional(),
   sections: z.array(TemplateSectionSchema).min(1)
 });
 export type Template = z.infer<typeof TemplateSchema> & {

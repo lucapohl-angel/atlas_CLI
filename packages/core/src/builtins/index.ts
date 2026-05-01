@@ -13,6 +13,8 @@
  * convention so users can drive the agent precisely.
  */
 
+import { BUILTIN_TEMPLATES } from './templates.js';
+
 export interface BuiltinFile {
   readonly relPath: string; // e.g. 'agents/athena/AGENT.md'
   readonly content: string;
@@ -780,4 +782,6 @@ process spawn, and timers.`
   )
 ];
 
-export const ALL_BUILTINS: readonly BuiltinFile[] = [...BUILTIN_AGENTS, ...BUILTIN_SKILLS];
+export const ALL_BUILTINS: readonly BuiltinFile[] = [...BUILTIN_AGENTS, ...BUILTIN_SKILLS, ...BUILTIN_TEMPLATES];
+
+export { BUILTIN_TEMPLATES } from './templates.js';

@@ -8,6 +8,7 @@ import {
   handoffEmitTool,
   handoffConsumeTool
 } from './stories.js';
+import { templateRenderTool, templateListTool } from './templates.js';
 import { ToolRegistry } from './registry.js';
 
 export * from './types.js';
@@ -22,6 +23,7 @@ export {
   handoffEmitTool,
   handoffConsumeTool
 } from './stories.js';
+export { templateRenderTool, templateListTool } from './templates.js';
 
 /** Returns a fresh registry pre-populated with the built-in tools. */
 export const builtinToolRegistry = (): ToolRegistry => {
@@ -35,5 +37,7 @@ export const builtinToolRegistry = (): ToolRegistry => {
   r.register(storyUpdateTool);
   r.register(handoffEmitTool);
   r.register(handoffConsumeTool);
+  r.register(templateRenderTool);
+  r.register(templateListTool);
   return r;
 };

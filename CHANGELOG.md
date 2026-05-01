@@ -6,6 +6,33 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added — Post-1.0 Phase 9 (Project state file)
+- New `@atlas/core/state` module — typed loader/saver for
+  `<cwd>/.atlas/state.yaml`, the BMAD `sprint-status.yaml` analogue.
+  Tracks epic and story status across the SDD pipeline
+  (`draft → ready-for-dev → in-progress → review → done`, plus `blocked`).
+- Public API: `loadProjectState`, `saveProjectState`, `parseProjectState`,
+  `upsertEpic`, `upsertStory`, `setStoryStatus`, `setEpicStatus`,
+  `findFirstStoryByStatus`, `summarizeProjectState`.
+- Missing file is a legal empty default (zero-config). File is
+  human-editable YAML with a header comment explaining ownership
+  (Hestia / Hercules / Nemesis / Hermes).
+- New error codes: `STATE_PARSE_FAILED`, `STATE_WRITE_FAILED`,
+  `STATE_STORY_NOT_FOUND`, `STATE_EPIC_NOT_FOUND`.
+
+### Added — Post-1.0 Phase 8 (Sectioned long-form templates)
+- `renderTemplateSection` — render a single top-level section of a
+  template, honoring owner enforcement, elicit gates, conditionals,
+  and repeatables. Returns body content with no preamble or title.
+- `applySectionToFile` / `readSectionFromFile` — idempotent,
+  marker-based section writes (`<!-- atlas:section <id> -->` …
+  `<!-- /atlas:section <id> -->`). Append on first write, in-place
+  replace on subsequent writes; preserves order of other sections.
+- New error codes: `TEMPLATE_SECTION_NOT_FOUND`,
+  `TEMPLATE_SECTION_WRITE_FAILED`. Enables long-form artifacts
+  (PRD, architecture) to grow section-by-section across multiple
+  agent turns without rewriting the whole document.
+
 ### Added — Post-1.0 Phase 7 (Docs + examples)
 - README phase table extended with the post-1.0 SDD pipeline track
   (phases 1–11; phase 12 deferred).

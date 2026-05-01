@@ -47,8 +47,8 @@ deferred). Each post-1.0 phase ships a working, fully tested slice.
 | 5     | ✅     | Workflow chains + handoff-aware orchestrator (`*next`, `atlas status`) |
 | 6     | ✅     | Skill versioning, `/skills` toggle, `atlas *next` |
 | 7     | ✅     | Docs + examples (this section, `examples/`, ARCHITECTURE refresh) |
-| 8     | ⏳     | Sectioned long-form templates (per-section render/write for PRD/architecture) |
-| 9     | ⏳     | Project state file (`<cwd>/.atlas/state.yaml` — sprint/artifact status) |
+| 8     | ✅     | Sectioned long-form templates (per-section render/write for PRD/architecture) |
+| 9     | ✅     | Project state file (`<cwd>/.atlas/state.yaml` — sprint/artifact status) |
 | 10    | ⏳     | Workflow gates + activation hooks (`requires`, HALT, prepend/append/on_complete) |
 | 11    | ⏳     | Customization overlays (built-in → user → project deep-merge) |
 | 12    | ⏸     | Installer + module system (deferred) |

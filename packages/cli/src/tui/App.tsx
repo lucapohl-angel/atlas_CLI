@@ -3865,8 +3865,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
 
   const showSidebar = cols >= 110;
   return (
-    <Box flexDirection="row" width={cols} height={rows} backgroundColor="#0d0d0d">
-      <Box flexDirection="column" flexGrow={1}>
+    <Box flexDirection="row" width={cols} height={rows} backgroundColor="#0b1416">
+      <Box flexDirection="column" flexGrow={1} backgroundColor="#0b1416">
       <Header
         agent={activeAgent}
         model={model}
@@ -5514,7 +5514,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         </Box>
       )}
       {overlay.kind === 'none' && (
-        <Box borderStyle="round" borderColor={streaming ? 'yellow' : 'gray'} paddingX={1}>
+        <Box borderStyle="round" borderColor={streaming ? 'yellow' : '#2a4a52'} paddingX={1} backgroundColor="#0f1c1f">
           {streaming ? (
             <Box>
               <Text color="yellow">
@@ -5598,7 +5598,7 @@ const Header = ({
   void cost;
   void contextWindow;
   return (
-    <Box borderStyle="round" borderColor="gray" paddingX={1} marginBottom={0} backgroundColor="#1a1a1a">
+    <Box borderStyle="round" borderColor="#2a4a52" paddingX={1} marginBottom={0} backgroundColor="#0f1c1f">
       <Box flexGrow={1}>
         <Text color={colorForAgent(agent.name)} bold>
           {agent.role}
@@ -6018,6 +6018,7 @@ const TranscriptRow = ({
           borderStyle="round"
           borderColor="cyan"
           paddingX={1}
+          backgroundColor="#0f1c1f"
         >
           <Text color="cyan" bold>
             user
@@ -6034,6 +6035,7 @@ const TranscriptRow = ({
           borderStyle="round"
           borderColor={color}
           paddingX={1}
+          backgroundColor="#0f1c1f"
         >
           <Box>
             <Text color={color} bold>
@@ -6534,11 +6536,10 @@ const ActivitySidebar = ({
       width={46}
       flexGrow={0}
       flexShrink={0}
-      marginLeft={1}
       borderStyle="round"
-      borderColor="gray"
+      borderColor="#2a4a52"
       paddingX={1}
-      backgroundColor="#161616"
+      backgroundColor="#0d181b"
     >
       {/* Top block: tokens + cost — aligns with header bar visually. */}
       <Box flexDirection="column">

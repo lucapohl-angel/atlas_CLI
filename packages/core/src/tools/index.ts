@@ -23,6 +23,7 @@ export * from './registry.js';
 export * from './todo-store.js';
 export * from './html-to-text.js';
 export * from './searxng-manager.js';
+export * from './catalog.js';
 export { readFileTool } from './read-file.js';
 export { writeFileTool } from './write-file.js';
 export { terminalTool } from './terminal.js';

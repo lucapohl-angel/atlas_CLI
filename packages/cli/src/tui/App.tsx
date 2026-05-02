@@ -83,10 +83,10 @@ import {
   setSkillDisabled,
   writeRepoMap,
   type OnboardPreflight,
-  searxngStatus,
-  searxngStart,
-  searxngStop,
-  searxngRemove
+  type CatalogEntry,
+  type ResolvedToolStatus,
+  resolveCatalogStatus,
+  runToolAction
 } from '@atlas/core';
 
 export type ThinkingEffort = 'off' | ReasoningEffort | 'xhigh';
@@ -270,6 +270,27 @@ type Overlay =
   | {
       readonly kind: 'session-picker';
       readonly entries: readonly { id: string; updatedAt: string }[];
+    }
+  | {
+      /** `/tools` browser: every built-in tool with a colored status dot. */
+      readonly kind: 'tools-list';
+      /** Cached resolved status — recomputed on open & after every action. */
+      readonly entries: readonly ResolvedToolStatus[];
+      readonly statusLine?: string;
+      readonly busy?: boolean;
+    }
+  | {
+      /** Per-tool action menu (enable / disable / install / start / stop / remove). */
+      readonly kind: 'tools-manage';
+      readonly entries: readonly ResolvedToolStatus[];
+      readonly toolName: string;
+      readonly statusLine?: string;
+      readonly busy?: boolean;
+      /** When set, render a confirmation prompt for this destructive/essential action. */
+      readonly confirm?: {
+        readonly actionId: 'disable' | 'remove';
+        readonly warning: string;
+      };
     }
   | {
       /** Self-improvement loop: confirm whether to promote a draft into a learned skill. */
@@ -927,68 +948,11 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             launchOnboardWizard();
             return;
           }
-          case 'searxng': {
-            const sub = (rest[0] ?? 'status').toLowerCase();
-            (async () => {
-              if (sub === 'status') {
-                const s = await searxngStatus();
-                if (!s.dockerInstalled) {
-                  pushItem(
-                    'system',
-                    'searxng: docker is not installed (or the daemon is not running). Install Docker, then re-run `/searxng install`.'
-                  );
-                  return;
-                }
-                const lines = [
-                  `searxng status:`,
-                  `  docker:    ok`,
-                  `  image:     ${s.imagePulled ? 'pulled' : 'not pulled'}`,
-                  `  container: ${s.containerExists ? (s.running ? 'running' : 'stopped') : 'not created'}`,
-                  s.url ? `  url:       ${s.url}` : '  url:       (not running)',
-                  '',
-                  `web_search routes through this container exclusively. Commands:`,
-                  `  /searxng install   pull image + create + start container`,
-                  `  /searxng start     start (or recreate) the container`,
-                  `  /searxng stop      stop without removing`,
-                  `  /searxng remove    stop + remove (next start recreates)`
-                ];
-                pushItem('system', lines.join('\n'));
-                return;
-              }
-              if (sub === 'install' || sub === 'start') {
-                pushItem('system', 'searxng: starting (this can take a minute on first install)…');
-                const r = await searxngStart({
-                  progress: (line) => pushItem('system', `searxng: ${line.trim()}`)
-                });
-                if (!r.ok) {
-                  pushItem('error', `searxng: ${r.error.message}`);
-                  return;
-                }
-                pushItem('system', `searxng: running at ${r.value.url ?? '(unknown port)'}.`);
-                return;
-              }
-              if (sub === 'stop') {
-                const r = await searxngStop();
-                if (!r.ok) {
-                  pushItem('error', `searxng: ${r.error.message}`);
-                  return;
-                }
-                pushItem('system', 'searxng: stopped.');
-                return;
-              }
-              if (sub === 'remove') {
-                const r = await searxngRemove();
-                if (!r.ok) {
-                  pushItem('error', `searxng: ${r.error.message}`);
-                  return;
-                }
-                pushItem('system', 'searxng: container removed.');
-                return;
-              }
-              pushItem(
-                'error',
-                `usage: /searxng [status|install|start|stop|remove]`
-              );
+          case 'tools': {
+            void (async () => {
+              const registered = new Set(props.tools.list().map((t) => t.name));
+              const entries = await resolveCatalogStatus(registered);
+              setOverlay({ kind: 'tools-list', entries });
             })();
             return;
           }
@@ -4343,6 +4307,234 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           </OverlayBox>
         );
       })()}
+      {overlay.kind === 'tools-list' && (() => {
+        const dot = (s: ResolvedToolStatus['status']['state']): { mark: string; color: string } => {
+          switch (s) {
+            case 'connected': return { mark: '\u25cf', color: 'green' };
+            case 'degraded':  return { mark: '\u25cf', color: 'yellow' };
+            case 'disconnected': return { mark: '\u25cf', color: 'red' };
+            case 'disabled':  return { mark: '\u25cb', color: 'gray' };
+            default:          return { mark: '\u25cf', color: 'gray' };
+          }
+        };
+        // Group entries by `entry.group` for legible display.
+        const groupOrder: readonly CatalogEntry['group'][] = ['core', 'workflow', 'web', 'meta'];
+        const items: { key: string; label: string; value: string }[] = [];
+        for (const g of groupOrder) {
+          const subset = overlay.entries.filter((e) => e.entry.group === g);
+          if (subset.length === 0) continue;
+          for (const r of subset) {
+            const d = dot(r.status.state);
+            // SetupMenuItem renders the segment after `\u0001` in green;
+            // we encode the dot+detail manually so the color matches the
+            // status state. (We split on \u0001 so the label part is the
+            // padded name + kind, and the tail is the colored dot+detail.)
+            const left = `${r.entry.title.padEnd(22)}`;
+            const tail = `${d.mark} ${r.status.detail}`;
+            // Pre-color with ink-friendly markers via SetupMenuItem? We
+            // can't recolor per-item easily — keep it readable via plain
+            // text and rely on the manage screen for nuance.
+            items.push({
+              key: `t:${r.entry.name}`,
+              label: `${left} \u0001${tail}`,
+              value: `t:${r.entry.name}`
+            });
+          }
+        }
+        items.push({ key: 'close', label: 'Close', value: '__close__' });
+        const connected = overlay.entries.filter((e) => e.status.state === 'connected').length;
+        const total = overlay.entries.length;
+        const title = `Tools (${connected}/${total} connected)`;
+        return (
+          <OverlayBox title={title}>
+            <Box flexDirection="column" marginBottom={1}>
+              <Text color="gray">
+                {'\u25cf green = connected   \u25cf yellow = degraded   \u25cf red = unavailable   \u25cb disabled'}
+              </Text>
+            </Box>
+            <SelectInput
+              itemComponent={SetupMenuItem}
+              items={items}
+              onSelect={(item) => {
+                if (item.value === '__close__') {
+                  closeOverlay();
+                  return;
+                }
+                const name = item.value.startsWith('t:') ? item.value.slice(2) : item.value;
+                setOverlay({
+                  kind: 'tools-manage',
+                  entries: overlay.entries,
+                  toolName: name
+                });
+              }}
+            />
+            {overlay.statusLine ? (
+              <Box marginTop={1}>
+                <Text color={overlay.statusLine.startsWith('error') ? 'red' : 'green'}>
+                  {overlay.statusLine}
+                </Text>
+              </Box>
+            ) : null}
+            <Box marginTop={1}>
+              <Text color="gray">{'\u25b2/\u25bc to navigate \u00b7 \u21b5 to open \u00b7 Esc to close'}</Text>
+            </Box>
+          </OverlayBox>
+        );
+      })()}
+      {overlay.kind === 'tools-manage' && (() => {
+        const r = overlay.entries.find((e) => e.entry.name === overlay.toolName);
+        if (!r) {
+          return (
+            <OverlayBox title={`Tool · ${overlay.toolName}`}>
+              <Text color="red">{`Unknown tool: ${overlay.toolName}`}</Text>
+            </OverlayBox>
+          );
+        }
+        const refreshAndBackToList = async (statusLine?: string): Promise<void> => {
+          const registered = new Set(props.tools.list().map((t) => t.name));
+          const entries = await resolveCatalogStatus(registered);
+          setOverlay({ kind: 'tools-list', entries, ...(statusLine ? { statusLine } : {}) });
+        };
+        const runAction = (actionId: 'enable' | 'disable' | 'install' | 'start' | 'stop' | 'restart' | 'remove'): void => {
+          void (async (): Promise<void> => {
+            // Mark busy so the user sees a "working…" state for slow
+            // managed actions (image pulls, container starts, browser
+            // installs all stream a few lines).
+            setOverlay({ ...overlay, busy: true, statusLine: `${overlay.toolName}: ${actionId}…` });
+            const result = await runToolAction(overlay.toolName, actionId, (line) => {
+              // Live progress goes to the system transcript so the user
+              // can read it without us hijacking the overlay body.
+              pushItem('system', `${overlay.toolName}: ${line.trim()}`);
+            });
+            const tag = result.ok ? '' : 'error: ';
+            await refreshAndBackToList(`${tag}${result.message}`);
+          })();
+        };
+
+        // Build the action list. Essential tools never get `remove`.
+        const actions: { key: string; label: string; value: string; warn?: string }[] = [];
+        const isEnabled = !r.disabled;
+        if (isEnabled) {
+          actions.push({
+            key: 'disable',
+            label: 'Disable',
+            value: 'disable',
+            ...(r.entry.essential
+              ? { warn: 'This is an essential tool. Disabling it will likely break agent workflows that rely on it. Continue?' }
+              : {})
+          });
+        } else {
+          actions.push({ key: 'enable', label: 'Enable', value: 'enable' });
+        }
+        for (const a of r.entry.extraActions ?? []) {
+          actions.push({
+            key: a.id,
+            label: a.label,
+            value: a.id,
+            ...(a.warning ? { warn: a.warning } : {})
+          });
+        }
+        actions.push({ key: 'back', label: 'Back to list', value: '__back__' });
+        actions.push({ key: 'close', label: 'Close', value: '__close__' });
+
+        const stateColor =
+          r.status.state === 'connected'
+            ? 'green'
+            : r.status.state === 'degraded'
+              ? 'yellow'
+              : r.status.state === 'disabled'
+                ? 'gray'
+                : r.status.state === 'disconnected'
+                  ? 'red'
+                  : 'gray';
+        const dotMark = r.status.state === 'disabled' ? '\u25cb' : '\u25cf';
+
+        if (overlay.confirm) {
+          // Render a confirmation prompt instead of the action list.
+          return (
+            <OverlayBox title={`Confirm · ${r.entry.title}`}>
+              <Box flexDirection="column" marginBottom={1}>
+                <Text color="yellow">{overlay.confirm.warning}</Text>
+              </Box>
+              <SelectInput
+                items={[
+                  { key: 'yes', label: 'Yes, continue', value: 'yes' },
+                  { key: 'no', label: 'Cancel', value: 'no' }
+                ]}
+                onSelect={(item) => {
+                  if (item.value === 'no') {
+                    setOverlay({ ...overlay, confirm: undefined as never });
+                    return;
+                  }
+                  const actionId = overlay.confirm!.actionId;
+                  setOverlay({ ...overlay, confirm: undefined as never });
+                  runAction(actionId);
+                }}
+              />
+            </OverlayBox>
+          );
+        }
+
+        return (
+          <OverlayBox title={`Tool · ${r.entry.title}`}>
+            <Box flexDirection="column" marginBottom={1}>
+              <Text>
+                <Text color="gray">status:  </Text>
+                <Text color={stateColor}>{`${dotMark} ${r.status.state}`}</Text>
+                <Text color="gray">{` — ${r.status.detail}`}</Text>
+              </Text>
+              <Text>
+                <Text color="gray">kind:    </Text>
+                <Text>{`${r.entry.group}${r.entry.essential ? ' (essential)' : ''}`}</Text>
+              </Text>
+              <Text>
+                <Text color="gray">about:   </Text>
+                <Text>{r.entry.description}</Text>
+              </Text>
+              {r.entry.essential ? (
+                <Text color="gray">{'(essential: cannot be removed; disable shows a warning)'}</Text>
+              ) : null}
+            </Box>
+            <SelectInput
+              items={actions.map(({ key, label, value }) => ({ key, label, value }))}
+              onSelect={(item) => {
+                if (item.value === '__back__') {
+                  void refreshAndBackToList();
+                  return;
+                }
+                if (item.value === '__close__') {
+                  closeOverlay();
+                  return;
+                }
+                const chosen = actions.find((a) => a.value === item.value);
+                if (chosen?.warn) {
+                  setOverlay({
+                    ...overlay,
+                    confirm: {
+                      actionId: item.value as 'disable' | 'remove',
+                      warning: chosen.warn
+                    }
+                  });
+                  return;
+                }
+                runAction(item.value as 'enable' | 'disable' | 'install' | 'start' | 'stop' | 'restart' | 'remove');
+              }}
+            />
+            {overlay.statusLine ? (
+              <Box marginTop={1}>
+                <Text color={overlay.statusLine.startsWith('error') ? 'red' : 'green'}>
+                  {overlay.statusLine}
+                </Text>
+              </Box>
+            ) : null}
+            <Box marginTop={1}>
+              <Text color="gray">
+                {'Changes apply to disk now. Some actions only take effect on the next session restart.'}
+              </Text>
+            </Box>
+          </OverlayBox>
+        );
+      })()}
       {overlay.kind === 'mcp-custom-menu' && (
         <OverlayBox title="Add a custom MCP server">
           <Box flexDirection="column" marginBottom={1}>
@@ -5340,7 +5532,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'skills', args: '[list|disable <name>|enable <name>]', summary: 'inspect / disable / enable installed skills' },
   { name: 'next', summary: 'ask Atlas which agent or command to run next' },
   { name: 'onboard', summary: 'brownfield onboarding wizard (cost-aware, arrow-key workflow)' },
-  { name: 'searxng', args: '[status|install|start|stop|remove]', summary: 'manage the local SearXNG container that backs web_search' },
+  { name: 'tools', summary: 'browse / enable / disable / install built-in tools (web_search, browser, …)' },
   { name: 'exit', summary: 'leave atlas' }
 ];
 

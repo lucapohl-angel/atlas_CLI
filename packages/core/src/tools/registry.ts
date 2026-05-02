@@ -22,6 +22,19 @@ export class ToolRegistry {
     this.tools.set(tool.name, tool as Tool<unknown>);
   }
 
+  /**
+   * Remove a tool by name. Returns true if the tool existed. Used by
+   * the `/tools` UI to honor the user's disable list at boot, and by
+   * tests that need to swap tool implementations.
+   */
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
+  }
+
+  has(name: string): boolean {
+    return this.tools.has(name);
+  }
+
   get(name: string): Tool<unknown> | undefined {
     return this.tools.get(name);
   }

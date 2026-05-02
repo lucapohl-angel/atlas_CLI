@@ -16,6 +16,7 @@ import {
   builtinToolRegistry,
   createAnthropicProvider,
   createCodexProvider,
+  createDelegateRunner,
   createOpenRouterProvider,
   DEFAULT_BUILTIN_MCP_SERVERS,
   fetchAnthropicModels,
@@ -25,6 +26,7 @@ import {
   loadConfig,
   loadSkills,
   loadClaudeCodeCredentials,
+  loadToolsState,
   providerFromConfigAsync,
   registerMcpTools,
   saveConfig,
@@ -166,6 +168,13 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
   const skills = new SkillRegistry(skillsResult.ok ? skillsResult.value : []);
   const tools = builtinToolRegistry();
 
+  // Honor the user's `/tools` disable list at boot. We unregister
+  // disabled tools so they're invisible to the loop (rather than
+  // gating at invoke time, which would still surface them in the
+  // tool list and confuse the model).
+  const toolsState = await loadToolsState();
+  for (const name of toolsState.disabled) tools.unregister(name);
+
   // Spawn every enabled MCP server in parallel and graft their tools
   // onto the registry so the agent loop can call them transparently.
   // Failures are non-fatal: a misconfigured server doesn't block boot,
@@ -272,7 +281,35 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
     agents,
     skills,
     tools,
-    toolContext: { cwd: process.cwd(), approve: allowAllPolicy, todoStore: new TodoStore() },
+    toolContext: ((): import('@atlas/core').ToolContext => {
+      const cwd = process.cwd();
+      const todoStore = new TodoStore();
+      // Wire the delegate runner so the `delegate` tool can fan out to
+      // child agents. Children inherit the same provider + tool stack;
+      // the runner strips ask-approval tools and caps depth itself.
+      const defaultAgent =
+        agents.get(initialAgent ?? 'atlas') ?? agents.list()[0];
+      const delegateRun =
+        provider && defaultAgent
+          ? createDelegateRunner({
+              provider,
+              model: defaultModel,
+              fallbackModels,
+              agents: new Map(agents.list().map((a) => [a.name, a])),
+              defaultAgent,
+              skills: skills.list(),
+              baseTools: tools,
+              baseToolContext: { cwd },
+              currentDepth: 0
+            })
+          : undefined;
+      return {
+        cwd,
+        approve: allowAllPolicy,
+        todoStore,
+        ...(delegateRun ? { delegateRun } : {})
+      };
+    })(),
     hooks: builtinHookRegistry({
       cwd: process.cwd(),
       ...(cfg?.guardrails ? { config: cfg.guardrails } : {})

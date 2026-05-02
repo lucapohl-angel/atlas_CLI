@@ -1820,25 +1820,42 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             scheduleFlush();
             break;
           case 'thinking':
-            updateLastIfSameKind('thinking', ev.text);
+            setThinkingLine(ev.text);
             break;
           case 'tool_call_start': {
             toolStartedAt.set(ev.call.id, Date.now());
-            pushItem('tool', `▸ ${ev.call.name}(${truncateArgs(ev.call.arguments)})`);
+            const label = `${ev.call.name}(${truncateArgs(ev.call.arguments)})`;
+            setActivity((prev) => [
+              ...prev,
+              { id: ev.call.id, label, status: 'running' as const }
+            ]);
             break;
           }
           case 'tool_call_done': {
             const startedAt = toolStartedAt.get(ev.call.id);
             toolStartedAt.delete(ev.call.id);
-            const elapsed = startedAt ? `  (${formatElapsed(Date.now() - startedAt)})` : '';
+            const elapsedMs = startedAt ? Date.now() - startedAt : undefined;
             let resultContent: string;
             if (ev.outcome.type === 'ok') {
-              pushItem('tool', `  ✓ ${truncate(ev.outcome.summary, 200)}${elapsed}`);
               resultContent = ev.outcome.summary;
+              setActivity((prev) =>
+                prev.map((e) =>
+                  e.id === ev.call.id
+                    ? { ...e, status: 'ok' as const, ...(elapsedMs !== undefined ? { elapsedMs } : {}) }
+                    : e
+                )
+              );
             } else {
-              pushItem('tool', `  ✗ ${ev.outcome.error.code}: ${ev.outcome.error.message}${elapsed}`);
               resultContent = `error: ${ev.outcome.error.message}`;
               turnToolErrorsRef.current += 1;
+              const errCode = ev.outcome.type === 'error' ? ev.outcome.error.code : 'err';
+              setActivity((prev) =>
+                prev.map((e) =>
+                  e.id === ev.call.id
+                    ? { ...e, label: `${e.label} — ${errCode}`, status: 'err' as const, ...(elapsedMs !== undefined ? { elapsedMs } : {}) }
+                    : e
+                )
+              );
             }
             // CRITICAL: every assistant `tool_use` MUST be followed by a
             // matching `tool` message in history. Without this, providers
@@ -3856,6 +3873,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 : undefined
             }
             usage={usage}
+            contextWindow={contextWindowFor(model, modelCatalog)}
           />
         )}
       </Box>
@@ -5540,9 +5558,7 @@ const Header = ({
       ? estimateCost(model, usage.promptTokens, usage.completionTokens)
       : undefined;
   void cost;
-  // "Used" = tokens of the most recent turn (input + output), since that's
-  // what currently fills the model's context window. Falls back to 0 pre-turn.
-  const used = usage?.tokens ?? 0;
+  void contextWindow;
   return (
     <Box borderStyle="round" borderColor="gray" paddingX={1} marginBottom={0}>
       <Box flexGrow={1}>
@@ -5587,12 +5603,8 @@ const Header = ({
         )}
       </Box>
       <Box>
-        <ContextBar used={used} total={contextWindow} />
         {usage && (
-          <>
-            <Text color="gray"> · </Text>
-            <Text color="gray">{usage.rounds}rd</Text>
-          </>
+          <Text color="gray">{usage.rounds}rd</Text>
         )}
       </Box>
     </Box>
@@ -6455,7 +6467,8 @@ const ActivitySidebar = ({
   thinking,
   streaming,
   cost,
-  usage
+  usage,
+  contextWindow
 }: {
   activity: readonly {
     readonly id: string;
@@ -6472,13 +6485,17 @@ const ActivitySidebar = ({
     readonly promptTokens?: number;
     readonly completionTokens?: number;
   } | null;
+  contextWindow: number;
 }): React.JSX.Element => {
   // Cap to last 18 entries so a chatty turn doesn't blow out the column.
   const items = activity.slice(-18);
+  const used = usage?.tokens ?? 0;
   return (
     <Box
       flexDirection="column"
       width={34}
+      flexGrow={0}
+      flexShrink={0}
       marginLeft={1}
       borderStyle="round"
       borderColor="gray"
@@ -6495,56 +6512,57 @@ const ActivitySidebar = ({
           </Text>
         )}
       </Box>
-      {items.length === 0 && !thinking && (
-        <Text color="gray" dimColor italic>
-          {streaming ? 'thinking…' : 'idle'}
-        </Text>
-      )}
-      {items.map((e) => {
-        const icon =
-          e.status === 'running' ? '◌' : e.status === 'ok' ? '✓' : e.status === 'err' ? '✗' : '·';
-        const color =
-          e.status === 'running'
-            ? 'yellow'
-            : e.status === 'ok'
-              ? 'green'
-              : e.status === 'err'
-                ? 'red'
-                : 'gray';
-        // Truncate hard to keep the sidebar compact (28 visible cols
-        // after the icon + space).
-        const text = e.label.length > 28 ? `${e.label.slice(0, 27)}…` : e.label;
-        const elapsed = e.elapsedMs !== undefined ? ` (${formatElapsed(e.elapsedMs)})` : '';
-        return (
-          <Text key={e.id}>
-            <Text color={color}>{icon}</Text>
-            <Text> {text}</Text>
-            <Text color="gray" dimColor>
-              {elapsed}
+      <Box flexDirection="column" flexGrow={1}>
+        {items.length === 0 && !thinking && (
+          <Text color="gray" dimColor italic>
+            {streaming ? 'thinking…' : 'idle'}
+          </Text>
+        )}
+        {items.map((e) => {
+          const icon =
+            e.status === 'running' ? '◌' : e.status === 'ok' ? '✓' : e.status === 'err' ? '✗' : '·';
+          const color =
+            e.status === 'running'
+              ? 'yellow'
+              : e.status === 'ok'
+                ? 'green'
+                : e.status === 'err'
+                  ? 'red'
+                  : 'gray';
+          const text = e.label.length > 28 ? `${e.label.slice(0, 27)}…` : e.label;
+          const elapsed = e.elapsedMs !== undefined ? ` (${formatElapsed(e.elapsedMs)})` : '';
+          return (
+            <Text key={e.id}>
+              <Text color={color}>{icon}</Text>
+              <Text> {text}</Text>
+              <Text color="gray" dimColor>
+                {elapsed}
+              </Text>
             </Text>
-          </Text>
-        );
-      })}
-      {thinking && (
-        <Box marginTop={1} flexDirection="column">
-          <Text color="magenta" dimColor>
-            ◦ thinking
-          </Text>
-          <Text color="magenta" dimColor italic>
-            {thinking.length > 90 ? `${thinking.slice(0, 89)}…` : thinking}
-          </Text>
-        </Box>
-      )}
-      <Box marginTop={1} flexDirection="column">
+          );
+        })}
+        {thinking && (
+          <Box marginTop={1} flexDirection="column">
+            <Text color="magenta" dimColor>
+              ◦ thinking
+            </Text>
+            <Text color="magenta" dimColor italic>
+              {thinking.length > 90 ? `${thinking.slice(0, 89)}…` : thinking}
+            </Text>
+          </Box>
+        )}
+      </Box>
+      <Box flexDirection="column" marginTop={1}>
         <Text color="gray" dimColor>
           ──────────────────────────────
         </Text>
+        <Box>
+          <ContextBar used={used} total={contextWindow} />
+        </Box>
         {usage && (
-          <Text color="gray">
-            <Text color="white">{usage.tokens.toLocaleString()}</Text>
-            <Text color="gray" dimColor> tok · </Text>
+          <Text>
             <Text color="white">{usage.rounds}</Text>
-            <Text color="gray" dimColor> rd</Text>
+            <Text color="gray" dimColor> rounds this turn</Text>
           </Text>
         )}
         {cost !== undefined && (

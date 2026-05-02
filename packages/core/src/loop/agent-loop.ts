@@ -217,20 +217,50 @@ export const runAgentLoop = async function* (
       }
 
       const result = await invokeTool(opts.tools, call.name, toolInput, opts.toolContext);
-      if (result.ok) {
+
+      // Run afterTool hooks first so guardrails (e.g. secret redaction,
+      // prompt-injection warnings) can rewrite the summary before it
+      // lands in the conversation history.
+      let finalResult = result;
+      if (opts.hooks) {
+        const decision = await runHooks(opts.hooks, 'afterTool', {
+          event: 'afterTool',
+          tool: call.name,
+          input: toolInput,
+          result: result.ok
+            ? result.value
+            : { type: 'error', message: result.error.message },
+          ...(opts.signal ? { signal: opts.signal } : {})
+        });
+        if (
+          decision.action === 'modify' &&
+          result.ok &&
+          decision.payload &&
+          typeof decision.payload === 'object' &&
+          'summary' in (decision.payload as Record<string, unknown>) &&
+          typeof (decision.payload as { summary: unknown }).summary === 'string'
+        ) {
+          finalResult = {
+            ok: true,
+            value: decision.payload as typeof result.value
+          };
+        }
+      }
+
+      if (finalResult.ok) {
         messages.push({
           role: 'tool',
-          content: result.value.summary,
+          content: finalResult.value.summary,
           toolCallId: call.id,
           name: call.name
         });
         yield {
           type: 'tool_call_done',
           call,
-          outcome: { type: 'ok', summary: result.value.summary }
+          outcome: { type: 'ok', summary: finalResult.value.summary }
         };
       } else {
-        const summary = `error: ${result.error.message}`;
+        const summary = `error: ${finalResult.error.message}`;
         messages.push({
           role: 'tool',
           content: summary,
@@ -240,19 +270,8 @@ export const runAgentLoop = async function* (
         yield {
           type: 'tool_call_done',
           call,
-          outcome: { type: 'error', error: result.error }
+          outcome: { type: 'error', error: finalResult.error }
         };
-      }
-      if (opts.hooks) {
-        await runHooks(opts.hooks, 'afterTool', {
-          event: 'afterTool',
-          tool: call.name,
-          input: toolInput,
-          result: result.ok
-            ? result.value
-            : { type: 'error', message: result.error.message },
-          ...(opts.signal ? { signal: opts.signal } : {})
-        });
       }
     }
   }

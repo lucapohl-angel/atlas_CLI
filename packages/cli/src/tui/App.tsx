@@ -57,6 +57,7 @@ import {
   findOnPath,
   renderHeaders,
   runAgentLoop,
+  type HookRegistry,
   type SessionRecord,
   SessionStore,
   saveConfig,
@@ -138,6 +139,8 @@ export interface TuiAppProps {
   readonly skills: SkillRegistry;
   readonly tools: ToolRegistry;
   readonly toolContext: ToolContext;
+  /** Optional guardrail hook registry. When supplied, it is wired into every agent-loop turn. */
+  readonly hooks?: HookRegistry;
   readonly defaultModel: string;
   readonly fallbackModels?: readonly string[];
   readonly availableModels?: readonly string[];
@@ -1407,6 +1410,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           model: effectiveModel,
           ...(props.fallbackModels ? { fallbackModels: props.fallbackModels } : {}),
           tools: props.tools,
+          ...(props.hooks ? { hooks: props.hooks } : {}),
           toolContext: {
             ...props.toolContext,
             approve: mode === 'plan' ? denyAllPolicy : allowAllPolicy,
@@ -2976,7 +2980,16 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           },
           mcp: { servers: [], builtinsSeeded: false },
           github: {},
-          compaction: { enabled: true, threshold: 0.8, contextTokens: 200_000 }
+          compaction: { enabled: true, threshold: 0.8, contextTokens: 200_000 },
+          guardrails: {
+            enabled: true,
+            dangerousCommand: true,
+            pathSafety: true,
+            secretRedaction: true,
+            promptInjectionDetector: true,
+            extraDeniedPaths: [],
+            extraDeniedCommands: []
+          }
         };
         const nextCfg: AtlasConfig = {
           ...baseCfg,
@@ -3062,7 +3075,16 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       },
       mcp: { servers: [], builtinsSeeded: false },
       github: {},
-      compaction: { enabled: true, threshold: 0.8, contextTokens: 200_000 }
+      compaction: { enabled: true, threshold: 0.8, contextTokens: 200_000 },
+      guardrails: {
+        enabled: true,
+        dangerousCommand: true,
+        pathSafety: true,
+        secretRedaction: true,
+        promptInjectionDetector: true,
+        extraDeniedPaths: [],
+        extraDeniedCommands: []
+      }
     };
 
     const target = overlay.target;

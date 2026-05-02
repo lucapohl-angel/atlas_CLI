@@ -12,6 +12,7 @@ import {
   AgentRegistry,
   SkillRegistry,
   allowAllPolicy,
+  builtinHookRegistry,
   builtinToolRegistry,
   createAnthropicProvider,
   createCodexProvider,
@@ -271,6 +272,10 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
     skills,
     tools,
     toolContext: { cwd: process.cwd(), approve: allowAllPolicy },
+    hooks: builtinHookRegistry({
+      cwd: process.cwd(),
+      ...(cfg?.guardrails ? { config: cfg.guardrails } : {})
+    }),
     defaultModel,
     fallbackModels,
     availableModels,

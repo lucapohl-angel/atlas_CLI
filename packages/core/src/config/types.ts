@@ -146,6 +146,36 @@ export const ProvidersConfigSchema = z
   })
   .default({});
 
+/**
+ * Guardrails — automatic in-process safety hooks. All four are on by
+ * default. Disable individually if a workflow legitimately needs the
+ * blocked behavior (e.g. tests that scan for fake API keys).
+ */
+export const GuardrailsConfigSchema = z
+  .object({
+    /** Master switch. When false, no built-in hooks are registered. */
+    enabled: z.boolean().default(true),
+    /** Block obviously destructive shell / git commands. */
+    dangerousCommand: z.boolean().default(true),
+    /** Block writes/reads to .git, .env, ~/.ssh, outside cwd, etc. */
+    pathSafety: z.boolean().default(true),
+    /** Redact API keys / tokens / private keys in tool output. */
+    secretRedaction: z.boolean().default(true),
+    /** Flag prompt-injection markers in tool output (modify, not block). */
+    promptInjectionDetector: z.boolean().default(true),
+    /**
+     * Extra absolute paths or glob fragments to deny in path-safety
+     * (in addition to built-in defaults).
+     */
+    extraDeniedPaths: z.array(z.string().min(1)).default([]),
+    /**
+     * Extra command substrings (case-insensitive) to deny in
+     * dangerous-command (in addition to built-in defaults).
+     */
+    extraDeniedCommands: z.array(z.string().min(1)).default([])
+  })
+  .default({});
+
 export const AtlasConfigSchema = z
   .object({
     defaultProvider: z.enum(['openrouter', 'anthropic']).default('openrouter'),
@@ -155,7 +185,8 @@ export const AtlasConfigSchema = z
     providers: ProvidersConfigSchema,
     mcp: McpConfigSchema,
     github: GitHubAuthConfigSchema,
-    compaction: CompactionConfigSchema
+    compaction: CompactionConfigSchema,
+    guardrails: GuardrailsConfigSchema
   })
   .default({});
 
@@ -168,4 +199,5 @@ export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 export type McpConfig = z.infer<typeof McpConfigSchema>;
 export type CompactionConfig = z.infer<typeof CompactionConfigSchema>;
 export type GitHubAuthConfig = z.infer<typeof GitHubAuthConfigSchema>;
+export type GuardrailsConfig = z.infer<typeof GuardrailsConfigSchema>;
 export type AtlasConfig = z.infer<typeof AtlasConfigSchema>;

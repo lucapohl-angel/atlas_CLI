@@ -545,6 +545,9 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     readonly id: string;
     readonly label: string;
     readonly status: 'running' | 'ok' | 'err' | 'info';
+    readonly kind: 'tool' | 'thinking';
+    /** Tool name (only set when kind==='tool'). Used to pick an icon. */
+    readonly toolName?: string;
     readonly elapsedMs?: number;
   };
   const [activity, setActivity] = useState<readonly ActivityEntry[]>([]);
@@ -1827,9 +1830,18 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             break;
           case 'tool_call_start': {
             toolStartedAt.set(ev.call.id, Date.now());
-            const label = `${ev.call.name}(${truncateArgs(ev.call.arguments)})`;
+            const label = prettyToolLabel(ev.call.name, ev.call.arguments);
             setActivity((prev) => {
-              const next = [...prev, { id: ev.call.id, label, status: 'running' as const }];
+              const next = [
+                ...prev,
+                {
+                  id: ev.call.id,
+                  label,
+                  status: 'running' as const,
+                  kind: 'tool' as const,
+                  toolName: ev.call.name
+                }
+              ];
               // Cap session-long history so memory stays bounded; sidebar
               // only renders the last 8 anyway.
               return next.length > 50 ? next.slice(-50) : next;
@@ -1899,8 +1911,9 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                     ...items,
                     {
                       id: `think-${Date.now()}`,
-                      label: `thinking: ${summary}`,
-                      status: 'info' as const
+                      label: summary,
+                      status: 'info' as const,
+                      kind: 'thinking' as const
                     }
                   ];
                   return next.length > 50 ? next.slice(-50) : next;
@@ -3852,7 +3865,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
 
   const showSidebar = cols >= 110;
   return (
-    <Box flexDirection="row" width={cols} height={rows}>
+    <Box flexDirection="row" width={cols} height={rows} backgroundColor="#0d0d0d">
       <Box flexDirection="column" flexGrow={1}>
       <Header
         agent={activeAgent}
@@ -5585,7 +5598,7 @@ const Header = ({
   void cost;
   void contextWindow;
   return (
-    <Box borderStyle="round" borderColor="gray" paddingX={1} marginBottom={0}>
+    <Box borderStyle="round" borderColor="gray" paddingX={1} marginBottom={0} backgroundColor="#1a1a1a">
       <Box flexGrow={1}>
         <Text color={colorForAgent(agent.name)} bold>
           {agent.role}
@@ -6497,6 +6510,8 @@ const ActivitySidebar = ({
     readonly id: string;
     readonly label: string;
     readonly status: 'running' | 'ok' | 'err' | 'info';
+    readonly kind: 'tool' | 'thinking';
+    readonly toolName?: string;
     readonly elapsedMs?: number;
   }[];
   thinking: string | null;
@@ -6523,6 +6538,7 @@ const ActivitySidebar = ({
       borderStyle="round"
       borderColor="gray"
       paddingX={1}
+      backgroundColor="#161616"
     >
       {/* Top block: tokens + cost — aligns with header bar visually. */}
       <Box flexDirection="column">
@@ -6568,16 +6584,27 @@ const ActivitySidebar = ({
           </Text>
         )}
         {items.map((e) => {
-          const icon =
-            e.status === 'running' ? '◌' : e.status === 'ok' ? '✓' : e.status === 'err' ? '✗' : '·';
-          const color =
-            e.status === 'running'
+          // Pick icon + color per kind (tool vs thinking) and per status.
+          const isThinking = e.kind === 'thinking';
+          const icon = isThinking
+            ? '✦'
+            : e.status === 'running'
+              ? '◌'
+              : e.status === 'ok'
+                ? iconForTool(e.toolName ?? '')
+                : e.status === 'err'
+                  ? '✗'
+                  : '·';
+          const color = isThinking
+            ? 'magenta'
+            : e.status === 'running'
               ? 'yellow'
               : e.status === 'ok'
-                ? 'green'
+                ? 'cyan'
                 : e.status === 'err'
                   ? 'red'
                   : 'gray';
+          const labelColor = isThinking ? 'magenta' : 'white';
           const elapsed = e.elapsedMs !== undefined ? ` (${formatElapsed(e.elapsedMs)})` : '';
           // Inner content width = sidebar width(46) - border(2) - paddingX(2)
           // - icon(1) - gap(1) - elapsed length. Give it explicit width so
@@ -6585,9 +6612,13 @@ const ActivitySidebar = ({
           const labelWidth = Math.max(10, 46 - 2 - 2 - 1 - 1 - elapsed.length);
           return (
             <Box key={e.id} flexDirection="row">
-              <Text color={color}>{icon} </Text>
+              <Text color={color} bold={!isThinking && e.status === 'ok'}>
+                {icon}{' '}
+              </Text>
               <Box width={labelWidth}>
-                <Text wrap="truncate-end">{e.label}</Text>
+                <Text color={labelColor} dimColor={isThinking} italic={isThinking} wrap="truncate-end">
+                  {e.label}
+                </Text>
               </Box>
               {elapsed && (
                 <Text color="gray" dimColor>
@@ -6599,8 +6630,8 @@ const ActivitySidebar = ({
         })}
         {thinking && (
           <Box marginTop={1} flexDirection="column" width={42}>
-            <Text color="magenta" dimColor>
-              ◦ thinking
+            <Text color="magenta" bold>
+              ✦ thinking
             </Text>
             <Text color="magenta" dimColor italic wrap="wrap">
               {thinking}
@@ -6661,6 +6692,67 @@ const Splash = ({ defaultModel }: { defaultModel: string }): React.JSX.Element =
 
 const truncate = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0, n)}…`);
 const truncateArgs = (s: string): string => truncate(s.replace(/\s+/g, ' '), 80);
+
+/**
+ * VS-Code-ish unicode icon for a tool. Falls back to `▸` for unknown
+ * tools. Kept to single-cell glyphs (no emoji) so column math stays
+ * predictable across terminals.
+ */
+const iconForTool = (name: string): string => {
+  const n = name.toLowerCase();
+  if (n.includes('write') || n.includes('edit') || n.includes('apply')) return '✎';
+  if (n.includes('read') || n.includes('view') || n.includes('cat')) return '▤';
+  if (n.includes('terminal') || n.includes('bash') || n.includes('shell') || n.includes('exec'))
+    return '▶';
+  if (n === 'git' || n === 'gh' || n.includes('commit') || n.includes('branch')) return '⎇';
+  if (n.includes('web') || n.includes('browser') || n.includes('fetch') || n.includes('search'))
+    return '⌬';
+  if (n.includes('delegate') || n.includes('subagent') || n.includes('handoff')) return '⇄';
+  if (n.includes('todo') || n.includes('checklist') || n.includes('plan')) return '☑';
+  if (n.includes('template') || n.includes('render')) return '❑';
+  if (n.includes('clarify') || n.includes('ask')) return '?';
+  if (n.startsWith('mcp__') || n.includes('mcp_')) return '⚙';
+  return '▸';
+};
+
+/**
+ * Build a compact, scannable label for the sidebar:
+ *   write_file · test2.txt
+ *   terminal · ls -la
+ *   read_file · src/foo.ts
+ * Falls back to `name(args…)` for unknown shapes.
+ */
+const prettyToolLabel = (name: string, argsJson: string): string => {
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(argsJson);
+  } catch {
+    parsed = null;
+  }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const o = parsed as Record<string, unknown>;
+    // Pick the most "identifying" arg first.
+    const primary =
+      o['path'] ??
+      o['file'] ??
+      o['filename'] ??
+      o['url'] ??
+      o['query'] ??
+      o['command'] ??
+      o['cmd'] ??
+      o['op'] ??
+      o['title'] ??
+      o['name'];
+    if (typeof primary === 'string' && primary.length > 0) {
+      return `${name} · ${truncate(primary, 60)}`;
+    }
+    const keys = Object.keys(o);
+    if (keys.length === 0) return name;
+    return `${name} · ${keys.slice(0, 3).join(', ')}`;
+  }
+  const args = truncateArgs(argsJson);
+  return args.length > 0 ? `${name}(${args})` : name;
+};
 
 /** Render a millisecond duration as a compact human label (e.g. "1.2s", "340ms"). */
 const formatElapsed = (ms: number): string => {

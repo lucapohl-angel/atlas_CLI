@@ -77,19 +77,20 @@ describe('workflows: loadChains', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('returns empty array when no file exists', async () => {
+  it('returns built-in chains when no overlay file exists', async () => {
     const r = await loadChains({ dir, cwd: dir, home: dir });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.value).toHaveLength(0);
+    expect(r.value.length).toBeGreaterThan(5);
   });
 
-  it('loads from explicit dir', async () => {
+  it('loads explicit dir as highest-precedence overlay', async () => {
     await writeFile(join(dir, 'chains.yaml'), sampleYaml, 'utf8');
     const r = await loadChains({ dir });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.value).toHaveLength(2);
+    const step = lookupChain(r.value, 'athena', 'write-prd');
+    expect(step?.toAgent).toBe('prometheus');
   });
 
   it('project-local overrides home', async () => {
@@ -138,6 +139,8 @@ describe('workflows: recommendNext', () => {
   it('falls back to chain when no handoffs and fromAgent supplied', async () => {
     await mkdir(join(cwd, '.atlas', 'workflows'), { recursive: true });
     await writeFile(join(cwd, '.atlas', 'workflows', 'chains.yaml'), sampleYaml, 'utf8');
+    await mkdir(join(cwd, 'docs'), { recursive: true });
+    await writeFile(join(cwd, 'docs', 'prd.md'), '# PRD\n', 'utf8');
     const r = await recommendNext({
       cwd,
       home: cwd,
@@ -157,6 +160,50 @@ describe('workflows: recommendNext', () => {
     if (!r.ok) return;
     expect(r.value.source).toBe('state');
     expect(r.value.agent).toBe('athena');
+  });
+
+  it('enforces chain requires gates against .atlas/state.yaml', async () => {
+    await mkdir(join(cwd, '.atlas', 'workflows'), { recursive: true });
+    await writeFile(
+      join(cwd, '.atlas', 'workflows', 'chains.yaml'),
+      `version: 1\nchains:\n  - fromAgent: hestia\n    command: write-story\n    toAgent: hercules\n    nextCommand: implement\n    requires:\n      storyStatus: ready-for-dev\n`,
+      'utf8'
+    );
+    await mkdir(join(cwd, '.atlas'), { recursive: true });
+    await writeFile(
+      join(cwd, '.atlas', 'state.yaml'),
+      `version: 1\nartifacts: {}\nepics: []\nstories:\n  - id: s1\n    title: Story\n    status: ready-for-dev\n`,
+      'utf8'
+    );
+
+    const r = await recommendNext({
+      cwd,
+      home: cwd,
+      fromAgent: 'hestia',
+      lastCommand: 'write-story'
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.source).toBe('chain');
+    expect(r.value.agent).toBe('hercules');
+  });
+
+  it('falls through when chain requires are unmet', async () => {
+    await mkdir(join(cwd, '.atlas', 'workflows'), { recursive: true });
+    await writeFile(
+      join(cwd, '.atlas', 'workflows', 'chains.yaml'),
+      `version: 1\nchains:\n  - fromAgent: aphrodite\n    command: design-system\n    toAgent: hermes\n    nextCommand: write-epics\n    requires:\n      artifact: design-system\n      status: ready\n`,
+      'utf8'
+    );
+    const r = await recommendNext({
+      cwd,
+      home: cwd,
+      fromAgent: 'aphrodite',
+      lastCommand: 'design-system'
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.source === 'chain').toBe(false);
   });
 });
 

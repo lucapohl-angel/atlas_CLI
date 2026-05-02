@@ -48,6 +48,7 @@ import {
   createOpenRouterProvider,
   denyAllPolicy,
   loadClaudeCodeCredentials,
+  estimateOnboardCost,
   beginCodexLogin,
   fetchOpenRouterModels,
   fetchAnthropicModels,
@@ -78,7 +79,9 @@ import {
   estimateCost,
   formatCost,
   saveLearnedSkill,
-  setSkillDisabled
+  setSkillDisabled,
+  writeRepoMap,
+  type OnboardPreflight
 } from '@atlas/core';
 
 export type ThinkingEffort = 'off' | ReasoningEffort | 'xhigh';
@@ -99,6 +102,23 @@ interface LearnedSkillDraft {
   readonly description: string;
   readonly triggers: readonly string[];
   readonly body: string;
+}
+
+type OnboardMode = 'full' | 'cost-reduction' | 'map-only';
+type OnboardStrategy = 'same-model' | 'cheap-fallback' | 'manual';
+
+interface OnboardDraft {
+  readonly preflight: OnboardPreflight;
+  readonly mode: OnboardMode;
+  readonly strategy: OnboardStrategy;
+  readonly sameModel?: string;
+  readonly cheapModel?: string;
+  readonly fallbackModel?: string;
+  readonly stageModels?: {
+    readonly map: string;
+    readonly architecture: string;
+    readonly onboarding: string;
+  };
 }
 
 
@@ -258,6 +278,37 @@ type Overlay =
       readonly draftKey: string;
       readonly target: 'openrouter' | 'anthropic' | 'claude-code' | 'chatgpt' | 'github' | 'mcp';
       readonly infoText?: string;
+    }
+  | {
+      readonly kind: 'onboard';
+      readonly stage: 'loading';
+    }
+  | {
+      readonly kind: 'onboard';
+      readonly stage: 'mode';
+      readonly draft: OnboardDraft;
+    }
+  | {
+      readonly kind: 'onboard';
+      readonly stage: 'strategy';
+      readonly draft: OnboardDraft;
+    }
+  | {
+      readonly kind: 'onboard';
+      readonly stage: 'pick-model';
+      readonly draft: OnboardDraft;
+      readonly target: 'same' | 'cheap' | 'fallback' | 'map' | 'architecture' | 'onboarding';
+    }
+  | {
+      readonly kind: 'onboard';
+      readonly stage: 'confirm';
+      readonly draft: OnboardDraft;
+    }
+  | {
+      readonly kind: 'onboard';
+      readonly stage: 'running';
+      readonly draft: OnboardDraft;
+      readonly status: string;
     };
 
 const SetupMenuItem = ({
@@ -337,6 +388,13 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     undefined
   );
   const modelCatalog = catalogOverride ?? props.modelCatalog;
+  const availableModelIds = useMemo(() => {
+    const ids = new Set<string>();
+    ids.add(model);
+    for (const m of modelCatalog ?? []) ids.add(m.id);
+    for (const id of extraModels) ids.add(id);
+    return [...ids].sort((a, b) => a.localeCompare(b));
+  }, [model, modelCatalog, extraModels]);
   /**
    * Per-agent model override. When an agent has an entry here, requests
    * routed to that agent use this model instead of the global one. Set
@@ -372,6 +430,16 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     readonly completionTokens?: number;
   } | null>(null);
   const [pendingExit, setPendingExit] = useState(false);
+
+  const pickCheapestModel = useCallback((): string => {
+    const ranked = availableModelIds.find((id) => /(mini|flash|haiku|kimi|nano|lite)/i.test(id));
+    return ranked ?? model;
+  }, [availableModelIds, model]);
+
+  const pickStrongFallbackModel = useCallback((): string => {
+    const ranked = availableModelIds.find((id) => /(opus|gpt-5\.5|sonnet-4\.6|gemini-2\.5-pro)/i.test(id));
+    return ranked ?? model;
+  }, [availableModelIds, model]);
 
   // Mouse capture is intentionally NOT enabled. Capturing mouse events
   // would prevent the user from selecting/copying text with the mouse,
@@ -434,6 +502,32 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     },
     []
   );
+
+  const launchOnboardWizard = useCallback((): void => {
+    setOverlay({ kind: 'onboard', stage: 'loading' });
+    void (async (): Promise<void> => {
+      const preflight = await estimateOnboardCost({ cwd: process.cwd() });
+      if (!preflight.ok) {
+        pushItem('error', `onboard preflight failed: ${preflight.error.message}`);
+        setOverlay({ kind: 'none' });
+        return;
+      }
+      const draft: OnboardDraft = {
+        preflight: preflight.value,
+        mode: 'full',
+        strategy: 'same-model',
+        sameModel: model,
+        cheapModel: pickCheapestModel(),
+        fallbackModel: pickStrongFallbackModel(),
+        stageModels: {
+          map: pickCheapestModel(),
+          architecture: model,
+          onboarding: model
+        }
+      };
+      setOverlay({ kind: 'onboard', stage: 'mode', draft });
+    })();
+  }, [model, pushItem, pickCheapestModel, pickStrongFallbackModel]);
 
   const updateLastIfSameKind = useCallback(
     (kind: TranscriptItem['kind'], text: string, author?: string): void => {
@@ -820,6 +914,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             // The convention is the `*next` agent command — we inject it
             // verbatim so the model picks it up via the persona prompt.
             void submit('*next');
+            return;
+          }
+          case 'onboard': {
+            launchOnboardWizard();
             return;
           }
           case 'history':
@@ -1837,6 +1935,162 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       props.defaultModel
     ]
   );
+
+  const onOnboardModePick = useCallback(
+    (item: { value: string }) => {
+      if (overlay.kind !== 'onboard' || overlay.stage !== 'mode') return;
+      const mode = item.value as OnboardMode;
+      const draft: OnboardDraft = { ...overlay.draft, mode };
+      if (mode === 'map-only') {
+        setOverlay({ kind: 'onboard', stage: 'confirm', draft });
+        return;
+      }
+      if (mode === 'full') {
+        setOverlay({ kind: 'onboard', stage: 'confirm', draft: { ...draft, strategy: 'same-model' } });
+        return;
+      }
+      setOverlay({ kind: 'onboard', stage: 'strategy', draft });
+    },
+    [overlay]
+  );
+
+  const onOnboardStrategyPick = useCallback(
+    (item: { value: string }) => {
+      if (overlay.kind !== 'onboard' || overlay.stage !== 'strategy') return;
+      const strategy = item.value as OnboardStrategy;
+      const draft: OnboardDraft = { ...overlay.draft, strategy };
+      if (strategy === 'same-model') {
+        setOverlay({ kind: 'onboard', stage: 'pick-model', draft, target: 'same' });
+        return;
+      }
+      if (strategy === 'cheap-fallback') {
+        setOverlay({ kind: 'onboard', stage: 'pick-model', draft, target: 'cheap' });
+        return;
+      }
+      setOverlay({ kind: 'onboard', stage: 'pick-model', draft, target: 'map' });
+    },
+    [overlay]
+  );
+
+  const onOnboardPickModel = useCallback(
+    (item: { value: string }) => {
+      if (overlay.kind !== 'onboard' || overlay.stage !== 'pick-model') return;
+      const chosen = item.value;
+      const d = overlay.draft;
+      if (overlay.target === 'same') {
+        setOverlay({ kind: 'onboard', stage: 'confirm', draft: { ...d, sameModel: chosen } });
+        return;
+      }
+      if (overlay.target === 'cheap') {
+        setOverlay({ kind: 'onboard', stage: 'pick-model', draft: { ...d, cheapModel: chosen }, target: 'fallback' });
+        return;
+      }
+      if (overlay.target === 'fallback') {
+        setOverlay({ kind: 'onboard', stage: 'confirm', draft: { ...d, fallbackModel: chosen } });
+        return;
+      }
+      if (overlay.target === 'map') {
+        setOverlay({
+          kind: 'onboard',
+          stage: 'pick-model',
+          draft: {
+            ...d,
+            stageModels: {
+              ...(d.stageModels ?? { map: chosen, architecture: chosen, onboarding: chosen }),
+              map: chosen
+            }
+          },
+          target: 'architecture'
+        });
+        return;
+      }
+      if (overlay.target === 'architecture') {
+        setOverlay({
+          kind: 'onboard',
+          stage: 'pick-model',
+          draft: {
+            ...d,
+            stageModels: {
+              ...(d.stageModels ?? { map: chosen, architecture: chosen, onboarding: chosen }),
+              architecture: chosen
+            }
+          },
+          target: 'onboarding'
+        });
+        return;
+      }
+      setOverlay({
+        kind: 'onboard',
+        stage: 'confirm',
+        draft: {
+          ...d,
+          stageModels: {
+            ...(d.stageModels ?? { map: chosen, architecture: chosen, onboarding: chosen }),
+            onboarding: chosen
+          }
+        }
+      });
+    },
+    [overlay]
+  );
+
+  const executeOnboard = useCallback(async (): Promise<void> => {
+    if (overlay.kind !== 'onboard' || overlay.stage !== 'confirm') return;
+    const draft = overlay.draft;
+    setOverlay({ kind: 'onboard', stage: 'running', draft, status: 'writing repo map...' });
+
+    const mapR = await writeRepoMap({ cwd: process.cwd() });
+    if (!mapR.ok) {
+      pushItem('error', `onboard failed: ${mapR.error.message}`);
+      setOverlay({ kind: 'none' });
+      return;
+    }
+    pushItem('system', `repo map written → ${mapR.value.path}`);
+
+    if (draft.mode === 'map-only') {
+      pushItem('system', 'map-only complete. Use /next to continue orchestration.');
+      setOverlay({ kind: 'none' });
+      return;
+    }
+
+    const pickModel =
+      draft.strategy === 'same-model'
+        ? draft.sameModel
+        : draft.strategy === 'cheap-fallback'
+          ? draft.cheapModel
+          : draft.stageModels?.architecture;
+    if (pickModel && pickModel !== model) {
+      setModel(pickModel);
+      pushItem('system', `model → ${pickModel} (onboard plan)`);
+    }
+
+    const planLine =
+      draft.strategy === 'same-model'
+        ? `single-model: ${draft.sameModel ?? model}`
+        : draft.strategy === 'cheap-fallback'
+          ? `cheap+fallback: ${draft.cheapModel ?? model} -> ${draft.fallbackModel ?? model}`
+          : `manual per-stage: map=${draft.stageModels?.map ?? model}, architecture=${draft.stageModels?.architecture ?? model}, onboarding=${draft.stageModels?.onboarding ?? model}`;
+
+    setOverlay({ kind: 'none' });
+    void submit(
+      [
+        '*onboard',
+        `Mode: ${draft.mode}`,
+        `Strategy: ${planLine}`,
+        `Estimated tokens: input~${draft.preflight.estimatedInputTokens}, output~${draft.preflight.estimatedOutputTokensMin}-${draft.preflight.estimatedOutputTokensMax}, band=${draft.preflight.costBand}`,
+        'Use docs/repo-map.md as source-of-truth and produce:',
+        '- docs/brownfield-architecture.md',
+        '- docs/onboarding.md',
+        'Also seed .atlas/state.yaml artifacts when confidently inferable.',
+        'If confidence is low in any section, explicitly mark assumptions.'
+      ].join('\n')
+    );
+  }, [overlay, pushItem, submit, model]);
+
+  const onboardCostLabel = useCallback((d: OnboardDraft): string => {
+    const p = d.preflight;
+    return `${p.costBand.toUpperCase()} · in ~${p.estimatedInputTokens} tok · out ~${p.estimatedOutputTokensMin}-${p.estimatedOutputTokensMax}`;
+  }, []);
 
   const onPickOption = useCallback(
     (item: { value: string }) => {
@@ -3458,6 +3712,108 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           )}
         </OverlayBox>
       )}
+      {overlay.kind === 'onboard' && overlay.stage === 'loading' && (
+        <OverlayBox title="/onboard preflight">
+          <Text color="cyan">Scanning repository and estimating token/cost envelope...</Text>
+          <Box marginTop={1}>
+            <Text color="gray">Esc to cancel</Text>
+          </Box>
+        </OverlayBox>
+      )}
+      {overlay.kind === 'onboard' && overlay.stage === 'mode' && (
+        <OverlayBox title="Onboard existing repository">
+          <Box flexDirection="column" marginBottom={1}>
+            <Text>{onboardCostLabel(overlay.draft)}</Text>
+            <Text color="gray">
+              Choose one mode. Full uses one model by default; cost-reduction lets you pick cheap/fallback/per-stage.
+            </Text>
+          </Box>
+          <SelectInput
+            items={[
+              { key: 'full', label: 'Full onboard (default model for all stages)', value: 'full' },
+              { key: 'cost', label: 'Cost reduction mode (choose model strategy)', value: 'cost-reduction' },
+              { key: 'map', label: 'Map only (write docs/repo-map.md, no long-form generation)', value: 'map-only' }
+            ]}
+            onSelect={onOnboardModePick}
+          />
+        </OverlayBox>
+      )}
+      {overlay.kind === 'onboard' && overlay.stage === 'strategy' && (
+        <OverlayBox title="Onboard cost-reduction strategy">
+          <SelectInput
+            items={[
+              { key: 'same', label: 'Single cheap model for all stages', value: 'same-model' },
+              { key: 'fallback', label: 'Cheap model + strong fallback', value: 'cheap-fallback' },
+              { key: 'manual', label: 'Manual per-stage model selection', value: 'manual' }
+            ]}
+            onSelect={onOnboardStrategyPick}
+          />
+        </OverlayBox>
+      )}
+      {overlay.kind === 'onboard' && overlay.stage === 'pick-model' && (
+        <OverlayBox
+          title={`Pick model for ${
+            overlay.target === 'same'
+              ? 'all stages'
+              : overlay.target === 'cheap'
+                ? 'cheap pass'
+                : overlay.target === 'fallback'
+                  ? 'strong fallback'
+                  : `${overlay.target} stage`
+          }`}
+        >
+          <SelectInput
+            items={availableModelIds.map((id) => ({ key: id, label: id, value: id }))}
+            onSelect={onOnboardPickModel}
+          />
+        </OverlayBox>
+      )}
+      {overlay.kind === 'onboard' && overlay.stage === 'confirm' && (
+        <OverlayBox title="Confirm onboard plan">
+          <Box flexDirection="column" marginBottom={1}>
+            <Text>{onboardCostLabel(overlay.draft)}</Text>
+            <Text>mode: {overlay.draft.mode}</Text>
+            <Text>strategy: {overlay.draft.strategy}</Text>
+            {overlay.draft.strategy === 'same-model' && <Text>model: {overlay.draft.sameModel ?? model}</Text>}
+            {overlay.draft.strategy === 'cheap-fallback' && (
+              <Text>
+                cheap: {overlay.draft.cheapModel ?? model} · fallback: {overlay.draft.fallbackModel ?? model}
+              </Text>
+            )}
+            {overlay.draft.strategy === 'manual' && (
+              <Text>
+                map: {overlay.draft.stageModels?.map ?? model} · architecture: {overlay.draft.stageModels?.architecture ?? model} · onboarding: {overlay.draft.stageModels?.onboarding ?? model}
+              </Text>
+            )}
+          </Box>
+          <SelectInput
+            items={[
+              { key: 'start', label: 'Start onboard', value: 'start' },
+              { key: 'back', label: 'Back', value: 'back' },
+              { key: 'cancel', label: 'Cancel', value: 'cancel' }
+            ]}
+            onSelect={(item) => {
+              if (item.value === 'start') {
+                void executeOnboard();
+                return;
+              }
+              if (item.value === 'back') {
+                setOverlay({ kind: 'onboard', stage: 'mode', draft: overlay.draft });
+                return;
+              }
+              closeOverlay();
+            }}
+          />
+        </OverlayBox>
+      )}
+      {overlay.kind === 'onboard' && overlay.stage === 'running' && (
+        <OverlayBox title="Running /onboard">
+          <Text color="cyan">{overlay.status}</Text>
+          <Box marginTop={1}>
+            <Text color="gray">Please wait...</Text>
+          </Box>
+        </OverlayBox>
+      )}
       {overlay.kind === 'mcp-add' && overlay.stage === 'pick' && (
         <OverlayBox title="Add MCP server (pick from suggested catalog)">
           <SelectInput
@@ -4892,6 +5248,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'learn', args: '[on|off|status]', summary: 'self-improvement loop: distill the current turn into a learned skill' },
   { name: 'skills', args: '[list|disable <name>|enable <name>]', summary: 'inspect / disable / enable installed skills' },
   { name: 'next', summary: 'ask Atlas which agent or command to run next' },
+  { name: 'onboard', summary: 'brownfield onboarding wizard (cost-aware, arrow-key workflow)' },
   { name: 'exit', summary: 'leave atlas' }
 ];
 

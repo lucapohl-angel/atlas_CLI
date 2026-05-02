@@ -12,6 +12,15 @@ const CHAINS_YAML = `# Atlas built-in workflow chains.
 # command match wins over a wildcard (no command) entry. Edit freely:
 # the orchestrator re-reads this file on every '*next'.
 version: 1
+activation:
+  prepend:
+    - Check pending handoffs first; they are authoritative.
+    - If a gate is unmet, explain the missing prerequisite in one line.
+  append:
+    - End with one concrete next command when possible.
+  persistent_facts:
+    - Atlas routing priority is handoff -> chain -> state.
+  on_complete: Emit a handoff when work transitions to a different role.
 chains:
   # Discovery → product definition
   - fromAgent: athena
@@ -25,6 +34,8 @@ chains:
     toAgent: prometheus
     nextCommand: write-architecture
     reason: PRD ready; hand to architect
+    requires:
+      hasPRD: true
 
   # Architecture → UX → design system
   - fromAgent: prometheus
@@ -32,6 +43,8 @@ chains:
     toAgent: aphrodite
     nextCommand: write-ux-spec
     reason: architecture set; UX comes next
+    requires:
+      hasArchitecture: true
 
   - fromAgent: aphrodite
     command: write-ux-spec
@@ -44,6 +57,9 @@ chains:
     toAgent: hermes
     nextCommand: write-epics
     reason: design system locked; break the work into epics
+    requires:
+      artifact: design-system
+      status: ready
 
   # Planning → execution
   - fromAgent: hermes
@@ -57,12 +73,16 @@ chains:
     toAgent: hercules
     nextCommand: implement
     reason: story is ready; engineer picks it up
+    requires:
+      storyStatus: ready-for-dev
 
   - fromAgent: hercules
     command: implement
     toAgent: nemesis
     nextCommand: qa-review
     reason: implementation done; QA runs the gate
+    requires:
+      storyStatus: review
 
   - fromAgent: nemesis
     command: qa-review

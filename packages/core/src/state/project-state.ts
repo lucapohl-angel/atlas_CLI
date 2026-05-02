@@ -30,6 +30,19 @@ const Identifier = z
 export const EpicStatusSchema = z.enum(['backlog', 'in-progress', 'done']);
 export type EpicStatus = z.infer<typeof EpicStatusSchema>;
 
+export const ProjectArtifactKeySchema = z.enum([
+  'brief',
+  'prd',
+  'architecture',
+  'ux-spec',
+  'design-system',
+  'epics'
+]);
+export type ProjectArtifactKey = z.infer<typeof ProjectArtifactKeySchema>;
+
+export const ProjectArtifactStatusSchema = z.enum(['missing', 'draft', 'ready', 'done']);
+export type ProjectArtifactStatus = z.infer<typeof ProjectArtifactStatusSchema>;
+
 export const ProjectStoryStatusSchema = z.enum([
   'draft',
   'ready-for-dev',
@@ -61,8 +74,16 @@ export const StoryEntrySchema = z.object({
 });
 export type StoryEntry = z.infer<typeof StoryEntrySchema>;
 
+export const ArtifactEntrySchema = z.object({
+  status: ProjectArtifactStatusSchema.default('missing'),
+  owner: z.string().optional(),
+  lastUpdated: z.string().optional()
+});
+export type ArtifactEntry = z.infer<typeof ArtifactEntrySchema>;
+
 export const ProjectStateSchema = z.object({
   version: z.number().int().positive().default(1),
+  artifacts: z.record(ProjectArtifactKeySchema, ArtifactEntrySchema).default({}),
   epics: z.array(EpicEntrySchema).default([]),
   stories: z.array(StoryEntrySchema).default([])
 });
@@ -79,7 +100,7 @@ const STATE_REL_PATH = join('.atlas', 'state.yaml');
 const resolveStatePath = (opts: ProjectStateOptions): string =>
   opts.path ?? join(opts.cwd ?? process.cwd(), STATE_REL_PATH);
 
-const emptyState = (): ProjectStateFile => ({ version: 1, epics: [], stories: [] });
+const emptyState = (): ProjectStateFile => ({ version: 1, artifacts: {}, epics: [], stories: [] });
 
 export const parseProjectState = (
   raw: string,
@@ -243,6 +264,12 @@ export interface SetEpicStatusOptions extends ProjectStateOptions {
   readonly status: EpicStatus;
 }
 
+export interface SetArtifactStatusOptions extends ProjectStateOptions {
+  readonly artifact: ProjectArtifactKey;
+  readonly status: ProjectArtifactStatus;
+  readonly owner?: string;
+}
+
 export const setEpicStatus = async (
   opts: SetEpicStatusOptions
 ): Promise<Result<EpicEntry, AtlasError>> => {
@@ -263,6 +290,31 @@ export const setEpicStatus = async (
   const next: EpicEntry = { ...before, status: opts.status, lastUpdated: isoNow() };
   epics[idx] = next;
   const saveR = await saveProjectState({ ...stateR.value, epics }, opts);
+  if (!saveR.ok) return err(saveR.error);
+  return ok(next);
+};
+
+export const setArtifactStatus = async (
+  opts: SetArtifactStatusOptions
+): Promise<Result<ArtifactEntry, AtlasError>> => {
+  const stateR = await loadProjectState(opts);
+  if (!stateR.ok) return stateR;
+  const next: ArtifactEntry = {
+    ...(stateR.value.artifacts[opts.artifact] ?? { status: 'missing' as const }),
+    status: opts.status,
+    ...(opts.owner !== undefined ? { owner: opts.owner } : {}),
+    lastUpdated: isoNow()
+  };
+  const saveR = await saveProjectState(
+    {
+      ...stateR.value,
+      artifacts: {
+        ...stateR.value.artifacts,
+        [opts.artifact]: next
+      }
+    },
+    opts
+  );
   if (!saveR.ok) return err(saveR.error);
   return ok(next);
 };

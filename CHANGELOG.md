@@ -6,6 +6,29 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added — Post-1.0 Phase 11 (Customization overlays)
+- Loader precedence is now consistent across core config artifacts:
+  built-in defaults → `~/.atlas` user overrides → `<cwd>/.atlas` project
+  overrides.
+- Applied overlay merge strategy to workflows, templates, checklists,
+  and agents, so project-local definitions can override user defaults
+  without forking the whole built-in set.
+
+### Added — Post-1.0 Phase 10 (Workflow gates + activation hooks)
+- `chains.yaml` gains optional `requires` gates (project-state and
+  state-file predicates) and optional `activation` metadata
+  (`prepend`, `append`, `persistent_facts`, `on_complete`).
+- `recommendNext` now evaluates chain gates before routing and can
+  fall back to `.atlas/state.yaml` story signals (`source: state-file`).
+- Built-in workflow chains now include activation defaults and gate
+  hints for key transitions.
+- Added onboarding primitives in `@atlas/core/onboarding`:
+  `estimateOnboardCost` (preflight token/cost envelope) and
+  `writeRepoMap` (deterministic repo map artifact for map-only flow).
+- TUI adds `/onboard` wizard (arrow-key flow) with mode selection,
+  cost-reduction strategy selection, per-stage model selection, and
+  map-only execution path.
+
 ### Added — Post-1.0 Phase 9 (Project state file)
 - New `@atlas/core/state` module — typed loader/saver for
   `<cwd>/.atlas/state.yaml`, the BMAD `sprint-status.yaml` analogue.

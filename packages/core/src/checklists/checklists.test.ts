@@ -206,6 +206,28 @@ describe('checklists: loader', () => {
     if (r.ok) return;
     expect(r.error.code).toBe('CHECKLIST_NOT_FOUND');
   });
+
+  it('project overlay wins over user overlay for same checklist id', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'atlas-home-'));
+    const cwd = await mkdtemp(join(tmpdir(), 'atlas-cwd-'));
+    await mkdir(join(home, '.atlas', 'checklists'), { recursive: true });
+    await mkdir(join(cwd, '.atlas', 'checklists'), { recursive: true });
+
+    const userChecklist = sampleYaml.replace('PRD Readiness', 'User Readiness');
+    const projectChecklist = sampleYaml.replace('PRD Readiness', 'Project Readiness');
+    await writeFile(join(home, '.atlas', 'checklists', 'prd-ready.yaml'), userChecklist, 'utf8');
+    await writeFile(join(cwd, '.atlas', 'checklists', 'prd-ready.yaml'), projectChecklist, 'utf8');
+
+    const r = await loadChecklists({ cwd, home });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const found = r.value.find((c) => c.id === 'prd-ready');
+      expect(found?.title).toBe('Project Readiness');
+    }
+
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  });
 });
 
 describe('checklists: builtins', () => {

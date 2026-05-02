@@ -34,6 +34,28 @@ describe('agents', () => {
     expect(a.systemPrompt).toContain('You are Athena.');
   });
 
+  it('project overlay wins over user overlay for same agent name', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'atlas-home-'));
+    const cwd = await mkdtemp(join(tmpdir(), 'atlas-cwd-'));
+    await mkdir(join(home, '.atlas', 'agents', 'athena'), { recursive: true });
+    await mkdir(join(cwd, '.atlas', 'agents', 'athena'), { recursive: true });
+
+    const base =
+      '---\nname: athena\nrole: PM\ndescription: desc\nmode: plan\ncommands:\n  - name: write-prd\n    description: write\n---\n';
+    await writeFile(join(home, '.atlas', 'agents', 'athena', 'AGENT.md'), `${base}User body.\n`, 'utf8');
+    await writeFile(join(cwd, '.atlas', 'agents', 'athena', 'AGENT.md'), `${base}Project body.\n`, 'utf8');
+
+    const r = await loadAgents({ cwd, home });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const found = r.value.find((a) => a.name === 'athena');
+      expect(found?.systemPrompt).toContain('Project body.');
+    }
+
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  });
+
   it('buildSystemPrompt composes role + persona + skills + handoffs + interaction protocol', () => {
     const prompt = buildSystemPrompt(
       {

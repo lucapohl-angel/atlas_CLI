@@ -13,12 +13,14 @@
  */
 import { listHandoffs } from '../stories/handoff.js';
 import { detectProjectState, recommendAgent } from '../orchestrator/index.js';
+import { loadProjectState } from '../state/index.js';
 import type { AtlasError } from '../errors.js';
 import type { Result } from '../result.js';
 import { ok } from '../result.js';
-import { loadChains, lookupChain, type LoadChainsOptions } from './loader.js';
+import { loadWorkflowConfig, lookupChain, type LoadChainsOptions } from './loader.js';
+import type { ChainRequires, ChainStep, WorkflowActivation } from './types.js';
 
-export type NextSource = 'handoff' | 'chain' | 'state';
+export type NextSource = 'handoff' | 'chain' | 'state' | 'state-file';
 
 export interface NextRecommendation {
   readonly source: NextSource;
@@ -27,6 +29,7 @@ export interface NextRecommendation {
   readonly command?: string;
   readonly handoffPath?: string;
   readonly storyId?: string;
+  readonly activation?: WorkflowActivation;
 }
 
 export interface RecommendNextOptions extends LoadChainsOptions {
@@ -35,6 +38,47 @@ export interface RecommendNextOptions extends LoadChainsOptions {
   readonly lastCommand?: string;
 }
 
+const requiresSatisfied = async (
+  cwd: string,
+  requires: ChainRequires | undefined
+): Promise<boolean> => {
+  if (!requires) return true;
+  const detected = await detectProjectState(cwd);
+
+  if (requires.hasPRD !== undefined && detected.hasPRD !== requires.hasPRD) return false;
+  if (requires.hasArchitecture !== undefined && detected.hasArchitecture !== requires.hasArchitecture) return false;
+  if (requires.hasStories !== undefined && detected.hasStories !== requires.hasStories) return false;
+  if (requires.minStories !== undefined && detected.storyCount < requires.minStories) return false;
+
+  if (requires.storyStatus || (requires.artifact && requires.status)) {
+    const stateR = await loadProjectState({ cwd });
+    if (!stateR.ok) return false;
+    if (requires.storyStatus) {
+      if (!stateR.value.stories.some((s) => s.status === requires.storyStatus)) return false;
+    }
+    if (requires.artifact && requires.status) {
+      const cur = stateR.value.artifacts[requires.artifact]?.status ?? 'missing';
+      if (cur !== requires.status) return false;
+    }
+  }
+  return true;
+};
+
+const pickEligibleChainStep = async (
+  cwd: string,
+  chains: readonly ChainStep[],
+  fromAgent: string,
+  command?: string
+): Promise<ChainStep | undefined> => {
+  const exact = lookupChain(chains, fromAgent, command);
+  if (exact && (await requiresSatisfied(cwd, exact.requires))) return exact;
+  const wildcards = chains.filter((c) => c.fromAgent === fromAgent && c.command === undefined);
+  for (const step of wildcards) {
+    if (await requiresSatisfied(cwd, step.requires)) return step;
+  }
+  return undefined;
+};
+
 export const recommendNext = async (
   opts: RecommendNextOptions = {}
 ): Promise<Result<NextRecommendation, AtlasError>> => {
@@ -42,6 +86,10 @@ export const recommendNext = async (
 
   const handoffsR = await listHandoffs({ cwd });
   if (!handoffsR.ok) return handoffsR;
+  const workflowR = await loadWorkflowConfig(opts);
+  if (!workflowR.ok) return workflowR;
+  const activation = workflowR.value.activation;
+
   const oldest = handoffsR.value[0];
   if (oldest) {
     const rec: NextRecommendation = {
@@ -49,6 +97,7 @@ export const recommendNext = async (
       agent: oldest.handoff.toAgent,
       reason: `pending handoff from ${oldest.handoff.fromAgent}`,
       handoffPath: oldest.path,
+      ...(activation ? { activation } : {}),
       ...(oldest.handoff.command !== undefined ? { command: oldest.handoff.command } : {}),
       ...(oldest.handoff.storyId !== undefined ? { storyId: oldest.handoff.storyId } : {})
     };
@@ -56,21 +105,39 @@ export const recommendNext = async (
   }
 
   if (opts.fromAgent) {
-    const chainsR = await loadChains(opts);
-    if (!chainsR.ok) return chainsR;
-    const step = lookupChain(chainsR.value, opts.fromAgent, opts.lastCommand);
+    const step = await pickEligibleChainStep(
+      cwd,
+      workflowR.value.chains,
+      opts.fromAgent,
+      opts.lastCommand
+    );
     if (step) {
       const rec: NextRecommendation = {
         source: 'chain',
         agent: step.toAgent,
         reason: step.reason ?? `chain: ${step.fromAgent}${step.command ? ` ${step.command}` : ''} \u2192 ${step.toAgent}`,
+        ...(activation ? { activation } : {}),
         ...(step.nextCommand !== undefined ? { command: step.nextCommand } : {})
       };
       return ok(rec);
+    }
+
+    const stateR = await loadProjectState({ cwd });
+    if (stateR.ok) {
+      const ready = stateR.value.stories.find((s) => s.status === 'ready-for-dev');
+      if (ready) {
+        return ok({
+          source: 'state-file',
+          agent: 'hercules',
+          reason: `story ${ready.id} is ready-for-dev in .atlas/state.yaml`,
+          storyId: ready.id,
+          ...(activation ? { activation } : {})
+        });
+      }
     }
   }
 
   const state = await detectProjectState(cwd);
   const rec = recommendAgent(state);
-  return ok({ source: 'state', agent: rec.agent, reason: rec.reason });
+  return ok({ source: 'state', agent: rec.agent, reason: rec.reason, ...(activation ? { activation } : {}) });
 };

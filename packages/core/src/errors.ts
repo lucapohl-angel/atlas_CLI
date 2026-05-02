@@ -61,6 +61,9 @@ export type AtlasErrorCode =
   | 'STATE_WRITE_FAILED'
   | 'STATE_STORY_NOT_FOUND'
   | 'STATE_EPIC_NOT_FOUND'
+  // Onboarding
+  | 'ONBOARDING_SCAN_FAILED'
+  | 'ONBOARDING_WRITE_FAILED'
   // Generic
   | 'INTERNAL'
   | 'CANCELLED'

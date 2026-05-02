@@ -7,6 +7,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { extname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { BUILTIN_CHECKLISTS } from '../builtins/checklists.js';
 import { atlasError, type AtlasError } from '../errors.js';
 import { childLogger } from '../logger.js';
 import { err, ok, type Result } from '../result.js';
@@ -18,6 +19,8 @@ export const DEFAULT_CHECKLISTS_DIR: string = join(homedir(), '.atlas', 'checkli
 
 export interface LoadChecklistsOptions {
   readonly dir?: string;
+  readonly cwd?: string;
+  readonly home?: string;
 }
 
 export const parseChecklist = (
@@ -62,53 +65,75 @@ export const parseChecklist = (
 export const loadChecklists = async (
   options: LoadChecklistsOptions = {}
 ): Promise<Result<readonly Checklist[], AtlasError>> => {
-  const dir = options.dir ?? DEFAULT_CHECKLISTS_DIR;
-  let entries: string[];
+  const parseDir = async (dir: string): Promise<Checklist[]> => {
+    let entries: string[];
+    try {
+      const s = await stat(dir);
+      if (!s.isDirectory()) return [];
+      entries = await readdir(dir);
+    } catch (e) {
+      if ((e as { code?: string }).code === 'ENOENT') return [];
+      throw e;
+    }
+
+    const all: Checklist[] = [];
+    for (const entry of entries) {
+      if (!/\.ya?ml$/i.test(extname(entry))) continue;
+      const path = join(dir, entry);
+      let raw: string;
+      try {
+        raw = await readFile(path, 'utf8');
+      } catch (e) {
+        log.warn({ path, err: e }, 'skipping unreadable checklist');
+        continue;
+      }
+      const r = parseChecklist(raw, path);
+      if (!r.ok) {
+        log.warn({ path, error: r.error.message }, 'skipping invalid checklist');
+        continue;
+      }
+      all.push(r.value);
+    }
+    return all;
+  };
+
   try {
-    const s = await stat(dir);
-    if (!s.isDirectory()) return ok([]);
-    entries = await readdir(dir);
+    const layers: Checklist[][] = [];
+    if (options.dir) {
+      layers.push(await parseDir(options.dir));
+    } else {
+      const builtins: Checklist[] = [];
+      for (const c of BUILTIN_CHECKLISTS) {
+        const r = parseChecklist(c.content, `builtin:${c.relPath}`);
+        if (r.ok) builtins.push(r.value);
+      }
+      const home = options.home ?? homedir();
+      const cwd = options.cwd ?? process.cwd();
+      layers.push(builtins);
+      layers.push(await parseDir(join(home, '.atlas', 'checklists')));
+      layers.push(await parseDir(join(cwd, '.atlas', 'checklists')));
+    }
+
+    const merged = new Map<string, Checklist>();
+    for (const layer of layers) {
+      for (const c of layer) {
+        const cur = merged.get(c.id);
+        if (!cur) {
+          merged.set(c.id, c);
+          continue;
+        }
+        merged.set(c.id, { ...cur, ...c, items: c.items.length > 0 ? c.items : cur.items });
+      }
+    }
+    return ok([...merged.values()]);
   } catch (e) {
-    if ((e as { code?: string }).code === 'ENOENT') return ok([]);
+    const dir = options.dir ?? DEFAULT_CHECKLISTS_DIR;
     return err(
       atlasError('CHECKLIST_PARSE_FAILED', `failed to scan checklists dir ${dir}`, {
         cause: e
       })
     );
   }
-
-  const all: Checklist[] = [];
-  for (const entry of entries) {
-    if (!/\.ya?ml$/i.test(extname(entry))) continue;
-    const path = join(dir, entry);
-    let raw: string;
-    try {
-      raw = await readFile(path, 'utf8');
-    } catch (e) {
-      log.warn({ path, err: e }, 'skipping unreadable checklist');
-      continue;
-    }
-    const r = parseChecklist(raw, path);
-    if (!r.ok) {
-      log.warn({ path, error: r.error.message }, 'skipping invalid checklist');
-      continue;
-    }
-    all.push(r.value);
-  }
-
-  // Newest version wins; tie → lexically larger path.
-  const winners = new Map<string, Checklist>();
-  for (const c of all) {
-    const cur = winners.get(c.id);
-    if (
-      !cur ||
-      c.version > cur.version ||
-      (c.version === cur.version && c.path > cur.path)
-    ) {
-      winners.set(c.id, c);
-    }
-  }
-  return ok([...winners.values()]);
 };
 
 export const findChecklist = async (

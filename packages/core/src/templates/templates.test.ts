@@ -200,6 +200,28 @@ describe('templates: loader', () => {
     expect(r.value).toHaveLength(1);
     expect(r.value[0]!.id).toBe('prd');
   });
+
+  it('project overlay wins over user overlay for same template id', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'atlas-home-'));
+    const cwd = await mkdtemp(join(tmpdir(), 'atlas-cwd-'));
+    await mkdir(join(home, '.atlas', 'templates'), { recursive: true });
+    await mkdir(join(cwd, '.atlas', 'templates'), { recursive: true });
+
+    const userTpl = sampleYaml.replace('Product Requirements Document', 'User PRD');
+    const projectTpl = sampleYaml.replace('Product Requirements Document', 'Project PRD');
+    await writeFile(join(home, '.atlas', 'templates', 'prd.yaml'), userTpl, 'utf8');
+    await writeFile(join(cwd, '.atlas', 'templates', 'prd.yaml'), projectTpl, 'utf8');
+
+    const r = await loadTemplates({ cwd, home });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const prd = r.value.find((t) => t.id === 'prd');
+      expect(prd?.title).toBe('Project PRD');
+    }
+
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  });
 });
 
 describe('templates: builtins', () => {

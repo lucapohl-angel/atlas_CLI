@@ -6,6 +6,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { extname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { BUILTIN_TEMPLATES } from '../builtins/templates.js';
 import { atlasError, type AtlasError } from '../errors.js';
 import { childLogger } from '../logger.js';
 import { err, ok, type Result } from '../result.js';
@@ -17,6 +18,8 @@ export const DEFAULT_TEMPLATES_DIR: string = join(homedir(), '.atlas', 'template
 
 export interface LoadTemplatesOptions {
   readonly dir?: string;
+  readonly cwd?: string;
+  readonly home?: string;
 }
 
 export const parseTemplate = (
@@ -48,52 +51,74 @@ export const parseTemplate = (
 export const loadTemplates = async (
   options: LoadTemplatesOptions = {}
 ): Promise<Result<readonly Template[], AtlasError>> => {
-  const dir = options.dir ?? DEFAULT_TEMPLATES_DIR;
-  let entries: string[];
+  const parseDir = async (dir: string): Promise<Template[]> => {
+    let entries: string[];
+    try {
+      const s = await stat(dir);
+      if (!s.isDirectory()) return [];
+      entries = await readdir(dir);
+    } catch (e) {
+      if ((e as { code?: string }).code === 'ENOENT') return [];
+      throw e;
+    }
+
+    const all: Template[] = [];
+    for (const entry of entries) {
+      if (!/\.ya?ml$/i.test(extname(entry))) continue;
+      const path = join(dir, entry);
+      let raw: string;
+      try {
+        raw = await readFile(path, 'utf8');
+      } catch (e) {
+        log.warn({ path, err: e }, 'skipping unreadable template');
+        continue;
+      }
+      const r = parseTemplate(raw, path);
+      if (!r.ok) {
+        log.warn({ path, error: r.error.message }, 'skipping invalid template');
+        continue;
+      }
+      all.push(r.value);
+    }
+    return all;
+  };
+
   try {
-    const s = await stat(dir);
-    if (!s.isDirectory()) return ok([]);
-    entries = await readdir(dir);
+    const layers: Template[][] = [];
+    if (options.dir) {
+      layers.push(await parseDir(options.dir));
+    } else {
+      const builtins: Template[] = [];
+      for (const t of BUILTIN_TEMPLATES) {
+        const r = parseTemplate(t.content, `builtin:${t.relPath}`);
+        if (r.ok) builtins.push(r.value);
+      }
+      const home = options.home ?? homedir();
+      const cwd = options.cwd ?? process.cwd();
+      layers.push(builtins);
+      layers.push(await parseDir(join(home, '.atlas', 'templates')));
+      layers.push(await parseDir(join(cwd, '.atlas', 'templates')));
+    }
+
+    // Overlay merge: project wins over user wins over built-ins.
+    const merged = new Map<string, Template>();
+    for (const layer of layers) {
+      for (const t of layer) {
+        const cur = merged.get(t.id);
+        if (!cur) {
+          merged.set(t.id, t);
+          continue;
+        }
+        merged.set(t.id, { ...cur, ...t, sections: t.sections.length > 0 ? t.sections : cur.sections });
+      }
+    }
+    return ok([...merged.values()]);
   } catch (e) {
-    if ((e as { code?: string }).code === 'ENOENT') return ok([]);
+    const dir = options.dir ?? DEFAULT_TEMPLATES_DIR;
     return err(
       atlasError('TEMPLATE_PARSE_FAILED', `failed to scan templates dir ${dir}`, { cause: e })
     );
   }
-
-  const all: Template[] = [];
-  for (const entry of entries) {
-    if (!/\.ya?ml$/i.test(extname(entry))) continue;
-    const path = join(dir, entry);
-    let raw: string;
-    try {
-      raw = await readFile(path, 'utf8');
-    } catch (e) {
-      log.warn({ path, err: e }, 'skipping unreadable template');
-      continue;
-    }
-    const r = parseTemplate(raw, path);
-    if (!r.ok) {
-      log.warn({ path, error: r.error.message }, 'skipping invalid template');
-      continue;
-    }
-    all.push(r.value);
-  }
-
-  // Deduplicate by id: newest version wins; on tie, the lexically larger
-  // path wins (mirrors the skill loader). All on-disk copies remain.
-  const winners = new Map<string, Template>();
-  for (const t of all) {
-    const cur = winners.get(t.id);
-    if (
-      !cur ||
-      t.version > cur.version ||
-      (t.version === cur.version && t.path > cur.path)
-    ) {
-      winners.set(t.id, t);
-    }
-  }
-  return ok([...winners.values()]);
 };
 
 export const findTemplate = async (

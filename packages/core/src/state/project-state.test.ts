@@ -7,6 +7,7 @@ import {
   loadProjectState,
   parseProjectState,
   saveProjectState,
+  setArtifactStatus,
   setEpicStatus,
   setStoryStatus,
   summarizeProjectState,
@@ -20,7 +21,7 @@ describe('parseProjectState', () => {
     const r = parseProjectState('', '/virtual/state.yaml');
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.value).toEqual({ version: 1, epics: [], stories: [] });
+    expect(r.value).toEqual({ version: 1, artifacts: {}, epics: [], stories: [] });
   });
 
   it('parses a full state file', () => {
@@ -83,6 +84,7 @@ describe('loadProjectState', () => {
     // Use saveProjectState to write a valid file then read back.
     const init: ProjectStateFile = {
       version: 1,
+      artifacts: {},
       epics: [],
       stories: [{ id: '1-1-x', title: 'X', status: 'draft' }]
     };
@@ -158,6 +160,21 @@ describe('upsert / status transitions', () => {
     expect(state.value.stories[0]?.owner).toBe('hercules');
   });
 
+  it('setArtifactStatus upserts by key', async () => {
+    const r = await setArtifactStatus({
+      cwd: dir,
+      artifact: 'architecture',
+      status: 'ready',
+      owner: 'prometheus'
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.status).toBe('ready');
+    const state = await loadProjectState({ cwd: dir });
+    if (!state.ok) throw state.error;
+    expect(state.value.artifacts.architecture?.owner).toBe('prometheus');
+  });
+
   it('setStoryStatus transitions a known story', async () => {
     await upsertStory({
       cwd: dir,
@@ -188,6 +205,7 @@ describe('queries', () => {
   it('findFirstStoryByStatus returns earliest matching by declaration order', () => {
     const state: ProjectStateFile = {
       version: 1,
+      artifacts: {},
       epics: [],
       stories: [
         { id: '1-1-a', title: 'A', status: 'in-progress' },
@@ -202,6 +220,7 @@ describe('queries', () => {
   it('summarizeProjectState counts by status', () => {
     const state: ProjectStateFile = {
       version: 1,
+      artifacts: {},
       epics: [
         { id: 'e1', title: 'E1', status: 'in-progress' },
         { id: 'e2', title: 'E2', status: 'done' }

@@ -227,12 +227,12 @@ in scope (multi-agent SDD pipeline) but diverges deliberately:
 | Checklist engine | Typed runner with per-item severity + verdict | Inert markdown read by LLM |
 | Spec adherence | DESIGN.md byte-spec test (`@google/design.md`) | None equivalent |
 | Templates | Handlebars-over-YAML, single render | Section-bound `<template-output>` directives, streaming |
-| Customization | Built-in only (Phase 11 will add overlays) | base → team → user TOML deep-merge |
-| Status file | Handoff queue (Phase 9 will add state file) | `sprint-status.yaml` shared mutable state |
+| Customization | Built-in → user (`~/.atlas`) → project (`<cwd>/.atlas`) overlays | base → team → user TOML deep-merge |
+| Status file | Handoff queue + `.atlas/state.yaml` story/artifact status | `sprint-status.yaml` shared mutable state |
 
-Phases 8–11 close the remaining gaps (sectioned templates, project state
-file, workflow gates + activation hooks, customization overlays) without
-adopting BMAD's XML-in-markdown DSL or its multi-runtime requirement.
+Phases 8–11 now cover sectioned templates, project state, workflow
+gates/activation metadata, and overlay customization without adopting
+BMAD's XML-in-markdown DSL or its multi-runtime requirement.
 
 ## Phase plan
 

@@ -5,6 +5,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import matter from 'gray-matter';
+import { BUILTIN_AGENTS } from '../builtins/index.js';
 import { atlasError, type AtlasError } from '../errors.js';
 import { childLogger } from '../logger.js';
 import { err, ok, type Result } from '../result.js';
@@ -19,42 +20,90 @@ export const DEFAULT_AGENTS_DIR: string = join(homedir(), '.atlas', 'agents');
 
 export interface LoadAgentsOptions {
   readonly dir?: string;
+  readonly cwd?: string;
+  readonly home?: string;
 }
+
+const parseAgentMarkdown = (raw: string, path: string): Agent | undefined => {
+  const parsed = matter(raw);
+  const fm = AgentFrontmatterSchema.safeParse(parsed.data);
+  if (!fm.success) {
+    log.warn({ agentPath: path, issues: fm.error.issues }, 'skipping agent: invalid frontmatter');
+    return undefined;
+  }
+  return { ...fm.data, path, systemPrompt: parsed.content.trim() };
+};
 
 export const loadAgents = async (
   options: LoadAgentsOptions = {}
 ): Promise<Result<readonly Agent[], AtlasError>> => {
-  const dir = options.dir ?? DEFAULT_AGENTS_DIR;
-  let entries: string[];
+  const parseDir = async (dir: string): Promise<Agent[]> => {
+    let entries: string[];
+    try {
+      const s = await stat(dir);
+      if (!s.isDirectory()) return [];
+      entries = await readdir(dir);
+    } catch (e) {
+      if ((e as { code?: string }).code === 'ENOENT') return [];
+      throw e;
+    }
+
+    const agents: Agent[] = [];
+    for (const entry of entries) {
+      const agentPath = join(dir, entry, 'AGENT.md');
+      try {
+        const raw = await readFile(agentPath, 'utf8');
+        const parsed = parseAgentMarkdown(raw, agentPath);
+        if (parsed) agents.push(parsed);
+      } catch (e) {
+        if ((e as { code?: string }).code === 'ENOENT') continue;
+        log.warn({ agentPath, err: e }, 'skipping unreadable AGENT.md');
+      }
+    }
+    return agents;
+  };
+
   try {
-    const s = await stat(dir);
-    if (!s.isDirectory()) return ok([]);
-    entries = await readdir(dir);
+    const layers: Agent[][] = [];
+    if (options.dir) {
+      layers.push(await parseDir(options.dir));
+    } else {
+      const builtins: Agent[] = [];
+      for (const a of BUILTIN_AGENTS) {
+        const parsed = parseAgentMarkdown(a.content, `builtin:${a.relPath}`);
+        if (parsed) builtins.push(parsed);
+      }
+      const home = options.home ?? homedir();
+      const cwd = options.cwd ?? process.cwd();
+      layers.push(builtins);
+      layers.push(await parseDir(join(home, '.atlas', 'agents')));
+      layers.push(await parseDir(join(cwd, '.atlas', 'agents')));
+    }
+
+    const merged = new Map<string, Agent>();
+    for (const layer of layers) {
+      for (const a of layer) {
+        const cur = merged.get(a.name);
+        if (!cur) {
+          merged.set(a.name, a);
+          continue;
+        }
+        merged.set(a.name, {
+          ...cur,
+          ...a,
+          handoffs: a.handoffs.length > 0 ? a.handoffs : cur.handoffs,
+          commands: a.commands.length > 0 ? a.commands : cur.commands,
+          systemPrompt: a.systemPrompt.length > 0 ? a.systemPrompt : cur.systemPrompt
+        });
+      }
+    }
+    return ok([...merged.values()]);
   } catch (e) {
-    if ((e as { code?: string }).code === 'ENOENT') return ok([]);
+    const dir = options.dir ?? DEFAULT_AGENTS_DIR;
     return err(
       atlasError('AGENT_PARSE_FAILED', `failed to scan agents dir ${dir}`, { cause: e })
     );
   }
-
-  const agents: Agent[] = [];
-  for (const entry of entries) {
-    const agentPath = join(dir, entry, 'AGENT.md');
-    try {
-      const raw = await readFile(agentPath, 'utf8');
-      const parsed = matter(raw);
-      const fm = AgentFrontmatterSchema.safeParse(parsed.data);
-      if (!fm.success) {
-        log.warn({ agentPath, issues: fm.error.issues }, 'skipping agent: invalid frontmatter');
-        continue;
-      }
-      agents.push({ ...fm.data, path: agentPath, systemPrompt: parsed.content.trim() });
-    } catch (e) {
-      if ((e as { code?: string }).code === 'ENOENT') continue;
-      log.warn({ agentPath, err: e }, 'skipping unreadable AGENT.md');
-    }
-  }
-  return ok(agents);
 };
 
 export class AgentRegistry {

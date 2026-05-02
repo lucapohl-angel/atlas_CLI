@@ -3740,8 +3740,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     let n = wrappedLineCount(item.text ?? '');
     if (item.kind === 'assistant' || item.kind === 'thinking') n += 1;
     // user/assistant are wrapped in a bordered box: top border + author
-    // label + bottom border + marginTop = 4 extra rows.
-    if (item.kind === 'user' || item.kind === 'assistant') n += 4;
+    // label + bottom border = 3 extra rows.
+    if (item.kind === 'user' || item.kind === 'assistant') n += 3;
     return n;
   };
   // Slice an item's text to keep only the LAST `keepRows` rendered rows.
@@ -5978,7 +5978,6 @@ const TranscriptRow = ({
       return (
         <Box
           flexDirection="column"
-          marginTop={1}
           borderStyle="round"
           borderColor="cyan"
           paddingX={1}
@@ -5995,7 +5994,6 @@ const TranscriptRow = ({
       return (
         <Box
           flexDirection="column"
-          marginTop={1}
           borderStyle="round"
           borderColor={color}
           paddingX={1}
@@ -6488,8 +6486,8 @@ const ActivitySidebar = ({
   } | null;
   contextWindow: number;
 }): React.JSX.Element => {
-  // Cap to last 18 entries so a chatty turn doesn't blow out the column.
-  const items = activity.slice(-18);
+  // Most recent first; cap to 8 so the panel stays scannable.
+  const items = activity.slice(-8).reverse();
   const used = usage?.tokens ?? 0;
   return (
     <Box
@@ -6502,7 +6500,31 @@ const ActivitySidebar = ({
       borderColor="gray"
       paddingX={1}
     >
-      <Box>
+      {/* Top block: tokens + cost — aligns with header bar visually. */}
+      <Box flexDirection="column">
+        <Box>
+          <ContextBar used={used} total={contextWindow} />
+        </Box>
+        <Box>
+          {usage && (
+            <Text>
+              <Text color="white">{usage.rounds}</Text>
+              <Text color="gray" dimColor> rd</Text>
+            </Text>
+          )}
+          {cost !== undefined && (
+            <>
+              <Text color="gray" dimColor>{usage ? '  ·  ' : ''}cost </Text>
+              <Text color="green" bold>
+                {formatCost(cost)}
+              </Text>
+            </>
+          )}
+        </Box>
+      </Box>
+
+      {/* Divider + activity header. */}
+      <Box marginTop={1}>
         <Text color="cyan" bold>
           activity
         </Text>
@@ -6513,6 +6535,8 @@ const ActivitySidebar = ({
           </Text>
         )}
       </Box>
+
+      {/* Activity log: most-recent first, 8 entries max. */}
       <Box flexDirection="column" flexGrow={1}>
         {items.length === 0 && !thinking && (
           <Text color="gray" dimColor italic>
@@ -6531,11 +6555,14 @@ const ActivitySidebar = ({
                   ? 'red'
                   : 'gray';
           const elapsed = e.elapsedMs !== undefined ? ` (${formatElapsed(e.elapsedMs)})` : '';
+          // Inner content width = sidebar width(46) - border(2) - paddingX(2)
+          // - icon(1) - gap(1) - elapsed length. Give it explicit width so
+          // Ink lays the label out left-to-right and only wraps if needed.
+          const labelWidth = Math.max(10, 46 - 2 - 2 - 1 - 1 - elapsed.length);
           return (
             <Box key={e.id} flexDirection="row">
-              <Text color={color}>{icon}</Text>
-              <Text> </Text>
-              <Box flexGrow={1} flexShrink={1}>
+              <Text color={color}>{icon} </Text>
+              <Box width={labelWidth}>
                 <Text wrap="truncate-end">{e.label}</Text>
               </Box>
               {elapsed && (
@@ -6547,7 +6574,7 @@ const ActivitySidebar = ({
           );
         })}
         {thinking && (
-          <Box marginTop={1} flexDirection="column">
+          <Box marginTop={1} flexDirection="column" width={42}>
             <Text color="magenta" dimColor>
               ◦ thinking
             </Text>
@@ -6555,28 +6582,6 @@ const ActivitySidebar = ({
               {thinking}
             </Text>
           </Box>
-        )}
-      </Box>
-      <Box flexDirection="column" marginTop={1}>
-        <Text color="gray" dimColor>
-          ──────────────────────────────────────────
-        </Text>
-        <Box>
-          <ContextBar used={used} total={contextWindow} />
-        </Box>
-        {usage && (
-          <Text>
-            <Text color="white">{usage.rounds}</Text>
-            <Text color="gray" dimColor> rounds this turn</Text>
-          </Text>
-        )}
-        {cost !== undefined && (
-          <Text>
-            <Text color="gray" dimColor>cost </Text>
-            <Text color="green" bold>
-              {formatCost(cost)}
-            </Text>
-          </Text>
         )}
       </Box>
     </Box>

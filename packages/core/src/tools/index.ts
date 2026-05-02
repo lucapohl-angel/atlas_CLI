@@ -16,6 +16,14 @@ import { webFetchTool } from './web-fetch.js';
 import { webSearchTool } from './web-search.js';
 import { browserTool } from './browser/index.js';
 import { delegateTool } from './delegate.js';
+import {
+  contextNoteTool,
+  contextShowTool,
+  contextFinalizeTool,
+  planWriteTool,
+  planShowTool,
+  planCheckTool
+} from './workflow.js';
 import { ToolRegistry } from './registry.js';
 
 export * from './types.js';
@@ -45,6 +53,14 @@ export { closeBrowser, browserAvailable } from './browser/session.js';
 export { delegateTool } from './delegate.js';
 export { createDelegateRunner } from './delegate-runner.js';
 export type { CreateDelegateRunnerOptions } from './delegate-runner.js';
+export {
+  contextNoteTool,
+  contextShowTool,
+  contextFinalizeTool,
+  planWriteTool,
+  planShowTool,
+  planCheckTool
+} from './workflow.js';
 
 /** Returns a fresh registry pre-populated with the built-in tools. */
 export const builtinToolRegistry = (): ToolRegistry => {
@@ -68,5 +84,11 @@ export const builtinToolRegistry = (): ToolRegistry => {
   r.register(webSearchTool);
   r.register(browserTool);
   r.register(delegateTool);
+  r.register(contextNoteTool);
+  r.register(contextShowTool);
+  r.register(contextFinalizeTool);
+  r.register(planWriteTool);
+  r.register(planShowTool);
+  r.register(planCheckTool);
   return r;
 };

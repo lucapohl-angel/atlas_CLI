@@ -31,3 +31,22 @@ export {
   type UpdateTaskPatch
 } from './state.js';
 export { readSignals } from './signals.js';
+export {
+  CONTEXT_FILENAME,
+  CONTEXT_DRAFT_FILENAME,
+  appendContextEntry,
+  finalizeContext,
+  readContext,
+  type ContextEntry
+} from './context.js';
+export {
+  PLAN_FILENAME,
+  serializePlan,
+  parsePlan,
+  checkPlan,
+  writePlan,
+  readPlan,
+  type Plan,
+  type PlanTask,
+  type PlanIssue
+} from './plan.js';

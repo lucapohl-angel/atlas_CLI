@@ -3866,8 +3866,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   const showSidebar = cols >= 110;
   const leftWidth = cols - (showSidebar ? 46 : 0);
   return (
-    <Box flexDirection="row" width={cols} height={rows} backgroundColor="#0b1416">
-      <Box flexDirection="column" width={leftWidth} flexShrink={0} backgroundColor="#0b1416">
+    <Box flexDirection="row" width={cols} height={rows}>
+      <Box flexDirection="column" width={leftWidth} flexShrink={0}>
       <Header
         agent={activeAgent}
         model={model}
@@ -3882,11 +3882,12 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         gitBranch={gitBranch}
         width={leftWidth}
       />
-      {transcript.length === 0 && overlay.kind !== 'setup' && <Splash defaultModel={model} />}
-      <Box flexDirection="column" flexGrow={1} width={leftWidth} backgroundColor="#0b1416">
+      {transcript.length === 0 && overlay.kind !== 'setup' && overlay.kind === 'none' && <Splash defaultModel={model} />}
+      {overlay.kind === 'none' && (
+      <Box flexDirection="column" flexGrow={1} width={leftWidth}>
         {hiddenCount > 0 && (
-          <Text color="gray" backgroundColor="#0b1416" dimColor>
-            {`↑ ${hiddenCount} earlier message${hiddenCount === 1 ? '' : 's'} (PgUp to scroll)`.padEnd(leftWidth, ' ')}
+          <Text color="gray" dimColor>
+            ↑ {hiddenCount} earlier message{hiddenCount === 1 ? '' : 's'} (PgUp to scroll)
           </Text>
         )}
         {visibleTranscript.map((item, i) => {
@@ -3897,14 +3898,15 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           return <TranscriptRow key={item.key} item={item} live={isLive} width={leftWidth} />;
         })}
         {newerHidden > 0 && (
-          <Text color="gray" backgroundColor="#0b1416" dimColor>
-            {`↓ ${newerHidden} more line${newerHidden === 1 ? '' : 's'} below (PgDn / End)`.padEnd(leftWidth, ' ')}
+          <Text color="gray" dimColor>
+            ↓ {newerHidden} more line{newerHidden === 1 ? '' : 's'} below (PgDn / End)
           </Text>
         )}
-        <Box flexGrow={1} width={leftWidth} backgroundColor="#0b1416" />
+        <Box flexGrow={1} width={leftWidth} />
       </Box>
+      )}
       {overlay.kind === 'agent-picker' && (
-        <OverlayBox title="Switch agent (framework specialists are routed automatically)">
+        <OverlayBox title="Switch agent (framework specialists are routed automatically)" width={leftWidth}>
           <SelectInput
             items={switchableAgents.map((a) => ({
               key: a.name,
@@ -3919,6 +3921,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       )}
       {overlay.kind === 'model-picker' && (
         <OverlayBox
+          width={leftWidth}
           title={
             overlay.purpose === 'compact'
               ? 'Pick summarizer model for /compact (↑/↓, ↵ select)'
@@ -5517,7 +5520,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         </Box>
       )}
       {overlay.kind === 'none' && (
-        <Box width={leftWidth} borderStyle="round" borderColor={streaming ? 'yellow' : '#2a4a52'} paddingX={1} backgroundColor="#0f1c1f">
+        <Box width={leftWidth} borderStyle="round" borderColor={streaming ? 'yellow' : '#2a4a52'} paddingX={1}>
           {streaming ? (
             <Box>
               <Text color="yellow">
@@ -5603,7 +5606,7 @@ const Header = ({
   void cost;
   void contextWindow;
   return (
-    <Box width={width} borderStyle="round" borderColor="#2a4a52" paddingX={1} marginBottom={0} backgroundColor="#0f1c1f">
+    <Box width={width} borderStyle="round" borderColor="#2a4a52" paddingX={1} marginBottom={0}>
       <Box flexGrow={1}>
         <Text color={colorForAgent(agent.name)} bold>
           {agent.role}
@@ -6026,7 +6029,6 @@ const TranscriptRow = ({
           borderStyle="round"
           borderColor="cyan"
           paddingX={1}
-          backgroundColor="#0f1c1f"
         >
           <Text color="cyan" bold>
             user
@@ -6044,7 +6046,6 @@ const TranscriptRow = ({
           borderStyle="round"
           borderColor={color}
           paddingX={1}
-          backgroundColor="#0f1c1f"
         >
           <Box>
             <Text color={color} bold>
@@ -6108,12 +6109,21 @@ const TranscriptRow = ({
 
 const OverlayBox = ({
   title,
-  children
+  children,
+  width
 }: {
   title: string;
   children: React.ReactNode;
+  width?: number;
 }): React.JSX.Element => (
-  <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginY={1}>
+  <Box
+    {...(width !== undefined ? { width } : {})}
+    flexDirection="column"
+    borderStyle="round"
+    borderColor="cyan"
+    paddingX={1}
+    marginY={1}
+  >
     <Text bold color="cyan">
       {title}
     </Text>
@@ -6548,7 +6558,6 @@ const ActivitySidebar = ({
       borderStyle="round"
       borderColor="#2a4a52"
       paddingX={1}
-      backgroundColor="#0d181b"
     >
       {/* Top block: tokens + cost — aligns with header bar visually. */}
       <Box flexDirection="column">

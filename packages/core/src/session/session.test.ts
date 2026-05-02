@@ -74,4 +74,27 @@ describe('SessionStore', () => {
     const removeMissing = await store.remove(id);
     expect(removeMissing.ok).toBe(false);
   });
+
+  it('renames (title) a session and exposes title in list()', async () => {
+    const store = new SessionStore(dir);
+    const created = await store.create({ cwd: '/x' });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const id = created.value.id;
+
+    const renamed = await store.rename(id, '  My great session  ');
+    expect(renamed.ok).toBe(true);
+    if (!renamed.ok) return;
+    expect(renamed.value.title).toBe('My great session');
+
+    const list = await store.list();
+    expect(list.ok).toBe(true);
+    if (!list.ok) return;
+    expect(list.value[0]?.title).toBe('My great session');
+
+    const cleared = await store.rename(id, '   ');
+    expect(cleared.ok).toBe(true);
+    if (!cleared.ok) return;
+    expect(cleared.value.title).toBeUndefined();
+  });
 });

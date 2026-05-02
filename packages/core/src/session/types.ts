@@ -16,6 +16,8 @@ export interface SessionRecord {
   readonly id: string;
   readonly createdAt: string;
   updatedAt: string;
+  /** Optional human-friendly label, settable from the TUI session picker. */
+  title?: string;
   agent?: string;
   model?: string;
   cwd: string;

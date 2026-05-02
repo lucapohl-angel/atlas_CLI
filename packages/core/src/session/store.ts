@@ -76,17 +76,17 @@ export class SessionStore {
     }
   }
 
-  async list(): Promise<Result<readonly { id: string; updatedAt: string }[], AtlasError>> {
+  async list(): Promise<Result<readonly { id: string; updatedAt: string; title?: string }[], AtlasError>> {
     try {
       const s = await stat(this.dir).catch(() => null);
       if (!s) return ok([]);
       const entries = await readdir(this.dir);
-      const out: { id: string; updatedAt: string }[] = [];
+      const out: { id: string; updatedAt: string; title?: string }[] = [];
       for (const e of entries) {
         if (!e.endsWith('.json')) continue;
         try {
           const r = JSON.parse(await readFile(join(this.dir, e), 'utf8')) as SessionRecord;
-          out.push({ id: r.id, updatedAt: r.updatedAt });
+          out.push({ id: r.id, updatedAt: r.updatedAt, ...(r.title ? { title: r.title } : {}) });
         } catch {
           // skip corrupt
         }
@@ -113,6 +113,20 @@ export class SessionStore {
       const code = (e as { code?: string }).code === 'ENOENT' ? 'SESSION_NOT_FOUND' : 'SESSION_CORRUPT';
       return err(atlasError(code, `failed to delete session ${id}`, { cause: e }));
     }
+  }
+
+  async rename(id: string, title: string): Promise<Result<SessionRecord, AtlasError>> {
+    const loaded = await this.load(id);
+    if (!loaded.ok) return err(loaded.error);
+    const trimmed = title.trim();
+    if (trimmed.length === 0) {
+      delete loaded.value.title;
+    } else {
+      loaded.value.title = trimmed.slice(0, 200);
+    }
+    const w = await this.write(loaded.value);
+    if (!w.ok) return err(w.error);
+    return ok(loaded.value);
   }
 }
 

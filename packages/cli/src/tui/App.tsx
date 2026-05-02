@@ -292,10 +292,17 @@ type Overlay =
     }
   | {
       readonly kind: 'session-picker';
-      readonly entries: readonly { id: string; updatedAt: string }[];
-      readonly selectedId?: string;
-      readonly confirmDelete?: boolean;
+      readonly entries: readonly { id: string; updatedAt: string; title?: string }[];
+      /** 0-based cursor position into entries. */
+      readonly cursor: number;
+      /** Set of marked session ids (multi-select via Space / `a`). */
+      readonly marked: readonly string[];
+      readonly mode: 'list' | 'rename' | 'confirm-delete' | 'confirm-delete-all';
+      /** When mode === 'rename': the id being renamed and the draft text. */
+      readonly renameId?: string;
+      readonly renameDraft?: string;
       readonly statusLine?: string;
+      readonly busy?: boolean;
     }
   | {
       /** `/tools` browser: every built-in tool with a colored status dot. */
@@ -1469,7 +1476,13 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 pushItem('system', 'No saved sessions yet.');
                 return;
               }
-              setOverlay({ kind: 'session-picker', entries: list.value.slice(0, 50) });
+              setOverlay({
+                kind: 'session-picker',
+                entries: list.value.slice(0, 50),
+                cursor: 0,
+                marked: [],
+                mode: 'list'
+              });
             })();
             return;
           }
@@ -2154,6 +2167,174 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         return;
       }
       // Swallow everything else so it doesn't reach the input field.
+      return;
+    }
+    // /sessions overlay: full keyboard control. Multi-select, rename,
+    // delete (one / many / all). The renderer below merely visualises
+    // overlay state — every keystroke is handled here.
+    if (overlay.kind === 'session-picker') {
+      if (key.escape) {
+        if (overlay.mode === 'list') closeOverlay();
+        else setOverlay({ ...overlay, mode: 'list' });
+        return;
+      }
+      if (overlay.mode === 'rename') {
+        // TextInput in the renderer drives this mode.
+        return;
+      }
+      const refreshList = (statusLine?: string): void => {
+        if (!props.sessionStore) return;
+        void (async () => {
+          const list = await props.sessionStore!.list();
+          if (!list.ok) {
+            closeOverlay();
+            pushItem('error', `failed to list sessions: ${list.error.message}`);
+            return;
+          }
+          if (list.value.length === 0) {
+            closeOverlay();
+            pushItem('system', statusLine ?? 'No saved sessions yet.');
+            return;
+          }
+          setOverlay({
+            kind: 'session-picker',
+            entries: list.value.slice(0, 50),
+            cursor: 0,
+            marked: [],
+            mode: 'list',
+            ...(statusLine ? { statusLine } : {})
+          });
+        })();
+      };
+      const deleteIds = (ids: readonly string[], summary: (ok: number, fail: number) => string): void => {
+        if (!props.sessionStore || ids.length === 0) {
+          setOverlay({ ...overlay, mode: 'list' });
+          return;
+        }
+        void (async () => {
+          let okCount = 0;
+          let errCount = 0;
+          for (const id of ids) {
+            const r = await props.sessionStore!.remove(id);
+            if (r.ok) okCount++;
+            else errCount++;
+          }
+          refreshList(summary(okCount, errCount));
+        })();
+      };
+      if (overlay.mode === 'confirm-delete') {
+        if (key.return || char === 'y' || char === 'Y') {
+          const ids =
+            overlay.marked.length > 0
+              ? [...overlay.marked]
+              : overlay.entries[overlay.cursor]
+                ? [overlay.entries[overlay.cursor]!.id]
+                : [];
+          deleteIds(ids, (ok, fail) =>
+            fail === 0
+              ? `Deleted ${ok} session${ok === 1 ? '' : 's'}.`
+              : `Deleted ${ok}; ${fail} failed.`
+          );
+          return;
+        }
+        if (char === 'n' || char === 'N') {
+          setOverlay({ ...overlay, mode: 'list' });
+          return;
+        }
+        return;
+      }
+      if (overlay.mode === 'confirm-delete-all') {
+        if (key.return || char === 'y' || char === 'Y') {
+          const ids = overlay.entries.map((e) => e.id);
+          deleteIds(ids, (ok, fail) =>
+            fail === 0
+              ? `Deleted all ${ok} session${ok === 1 ? '' : 's'}.`
+              : `Deleted ${ok}; ${fail} failed.`
+          );
+          return;
+        }
+        if (char === 'n' || char === 'N') {
+          setOverlay({ ...overlay, mode: 'list' });
+          return;
+        }
+        return;
+      }
+      // mode === 'list'
+      if (key.upArrow) {
+        setOverlay({ ...overlay, cursor: Math.max(0, overlay.cursor - 1) });
+        return;
+      }
+      if (key.downArrow) {
+        setOverlay({
+          ...overlay,
+          cursor: Math.min(overlay.entries.length - 1, overlay.cursor + 1)
+        });
+        return;
+      }
+      if (char === ' ') {
+        const cur = overlay.entries[overlay.cursor];
+        if (!cur) return;
+        const isMarked = overlay.marked.includes(cur.id);
+        const next = isMarked
+          ? overlay.marked.filter((m) => m !== cur.id)
+          : [...overlay.marked, cur.id];
+        setOverlay({ ...overlay, marked: next });
+        return;
+      }
+      if (char === 'a' || char === 'A') {
+        const allIds = overlay.entries.map((e) => e.id);
+        const allMarked = overlay.marked.length === allIds.length;
+        setOverlay({ ...overlay, marked: allMarked ? [] : allIds });
+        return;
+      }
+      if (char === 'd') {
+        setOverlay({ ...overlay, mode: 'confirm-delete' });
+        return;
+      }
+      if (char === 'D') {
+        setOverlay({ ...overlay, mode: 'confirm-delete-all' });
+        return;
+      }
+      if (char === 'r' || char === 'R') {
+        const cur = overlay.entries[overlay.cursor];
+        if (!cur) return;
+        setOverlay({
+          ...overlay,
+          mode: 'rename',
+          renameId: cur.id,
+          renameDraft: cur.title ?? ''
+        });
+        return;
+      }
+      if (key.return) {
+        if (!props.sessionStore) {
+          closeOverlay();
+          return;
+        }
+        const cur = overlay.entries[overlay.cursor];
+        if (!cur) return;
+        const id = cur.id;
+        void (async () => {
+          const r = await props.sessionStore!.load(id);
+          closeOverlay();
+          if (!r.ok) {
+            pushItem('error', `failed to load session ${id}: ${r.error.message}`);
+            return;
+          }
+          sessionRef.current = r.value;
+          messagesRef.current = [...r.value.messages];
+          setSessionId(r.value.id);
+          hydrateTranscriptFromMessages(
+            r.value.messages,
+            r.value.agent ?? activeAgent.name
+          );
+          pushItem(
+            'system',
+            `Resumed session ${r.value.id} (${r.value.messages.length} messages).`
+          );
+        })();
+        return;
+      }
       return;
     }
     // /config → "Ship: auto-merge" submenu. Number keys set the default
@@ -4202,144 +4383,114 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       )}
       {overlay.kind === 'session-picker' && (
         <OverlayBox title="Sessions">
-          {!overlay.selectedId && (
-            <>
-              <SelectInput
-                items={overlay.entries.map((e) => ({
-                  key: e.id,
-                  label: `${e.id}    ${new Date(e.updatedAt).toLocaleString()}`,
-                  value: e.id
-                }))}
-                onSelect={(item: { value: string }) => {
-                  setOverlay((o) =>
-                    o.kind === 'session-picker' ? { ...o, selectedId: item.value } : o
-                  );
-                }}
-              />
-              <Box marginTop={1}>
-                <Text color="gray">
-                  {overlay.entries.length} session{overlay.entries.length === 1 ? '' : 's'}. Enter to choose, Esc to cancel.
-                </Text>
-              </Box>
-            </>
-          )}
-          {overlay.selectedId && !overlay.confirmDelete && (
+          {overlay.mode === 'list' && (
             <Box flexDirection="column">
-              <Box marginBottom={1}>
-                <Text color="cyan" bold>{overlay.selectedId}</Text>
-              </Box>
-              <SelectInput
-                items={[
-                  { key: 'open', label: 'Open (resume)', value: 'open' },
-                  { key: 'delete', label: 'Delete…', value: 'delete' },
-                  { key: 'back', label: 'Back to list', value: 'back' }
-                ]}
-                onSelect={(item: { value: string }) => {
-                  if (item.value === 'back') {
-                    setOverlay((o) =>
-                      o.kind === 'session-picker'
-                        ? { kind: 'session-picker', entries: o.entries }
-                        : o
-                    );
-                    return;
-                  }
-                  if (item.value === 'delete') {
-                    setOverlay((o) =>
-                      o.kind === 'session-picker' ? { ...o, confirmDelete: true } : o
-                    );
-                    return;
-                  }
-                  if (item.value === 'open') {
-                    if (!props.sessionStore || !overlay.selectedId) {
-                      closeOverlay();
-                      return;
-                    }
-                    const id = overlay.selectedId;
-                    void (async () => {
-                      const r = await props.sessionStore!.load(id);
-                      closeOverlay();
-                      if (!r.ok) {
-                        pushItem('error', `failed to load session ${id}: ${r.error.message}`);
-                        return;
-                      }
-                      sessionRef.current = r.value;
-                      messagesRef.current = [...r.value.messages];
-                      setSessionId(r.value.id);
-                      hydrateTranscriptFromMessages(
-                        r.value.messages,
-                        r.value.agent ?? activeAgent.name
-                      );
-                      pushItem(
-                        'system',
-                        `Resumed session ${r.value.id} (${r.value.messages.length} messages).`
-                      );
-                    })();
-                  }
-                }}
-              />
-              <Box marginTop={1}>
-                <Text color="gray">Esc to cancel.</Text>
+              {overlay.entries.map((e, i) => {
+                const marked = overlay.marked.includes(e.id);
+                const isCursor = i === overlay.cursor;
+                const ts = new Date(e.updatedAt).toLocaleString();
+                const display = e.title ? `${e.title}  (${e.id})` : e.id;
+                return (
+                  <Box key={e.id}>
+                    <Text color={isCursor ? 'cyan' : 'gray'}>{isCursor ? '›' : ' '}</Text>
+                    <Text color={marked ? 'yellow' : 'gray'}>{` ${marked ? '◉' : '○'} `}</Text>
+                    <Text color={isCursor ? 'cyan' : undefined} bold={isCursor}>
+                      {display}
+                    </Text>
+                    <Text color="gray">{`  ${ts}`}</Text>
+                  </Box>
+                );
+              })}
+              <Box marginTop={1} flexDirection="column">
+                <Text color="gray">
+                  ↑/↓ move · Space mark · a all · Enter open · r rename · d delete · D delete-all · Esc cancel
+                </Text>
+                {overlay.marked.length > 0 && (
+                  <Text color="yellow">{overlay.marked.length} marked</Text>
+                )}
+                {overlay.statusLine && <Text color="green">{overlay.statusLine}</Text>}
               </Box>
             </Box>
           )}
-          {overlay.selectedId && overlay.confirmDelete && (
+          {overlay.mode === 'confirm-delete' && (
+            <Box flexDirection="column">
+              <Text color="red">
+                {overlay.marked.length > 0
+                  ? `Delete ${overlay.marked.length} marked session${overlay.marked.length === 1 ? '' : 's'}? This cannot be undone.`
+                  : `Delete ${overlay.entries[overlay.cursor]?.id ?? ''}? This cannot be undone.`}
+              </Text>
+              <Box marginTop={1}>
+                <Text color="gray">Enter / y to confirm · n / Esc to cancel</Text>
+              </Box>
+            </Box>
+          )}
+          {overlay.mode === 'confirm-delete-all' && (
+            <Box flexDirection="column">
+              <Text color="red" bold>
+                Delete ALL {overlay.entries.length} session
+                {overlay.entries.length === 1 ? '' : 's'}? This cannot be undone.
+              </Text>
+              <Box marginTop={1}>
+                <Text color="gray">Enter / y to confirm · n / Esc to cancel</Text>
+              </Box>
+            </Box>
+          )}
+          {overlay.mode === 'rename' && overlay.renameId && (
             <Box flexDirection="column">
               <Box marginBottom={1}>
-                <Text color="red">Delete session </Text>
-                <Text color="cyan" bold>{overlay.selectedId}</Text>
-                <Text color="red">? This cannot be undone.</Text>
+                <Text color="gray">Renaming </Text>
+                <Text color="cyan" bold>
+                  {overlay.renameId}
+                </Text>
               </Box>
-              <SelectInput
-                items={[
-                  { key: 'no', label: 'Cancel', value: 'no' },
-                  { key: 'yes', label: 'Yes, delete', value: 'yes' }
-                ]}
-                onSelect={(item: { value: string }) => {
-                  if (item.value === 'no') {
+              <Text color="gray">New title (empty clears):</Text>
+              <TextInput
+                value={overlay.renameDraft ?? ''}
+                onChange={(v: string) =>
+                  setOverlay((o) =>
+                    o.kind === 'session-picker' ? { ...o, renameDraft: v } : o
+                  )
+                }
+                onSubmit={(v: string) => {
+                  if (!props.sessionStore || !overlay.renameId) {
                     setOverlay((o) =>
-                      o.kind === 'session-picker' ? { ...o, confirmDelete: false } : o
+                      o.kind === 'session-picker' ? { ...o, mode: 'list' } : o
                     );
                     return;
                   }
-                  if (!props.sessionStore || !overlay.selectedId) {
-                    closeOverlay();
-                    return;
-                  }
-                  const id = overlay.selectedId;
+                  const id = overlay.renameId;
+                  const keepCursor = overlay.cursor;
                   void (async () => {
-                    const r = await props.sessionStore!.remove(id);
+                    const r = await props.sessionStore!.rename(id, v);
                     if (!r.ok) {
-                      closeOverlay();
-                      pushItem('error', `failed to delete session ${id}: ${r.error.message}`);
+                      pushItem('error', `failed to rename ${id}: ${r.error.message}`);
+                      setOverlay((o) =>
+                        o.kind === 'session-picker' ? { ...o, mode: 'list' } : o
+                      );
                       return;
                     }
-                    const refreshed = await props.sessionStore!.list();
-                    if (!refreshed.ok) {
-                      closeOverlay();
-                      pushItem('system', `Deleted session ${id}.`);
-                      return;
+                    const list = await props.sessionStore!.list();
+                    if (list.ok) {
+                      const entries = list.value.slice(0, 50);
+                      setOverlay({
+                        kind: 'session-picker',
+                        entries,
+                        cursor: Math.min(keepCursor, Math.max(0, entries.length - 1)),
+                        marked: [],
+                        mode: 'list',
+                        statusLine: `Renamed to "${r.value.title ?? '(no title)'}".`
+                      });
+                    } else {
+                      setOverlay((o) =>
+                        o.kind === 'session-picker' ? { ...o, mode: 'list' } : o
+                      );
                     }
-                    if (refreshed.value.length === 0) {
-                      closeOverlay();
-                      pushItem('system', `Deleted session ${id}. No saved sessions remain.`);
-                      return;
-                    }
-                    setOverlay({
-                      kind: 'session-picker',
-                      entries: refreshed.value.slice(0, 50),
-                      statusLine: `Deleted ${id}.`
-                    });
                   })();
                 }}
               />
               <Box marginTop={1}>
-                <Text color="gray">Esc to cancel.</Text>
+                <Text color="gray">Enter to save · Esc to cancel</Text>
               </Box>
-            </Box>
-          )}
-          {overlay.statusLine && !overlay.selectedId && (
-            <Box marginTop={1}>
-              <Text color="green">{overlay.statusLine}</Text>
             </Box>
           )}
         </OverlayBox>

@@ -556,6 +556,12 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   const turnRoundsRef = useRef(0);
   const turnToolErrorsRef = useRef(0);
   const lastUserMessageRef = useRef('');
+  // Key threshold at the start of the current turn. Used at turn_end to
+  // collapse ephemeral thinking + verbose tool-call items into a single dim
+  // summary line, keeping the history clean while still showing tool names.
+  const turnStartKeyRef = useRef(0);
+  // Tool names called in the current turn (for the summary line).
+  const turnToolNamesRef = useRef<string[]>([]);
   /** Inflight reflection abort controller (Esc cancels it). */
   const reflectAbortRef = useRef<AbortController | null>(null);
   /** Soft toggle: user can disable auto-learn via `/learn off`. Defaults on. */
@@ -1649,6 +1655,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       const ac = new AbortController();
       abortRef.current = ac;
       setStreaming(true);
+      // Snapshot the transcript key so turn_end can identify which
+      // thinking/tool items belong to this turn.
+      turnStartKeyRef.current = transcriptKey.current;
+      turnToolNamesRef.current = [];
 
       // Auto-compaction: if enabled and the running token count is above
       // the configured threshold, ask a model (the active one by default,
@@ -1848,6 +1858,39 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               deltaTimerRef.current = null;
             }
             flushDelta();
+            // Collapse thinking + tool-call items from this turn into a
+            // single dim summary line. This keeps message history clean
+            // while still showing which tools ran and how many.
+            const turnStartKey = turnStartKeyRef.current;
+            const toolNames = turnToolNamesRef.current;
+            setTranscript((prev) => {
+              // Partition: items before this turn vs items added during it.
+              const before = prev.filter(
+                (it) => Number(it.key.slice(1)) <= turnStartKey
+              );
+              const thisTurn = prev.filter(
+                (it) => Number(it.key.slice(1)) > turnStartKey
+              );
+              // Separate assistant (keep as-is) from ephemeral items.
+              const assistantItems = thisTurn.filter((it) => it.kind === 'assistant');
+              const errorItems = thisTurn.filter((it) => it.kind === 'error');
+              if (toolNames.length === 0 && errorItems.length === 0) {
+                // Nothing to summarise — just drop thinking rows.
+                return [...before, ...assistantItems];
+              }
+              // Build a compact one-liner: ↳ tool_a · tool_b
+              const toolLine = toolNames.join(' · ');
+              const errSuffix = errorItems.length > 0
+                ? `  ✗ ${errorItems.length} error${errorItems.length > 1 ? 's' : ''}`
+                : '';
+              transcriptKey.current += 1;
+              const summary: TranscriptItem = {
+                key: `t${transcriptKey.current}`,
+                kind: 'tool',
+                text: `↳ ${toolLine || '0 tools'}${errSuffix}`
+              };
+              return [...before, summary, ...assistantItems];
+            });
             // Detect a structured question in the assistant's last message.
             const found = tryExtractInteraction(assistantBuffer);
             if (found) {

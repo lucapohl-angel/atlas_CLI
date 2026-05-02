@@ -15,12 +15,19 @@ export const toolToSpec = (tool: Tool<unknown>): ToolSpec => {
     $refStrategy: 'none'
   }) as Record<string, unknown>;
   // Strip top-level $schema — some providers reject it.
-  const { $schema: _drop, ...rest } = schema;
+  const { $schema: _drop, ...rawSchema } = schema;
   void _drop;
+  // OpenAI/Codex requires parameters.type === "object". Zod discriminated
+  // unions emit a top-level oneOf without a type field — providers reject
+  // this with HTTP 400 ("type: None"). Inject type:'object' when absent so
+  // the wire schema is always valid. The model still uses oneOf/anyOf for
+  // generation, so this does not change call semantics.
+  const parameters: Record<string, unknown> =
+    'type' in rawSchema ? rawSchema : { type: 'object', ...rawSchema };
   return {
     name: tool.name,
     description: composeToolDescription(tool),
-    parameters: rest
+    parameters
   };
 };
 

@@ -442,7 +442,8 @@ export const shipSummaryTool: Tool<z.infer<typeof ShipSummaryInput>> = {
     const reviewTokens = Math.ceil(totalDiffChars / 4);
     lines.push('');
     lines.push('How do you want to ship? Pick one:');
-    lines.push(`  [a] auto    — merge every branch into ${baseGuess} (--no-ff). ~free, no diffs sent to model. Aborts on conflict (earlier merges stay).`);
+    lines.push(`  [a] auto    — merge every branch into ${baseGuess} (--no-ff). ~free, no diffs sent to model.`);
+    lines.push('              On conflict, choose autoResolve: abort (default) | ours | theirs | ai.');
     lines.push(`  [r] review  — read each diff and surface bugs/risks before you decide. ~${reviewTokens.toLocaleString()} tokens of input.`);
     lines.push('  [m] manual  — print git commands, gh CLI commands, and GitHub web compare URLs. ~free.');
     return ok({
@@ -460,7 +461,15 @@ export const shipSummaryTool: Tool<z.infer<typeof ShipSummaryInput>> = {
 const ShipApplyInput = z.object({
   mode: z.enum(['auto', 'review', 'manual']),
   base: z.string().optional(),
-  branches: z.array(z.string()).optional()
+  branches: z.array(z.string()).optional(),
+  /**
+   * What to do when an auto-merge hits a conflict (mode='auto' only):
+   *   - 'abort'  (default) — run `git merge --abort` and stop with a recipe.
+   *   - 'ours'   — re-merge with `-X ours`: keep base's version of conflicting hunks. Pure git, deterministic, never fails.
+   *   - 'theirs' — re-merge with `-X theirs`: keep the branch's version. Pure git, deterministic, never fails.
+   *   - 'ai'     — spawn a child agent (via ctx.delegateRun) inside the conflicted state to read each conflicted file, resolve the markers, and stage. Then commit. Falls back to 'abort' if no delegateRun is wired.
+   */
+  autoResolve: z.enum(['abort', 'ours', 'theirs', 'ai']).optional()
 });
 
 const truncateDiff = (s: string, limit = 4000): string =>
@@ -590,8 +599,11 @@ export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
         )
       );
     }
+    const autoResolve = input.autoResolve ?? 'abort';
     // Token cost of merge-commit messages we'll emit. Auto mode itself sends
-    // no diff back to the model — only the per-branch result lines below.
+    // no diff back to the model — only the per-branch result lines below
+    // (and possibly an AI-resolve agent transcript, but that's accounted
+    // for separately by the host).
     let estCost = 0;
     const checkout = await runGit(['checkout', base], ctx.cwd, ctx.signal);
     if (checkout.code !== 0) {
@@ -602,47 +614,115 @@ export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
         )
       );
     }
-    const lines: string[] = [`ship_apply auto (base: ${base}):`];
+    const lines: string[] = [
+      `ship_apply auto (base: ${base}, autoResolve: ${autoResolve}):`
+    ];
     const merged: string[] = [];
+    const autoResolved: { branch: string; how: string }[] = [];
     for (const branch of branches) {
+      // For deterministic strategies, pass -X up front so git resolves
+      // automatically without ever entering a conflicted state.
+      const strategyArgs =
+        autoResolve === 'ours'
+          ? ['-X', 'ours']
+          : autoResolve === 'theirs'
+            ? ['-X', 'theirs']
+            : [];
       const merge = await runGit(
-        ['merge', '--no-ff', '-m', `merge ${branch}`, branch],
+        ['merge', '--no-ff', ...strategyArgs, '-m', `merge ${branch}`, branch],
         ctx.cwd,
         ctx.signal
       );
       if (merge.code === 0) {
         merged.push(branch);
-        const line = `  ✓ merged ${branch}`;
-        lines.push(line);
-        estCost += estTokens(line);
+        if (strategyArgs.length > 0) {
+          // -X may or may not have actually resolved a conflict — surface
+          // both cases the same way (it's still a successful merge).
+          autoResolved.push({ branch, how: `-X ${autoResolve}` });
+          lines.push(`  ✓ merged ${branch}  (strategy: -X ${autoResolve})`);
+        } else {
+          lines.push(`  ✓ merged ${branch}`);
+        }
+        estCost += estTokens(lines[lines.length - 1] ?? '');
         continue;
       }
-      // Conflict path. Capture conflict files BEFORE aborting (the abort
-      // resets the index, after which `--diff-filter=U` returns nothing).
-      // `git merge --abort` then rolls back the in-progress merge (resets
-      // working tree + index back to base HEAD). Already-merged earlier
-      // branches stay merged on base — that's a deliberate choice: partial
-      // progress is preserved, the user fixes the one bad branch, then
-      // re-runs ship_apply with --branches to land the rest.
-      const conflicts = await runGit(
+      // Conflict path. Capture conflict files BEFORE doing anything that
+      // touches the index (--diff-filter=U is empty after merge --abort).
+      const conflictsRaw = await runGit(
         ['diff', '--name-only', '--diff-filter=U'],
         ctx.cwd,
         ctx.signal
       );
+      const conflictFiles = conflictsRaw.stdout
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      // ai mode: spawn a child agent to fix the conflicts in-place.
+      if (autoResolve === 'ai' && ctx.delegateRun) {
+        const goal =
+          `You are resolving git merge conflicts on branch ${base} after merging ${branch}.\n\n` +
+          `Conflicted files (each contains <<<<<<<, =======, >>>>>>> markers):\n` +
+          conflictFiles.map((f) => `  - ${f}`).join('\n') +
+          `\n\nFor every file: open it, decide the correct combined content (keeping ` +
+          `intent from BOTH sides where they're complementary, picking the right side ` +
+          `where they truly conflict), remove all conflict markers, save it, then run ` +
+          `\`git add <file>\` for that file. When all files are staged with no conflict ` +
+          `markers anywhere, stop. Do NOT run \`git commit\` — that happens automatically. ` +
+          `Do NOT run \`git merge --abort\` under any circumstances.`;
+        const child = await ctx.delegateRun({
+          goal,
+          ...(ctx.signal ? { signal: ctx.signal } : {})
+        });
+        // Verify the agent actually fixed the conflicts.
+        const recheck = await runGit(
+          ['diff', '--name-only', '--diff-filter=U'],
+          ctx.cwd,
+          ctx.signal
+        );
+        const stillConflicted = recheck.stdout.trim().length > 0;
+        if (child.ok && !stillConflicted) {
+          // Stage anything the agent forgot, then commit.
+          await runGit(['add', '-A'], ctx.cwd, ctx.signal);
+          const commit = await runGit(
+            ['commit', '--no-verify', '-m', `merge ${branch} (ai-resolved)`],
+            ctx.cwd,
+            ctx.signal
+          );
+          if (commit.code === 0) {
+            merged.push(branch);
+            autoResolved.push({ branch, how: 'ai' });
+            lines.push(`  ✓ merged ${branch}  (strategy: ai-resolved)`);
+            lines.push(`      agent: ${child.summary.split('\n')[0]?.slice(0, 120) ?? ''}`);
+            estCost += estTokens(child.summary);
+            continue;
+          }
+          lines.push(`  ✗ ${branch}: ai resolved conflicts but commit failed: ${commit.stderr.trim().split('\n')[0] ?? ''}`);
+        } else {
+          lines.push(
+            `  ✗ ${branch}: ai resolution failed (${stillConflicted ? `${recheck.stdout.trim().split('\n').length} file(s) still have conflict markers` : child.error ?? 'agent did not finish'})`
+          );
+        }
+        // Fall through to abort+report as if autoResolve='abort'.
+      } else if (autoResolve === 'ai' && !ctx.delegateRun) {
+        lines.push('  ! autoResolve=ai requested but host did not wire ctx.delegateRun — falling back to abort');
+      }
+
+      // abort path (also reached after an ai-resolution failure).
       const abort = await runGit(['merge', '--abort'], ctx.cwd, ctx.signal);
       lines.push(`  ✗ ${branch}: merge conflict — aborted (base unchanged for this branch)`);
       if (abort.code !== 0) {
         lines.push(`    abort failed: ${abort.stderr.trim().split('\n')[0] ?? 'unknown'}`);
       }
-      const conflictFiles = conflicts.stdout
-        .split('\n')
-        .map((s) => s.trim())
-        .filter(Boolean);
       if (conflictFiles.length > 0) {
-        lines.push(`    conflicting files: ${conflictFiles.slice(0, 8).join(', ')}${conflictFiles.length > 8 ? ` (+${conflictFiles.length - 8} more)` : ''}`);
+        lines.push(
+          `    conflicting files: ${conflictFiles.slice(0, 8).join(', ')}${conflictFiles.length > 8 ? ` (+${conflictFiles.length - 8} more)` : ''}`
+        );
       }
       lines.push('');
-      lines.push(`State: ${merged.length}/${branches.length} branches landed on ${base}, ${branch} did NOT merge, ${branches.length - merged.length - 1} branch(es) not yet attempted.`);
+      lines.push(
+        `State: ${merged.length}/${branches.length} branches landed on ${base}, ${branch} did NOT merge, ${branches.length - merged.length - 1} branch(es) not yet attempted.`
+      );
       lines.push('');
       lines.push(`To resolve manually:`);
       lines.push(`  1. git merge --no-ff ${branch}`);
@@ -655,22 +735,32 @@ export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
         );
       }
       lines.push('');
-      lines.push(`Or to back out everything you just merged: git reset --hard origin/${base} (DANGEROUS — only if origin/${base} is up to date).`);
+      lines.push(
+        'Or retry with a different strategy: ship_apply mode=auto autoResolve=ours|theirs|ai'
+      );
+      lines.push(
+        `Or back out everything you just merged: git reset --hard origin/${base} (DANGEROUS — only if origin/${base} is up to date).`
+      );
       return ok({
         type: 'ok',
         summary: lines.join('\n'),
-        data: { merged, failedAt: branch, conflictFiles, base, remaining }
+        data: { merged, failedAt: branch, conflictFiles, base, remaining, autoResolved }
       } satisfies ToolOk);
     }
     lines.push('');
     lines.push(
       `All ${merged.length} branch(es) merged into ${base}. Push when ready: git push origin ${base}`
     );
-    lines.push(`(~${estCost.toLocaleString()} tokens of output, no diffs sent to model)`);
+    if (autoResolved.length > 0) {
+      lines.push(
+        `Auto-resolved: ${autoResolved.map((r) => `${r.branch} (${r.how})`).join(', ')} — review carefully before pushing.`
+      );
+    }
+    lines.push(`(~${estCost.toLocaleString()} tokens of output)`);
     return ok({
       type: 'ok',
       summary: lines.join('\n'),
-      data: { merged, base }
+      data: { merged, base, autoResolved }
     } satisfies ToolOk);
   }
 };

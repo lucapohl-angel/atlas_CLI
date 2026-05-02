@@ -357,4 +357,134 @@ describe('tools/workflow: ship_summary + ship_apply', () => {
     const baseShaAfter = (await sh('git', ['rev-parse', 'main'], { cwd })).stdout.trim();
     expect(baseShaAfter).not.toBe(baseShaBefore);
   });
+
+  it('ship_apply mode=auto autoResolve=ours keeps the base side on conflict', async () => {
+    // Make atlas/02-second touch shared.txt with conflicting content.
+    const { writeFile, readFile } = await import('node:fs/promises');
+    await writeFile(join(cwd, 'shared.txt'), 'main version\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'main: shared'], { cwd });
+    await sh('git', ['checkout', 'atlas/02-second'], { cwd });
+    await writeFile(join(cwd, 'shared.txt'), 'branch version\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'second: shared'], { cwd });
+    await sh('git', ['checkout', 'main'], { cwd });
+
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'auto', autoResolve: 'ours' }, ctx);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).toMatch(/merged atlas\/01-first/);
+      expect(r.value.summary).toMatch(/merged atlas\/02-second.*-X ours/);
+      expect(r.value.summary).toMatch(/Auto-resolved/);
+    }
+    // shared.txt should still be the main version (ours).
+    const content = await readFile(join(cwd, 'shared.txt'), 'utf8');
+    expect(content).toBe('main version\n');
+  });
+
+  it('ship_apply mode=auto autoResolve=theirs keeps the branch side on conflict', async () => {
+    const { writeFile, readFile } = await import('node:fs/promises');
+    await writeFile(join(cwd, 'shared.txt'), 'main version\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'main: shared'], { cwd });
+    await sh('git', ['checkout', 'atlas/02-second'], { cwd });
+    await writeFile(join(cwd, 'shared.txt'), 'branch version\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'second: shared'], { cwd });
+    await sh('git', ['checkout', 'main'], { cwd });
+
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'auto', autoResolve: 'theirs' }, ctx);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).toMatch(/merged atlas\/02-second.*-X theirs/);
+    }
+    const content = await readFile(join(cwd, 'shared.txt'), 'utf8');
+    expect(content).toBe('branch version\n');
+  });
+
+  it('ship_apply mode=auto autoResolve=ai uses delegateRun to fix conflicts then commits', async () => {
+    const { writeFile, readFile } = await import('node:fs/promises');
+    await writeFile(join(cwd, 'shared.txt'), 'main\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'main: shared'], { cwd });
+    await sh('git', ['checkout', 'atlas/02-second'], { cwd });
+    await writeFile(join(cwd, 'shared.txt'), 'branch\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'second: shared'], { cwd });
+    await sh('git', ['checkout', 'main'], { cwd });
+
+    // Fake delegateRun: pretend the agent picked a hybrid resolution.
+    const ctxAi: ToolContext = {
+      ...ctx,
+      delegateRun: async () => {
+        await writeFile(join(cwd, 'shared.txt'), 'main + branch (ai resolved)\n', 'utf8');
+        await sh('git', ['add', 'shared.txt'], { cwd });
+        return { ok: true, summary: 'resolved 1 file', rounds: 1 };
+      }
+    };
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'auto', autoResolve: 'ai' }, ctxAi);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).toMatch(/merged atlas\/02-second.*ai-resolved/);
+      expect(r.value.summary).toMatch(/agent: resolved 1 file/);
+    }
+    const content = await readFile(join(cwd, 'shared.txt'), 'utf8');
+    expect(content).toBe('main + branch (ai resolved)\n');
+    // Commit should exist with the ai-resolved marker.
+    const log = (await sh('git', ['log', '-1', '--pretty=%s'], { cwd })).stdout.trim();
+    expect(log).toMatch(/ai-resolved/);
+  });
+
+  it('ship_apply mode=auto autoResolve=ai aborts cleanly when the agent leaves markers behind', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(cwd, 'shared.txt'), 'main\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'main: shared'], { cwd });
+    await sh('git', ['checkout', 'atlas/02-second'], { cwd });
+    await writeFile(join(cwd, 'shared.txt'), 'branch\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'second: shared'], { cwd });
+    await sh('git', ['checkout', 'main'], { cwd });
+
+    // Fake delegateRun that does nothing — leaves conflict markers in place.
+    const ctxBad: ToolContext = {
+      ...ctx,
+      delegateRun: async () => ({ ok: true, summary: 'gave up', rounds: 0 })
+    };
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'auto', autoResolve: 'ai' }, ctxBad);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).toMatch(/ai resolution failed/);
+      expect(r.value.summary).toMatch(/aborted/);
+    }
+    // Working tree must be clean after the failed AI resolve + abort.
+    const status = (
+      await sh('git', ['status', '--porcelain', '--untracked-files=no'], { cwd })
+    ).stdout.trim();
+    expect(status).toBe('');
+  });
+
+  it('ship_apply mode=auto autoResolve=ai falls back to abort when delegateRun is not wired', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(cwd, 'shared.txt'), 'main\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'main: shared'], { cwd });
+    await sh('git', ['checkout', 'atlas/02-second'], { cwd });
+    await writeFile(join(cwd, 'shared.txt'), 'branch\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'second: shared'], { cwd });
+    await sh('git', ['checkout', 'main'], { cwd });
+
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'auto', autoResolve: 'ai' }, ctx);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).toMatch(/host did not wire ctx\.delegateRun/);
+      expect(r.value.summary).toMatch(/aborted/);
+    }
+  });
 });

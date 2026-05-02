@@ -405,25 +405,13 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
   // window like opencode/htop/vim. We restore the original screen on
   // exit so the user's prompt history is preserved.
   const useAltScreen = process.stdout.isTTY === true && !process.env['ATLAS_NO_ALTSCREEN'];
-  // Override the terminal's *default* background color via OSC 11 so any
-  // cell Ink doesn't explicitly paint (row gaps, panel margins, the
-  // column gap next to the sidebar) is filled by the terminal itself
-  // with our atlas-teal canvas instead of the user's terminal bg.
-  // OSC 111 resets it on exit. Gated by env in case a terminal misbehaves.
-  const usePaintedBg =
-    process.stdout.isTTY === true && !process.env['ATLAS_NO_PAINT_BG'];
-  const ATLAS_BG = '#0b1416';
   if (useAltScreen) {
     // \x1b[?1049h = enter alternate screen, \x1b[2J = clear, \x1b[H = home cursor
     process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H');
   }
-  if (usePaintedBg) {
-    process.stdout.write(`\x1b]11;${ATLAS_BG}\x07`);
-  }
 
   const restore = (): void => {
     mcpStartup.stopAll();
-    if (usePaintedBg) process.stdout.write('\x1b]111\x07');
     if (useAltScreen) process.stdout.write('\x1b[?1049l');
   };
   process.on('exit', restore);

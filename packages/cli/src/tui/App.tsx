@@ -543,11 +543,11 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   // what's happening behind the scenes.
   type ActivityEntry = {
     readonly id: string;
-    readonly label: string;
-    readonly status: 'running' | 'ok' | 'err' | 'info';
     readonly kind: 'tool' | 'thinking';
-    /** Tool name (only set when kind==='tool'). Used to pick an icon. */
     readonly toolName?: string;
+    readonly args?: string;
+    readonly text?: string;
+    readonly status: 'running' | 'ok' | 'err' | 'info';
     readonly elapsedMs?: number;
   };
   const [activity, setActivity] = useState<readonly ActivityEntry[]>([]);
@@ -1830,20 +1830,18 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             break;
           case 'tool_call_start': {
             toolStartedAt.set(ev.call.id, Date.now());
-            const label = prettyToolLabel(ev.call.name, ev.call.arguments);
+            const args = summarizeToolArgs(ev.call.name, ev.call.arguments);
             setActivity((prev) => {
-              const next = [
+              const next: readonly ActivityEntry[] = [
                 ...prev,
                 {
                   id: ev.call.id,
-                  label,
-                  status: 'running' as const,
                   kind: 'tool' as const,
-                  toolName: ev.call.name
+                  toolName: ev.call.name,
+                  args,
+                  status: 'running' as const
                 }
               ];
-              // Cap session-long history so memory stays bounded; sidebar
-              // only renders the last 8 anyway.
               return next.length > 50 ? next.slice(-50) : next;
             });
             break;
@@ -1869,7 +1867,12 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               setActivity((prev) =>
                 prev.map((e) =>
                   e.id === ev.call.id
-                    ? { ...e, label: `${e.label} — ${errCode}`, status: 'err' as const, ...(elapsedMs !== undefined ? { elapsedMs } : {}) }
+                    ? {
+                        ...e,
+                        args: e.args ? `${e.args} — ${errCode}` : errCode,
+                        status: 'err' as const,
+                        ...(elapsedMs !== undefined ? { elapsedMs } : {})
+                      }
                     : e
                 )
               );
@@ -1905,15 +1908,15 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             setThinkingLine((prev) => {
               if (prev && prev.trim().length > 0) {
                 const summary =
-                  prev.length > 120 ? `${prev.slice(0, 117).trim()}…` : prev.trim();
+                  prev.length > 200 ? `${prev.slice(0, 197).trim()}…` : prev.trim();
                 setActivity((items) => {
-                  const next = [
+                  const next: readonly ActivityEntry[] = [
                     ...items,
                     {
                       id: `think-${Date.now()}`,
-                      label: summary,
-                      status: 'info' as const,
-                      kind: 'thinking' as const
+                      kind: 'thinking' as const,
+                      text: summary,
+                      status: 'info' as const
                     }
                   ];
                   return next.length > 50 ? next.slice(-50) : next;
@@ -3864,10 +3867,9 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   const newerHidden = Math.max(0, offset);
 
   const showSidebar = cols >= 110;
-  const leftWidth = cols - (showSidebar ? 46 : 0);
   return (
     <Box flexDirection="row" width={cols} height={rows}>
-      <Box flexDirection="column" width={leftWidth} flexShrink={0}>
+      <Box flexDirection="column" flexGrow={1}>
       <Header
         agent={activeAgent}
         model={model}
@@ -3880,11 +3882,9 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         sessionId={sessionId}
         phase={activeTask?.phase ?? 'idle'}
         gitBranch={gitBranch}
-        width={leftWidth}
       />
-      {transcript.length === 0 && overlay.kind !== 'setup' && overlay.kind === 'none' && <Splash defaultModel={model} />}
-      {overlay.kind === 'none' && (
-      <Box flexDirection="column" flexGrow={1} width={leftWidth}>
+      {transcript.length === 0 && overlay.kind !== 'setup' && <Splash defaultModel={model} />}
+      <Box flexDirection="column" flexGrow={1}>
         {hiddenCount > 0 && (
           <Text color="gray" dimColor>
             ↑ {hiddenCount} earlier message{hiddenCount === 1 ? '' : 's'} (PgUp to scroll)
@@ -3895,18 +3895,16 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             streaming &&
             i === visibleTranscript.length - 1 &&
             item.kind === 'assistant';
-          return <TranscriptRow key={item.key} item={item} live={isLive} width={leftWidth} />;
+          return <TranscriptRow key={item.key} item={item} live={isLive} />;
         })}
         {newerHidden > 0 && (
           <Text color="gray" dimColor>
             ↓ {newerHidden} more line{newerHidden === 1 ? '' : 's'} below (PgDn / End)
           </Text>
         )}
-        <Box flexGrow={1} width={leftWidth} />
       </Box>
-      )}
       {overlay.kind === 'agent-picker' && (
-        <OverlayBox title="Switch agent (framework specialists are routed automatically)" width={leftWidth}>
+        <OverlayBox title="Switch agent (framework specialists are routed automatically)">
           <SelectInput
             items={switchableAgents.map((a) => ({
               key: a.name,
@@ -3921,7 +3919,6 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       )}
       {overlay.kind === 'model-picker' && (
         <OverlayBox
-          width={leftWidth}
           title={
             overlay.purpose === 'compact'
               ? 'Pick summarizer model for /compact (↑/↓, ↵ select)'
@@ -5520,7 +5517,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         </Box>
       )}
       {overlay.kind === 'none' && (
-        <Box width={leftWidth} borderStyle="round" borderColor={streaming ? 'yellow' : '#2a4a52'} paddingX={1}>
+        <Box borderStyle="round" borderColor={streaming ? 'yellow' : 'gray'} paddingX={1}>
           {streaming ? (
             <Box>
               <Text color="yellow">
@@ -5578,8 +5575,7 @@ const Header = ({
   contextWindow,
   sessionId,
   phase,
-  gitBranch,
-  width
+  gitBranch
 }: {
   agent: Agent;
   model: string;
@@ -5597,7 +5593,6 @@ const Header = ({
   sessionId: string | null;
   phase: Phase;
   gitBranch: string | null;
-  width: number;
 }): React.JSX.Element => {
   const cost =
     usage && usage.promptTokens !== undefined && usage.completionTokens !== undefined
@@ -5606,7 +5601,7 @@ const Header = ({
   void cost;
   void contextWindow;
   return (
-    <Box width={width} borderStyle="round" borderColor="#2a4a52" paddingX={1} marginBottom={0}>
+    <Box borderStyle="round" borderColor="gray" paddingX={1} marginBottom={0}>
       <Box flexGrow={1}>
         <Text color={colorForAgent(agent.name)} bold>
           {agent.role}
@@ -6013,18 +6008,15 @@ const renderInlineMarkdown = (line: string): React.ReactNode[] => {
 
 const TranscriptRow = ({
   item,
-  live = false,
-  width
+  live = false
 }: {
   item: TranscriptItem;
   live?: boolean;
-  width: number;
 }): React.JSX.Element => {
   switch (item.kind) {
     case 'user':
       return (
         <Box
-          width={width}
           flexDirection="column"
           borderStyle="round"
           borderColor="cyan"
@@ -6041,7 +6033,6 @@ const TranscriptRow = ({
       const color = colorForAgent(author);
       return (
         <Box
-          width={width}
           flexDirection="column"
           borderStyle="round"
           borderColor={color}
@@ -6109,21 +6100,12 @@ const TranscriptRow = ({
 
 const OverlayBox = ({
   title,
-  children,
-  width
+  children
 }: {
   title: string;
   children: React.ReactNode;
-  width?: number;
 }): React.JSX.Element => (
-  <Box
-    {...(width !== undefined ? { width } : {})}
-    flexDirection="column"
-    borderStyle="round"
-    borderColor="cyan"
-    paddingX={1}
-    marginY={1}
-  >
+  <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginY={1}>
     <Text bold color="cyan">
       {title}
     </Text>
@@ -6529,10 +6511,11 @@ const ActivitySidebar = ({
 }: {
   activity: readonly {
     readonly id: string;
-    readonly label: string;
-    readonly status: 'running' | 'ok' | 'err' | 'info';
     readonly kind: 'tool' | 'thinking';
     readonly toolName?: string;
+    readonly args?: string;
+    readonly text?: string;
+    readonly status: 'running' | 'ok' | 'err' | 'info';
     readonly elapsedMs?: number;
   }[];
   thinking: string | null;
@@ -6555,8 +6538,9 @@ const ActivitySidebar = ({
       width={46}
       flexGrow={0}
       flexShrink={0}
+      marginLeft={1}
       borderStyle="round"
-      borderColor="#2a4a52"
+      borderColor="gray"
       paddingX={1}
     >
       {/* Top block: tokens + cost — aligns with header bar visually. */}
@@ -6603,40 +6587,52 @@ const ActivitySidebar = ({
           </Text>
         )}
         {items.map((e) => {
-          // Pick icon + color per kind (tool vs thinking) and per status.
-          const isThinking = e.kind === 'thinking';
-          const icon = isThinking
-            ? '✦'
-            : e.status === 'running'
-              ? '◌'
-              : e.status === 'ok'
-                ? iconForTool(e.toolName ?? '')
-                : e.status === 'err'
-                  ? '✗'
-                  : '·';
-          const color = isThinking
-            ? 'magenta'
-            : e.status === 'running'
+          const elapsed = e.elapsedMs !== undefined ? ` ${formatElapsed(e.elapsedMs)}` : '';
+          // Inner content width = sidebar width(46) - border(2) - paddingX(2)
+          // - status(1) - gap(1) - tool-icon(1) - gap(1) - elapsed length.
+          const innerWidth = Math.max(8, 46 - 2 - 2 - 1 - 1 - 1 - 1 - elapsed.length);
+
+          if (e.kind === 'thinking') {
+            return (
+              <Box key={e.id} flexDirection="row">
+                <Text color="magenta">◇ </Text>
+                <Box width={innerWidth + 2}>
+                  <Text color="magenta" dimColor wrap="truncate-end">
+                    {e.text ?? ''}
+                  </Text>
+                </Box>
+              </Box>
+            );
+          }
+
+          // Tool entry.
+          const statusIcon =
+            e.status === 'running' ? '◌' : e.status === 'ok' ? '✓' : e.status === 'err' ? '✗' : '·';
+          const statusColor =
+            e.status === 'running'
               ? 'yellow'
               : e.status === 'ok'
-                ? 'cyan'
+                ? 'green'
                 : e.status === 'err'
                   ? 'red'
                   : 'gray';
-          const labelColor = isThinking ? 'magenta' : 'white';
-          const elapsed = e.elapsedMs !== undefined ? ` (${formatElapsed(e.elapsedMs)})` : '';
-          // Inner content width = sidebar width(46) - border(2) - paddingX(2)
-          // - icon(1) - gap(1) - elapsed length. Give it explicit width so
-          // Ink lays the label out left-to-right and only wraps if needed.
-          const labelWidth = Math.max(10, 46 - 2 - 2 - 1 - 1 - elapsed.length);
+          const meta = toolIconFor(e.toolName ?? '');
+          const display = formatToolDisplay(e.toolName ?? '', e.args ?? '');
           return (
             <Box key={e.id} flexDirection="row">
-              <Text color={color} bold={!isThinking && e.status === 'ok'}>
-                {icon}{' '}
-              </Text>
-              <Box width={labelWidth}>
-                <Text color={labelColor} dimColor={isThinking} italic={isThinking} wrap="truncate-end">
-                  {e.label}
+              <Text color={statusColor}>{statusIcon} </Text>
+              <Text color={meta.color}>{meta.icon} </Text>
+              <Box width={innerWidth}>
+                <Text wrap="truncate-end">
+                  <Text color={meta.color} bold>
+                    {display.name}
+                  </Text>
+                  {display.detail && (
+                    <Text color="gray" dimColor>
+                      {' '}
+                      {display.detail}
+                    </Text>
+                  )}
                 </Text>
               </Box>
               {elapsed && (
@@ -6649,8 +6645,8 @@ const ActivitySidebar = ({
         })}
         {thinking && (
           <Box marginTop={1} flexDirection="column" width={42}>
-            <Text color="magenta" bold>
-              ✦ thinking
+            <Text color="magenta" dimColor>
+              ◦ thinking
             </Text>
             <Text color="magenta" dimColor italic wrap="wrap">
               {thinking}
@@ -6713,64 +6709,115 @@ const truncate = (s: string, n: number): string => (s.length <= n ? s : `${s.sli
 const truncateArgs = (s: string): string => truncate(s.replace(/\s+/g, ' '), 80);
 
 /**
- * VS-Code-ish unicode icon for a tool. Falls back to `▸` for unknown
- * tools. Kept to single-cell glyphs (no emoji) so column math stays
- * predictable across terminals.
+ * Pick a VS Code-style icon + color for a tool name. Falls back to a
+ * neutral wrench. Recognises common Atlas tools and the MCP namespace
+ * prefix (e.g. `mcp__github__add_comment_to_pending_review`).
  */
-const iconForTool = (name: string): string => {
-  const n = name.toLowerCase();
-  if (n.includes('write') || n.includes('edit') || n.includes('apply')) return '✎';
-  if (n.includes('read') || n.includes('view') || n.includes('cat')) return '▤';
-  if (n.includes('terminal') || n.includes('bash') || n.includes('shell') || n.includes('exec'))
-    return '▶';
-  if (n === 'git' || n === 'gh' || n.includes('commit') || n.includes('branch')) return '⎇';
-  if (n.includes('web') || n.includes('browser') || n.includes('fetch') || n.includes('search'))
-    return '⌬';
-  if (n.includes('delegate') || n.includes('subagent') || n.includes('handoff')) return '⇄';
-  if (n.includes('todo') || n.includes('checklist') || n.includes('plan')) return '☑';
-  if (n.includes('template') || n.includes('render')) return '❑';
-  if (n.includes('clarify') || n.includes('ask')) return '?';
-  if (n.startsWith('mcp__') || n.includes('mcp_')) return '⚙';
-  return '▸';
+const toolIconFor = (
+  rawName: string
+): { readonly icon: string; readonly color: string } => {
+  const name = rawName.toLowerCase();
+  // MCP-imported tools share a prefix like `mcp__<server>__<op>`.
+  if (name.startsWith('mcp__')) {
+    if (name.includes('github')) return { icon: '⎇', color: 'magenta' };
+    if (name.includes('git')) return { icon: '⎇', color: 'yellow' };
+    return { icon: '⌬', color: 'magenta' };
+  }
+  if (name === 'read_file' || name === 'read') return { icon: '◉', color: 'cyan' };
+  if (name === 'write_file' || name === 'write') return { icon: '✎', color: 'green' };
+  if (name === 'edit' || name === 'apply_patch' || name === 'patch')
+    return { icon: '✎', color: 'green' };
+  if (name === 'terminal' || name === 'bash' || name === 'shell')
+    return { icon: '❯', color: 'yellow' };
+  if (name === 'git') return { icon: '⎇', color: 'yellow' };
+  if (name === 'gh' || name === 'github') return { icon: '⎇', color: 'magenta' };
+  if (name === 'web_fetch' || name === 'web_search' || name === 'browser')
+    return { icon: '✦', color: 'blue' };
+  if (name === 'todo' || name.includes('checklist')) return { icon: '☑', color: 'cyan' };
+  if (name === 'delegate' || name === 'agent' || name.startsWith('agent_'))
+    return { icon: '⚑', color: 'magenta' };
+  if (name === 'template_render' || name === 'template_list')
+    return { icon: '◫', color: 'cyan' };
+  if (name === 'clarify') return { icon: '?', color: 'yellow' };
+  if (name === 'workflow' || name.startsWith('phase_') || name.startsWith('ship_'))
+    return { icon: '⚙', color: 'cyan' };
+  return { icon: '⌘', color: 'gray' };
 };
 
 /**
- * Build a compact, scannable label for the sidebar:
- *   write_file · test2.txt
- *   terminal · ls -la
- *   read_file · src/foo.ts
- * Falls back to `name(args…)` for unknown shapes.
+ * Pull the most "interesting" field out of a tool's JSON arguments so we
+ * can show e.g. `read_file  src/foo.ts` instead of the full JSON blob.
+ * Returns a single short string suitable for display.
  */
-const prettyToolLabel = (name: string, argsJson: string): string => {
-  let parsed: unknown = null;
+const summarizeToolArgs = (_toolName: string, raw: string): string => {
+  // Try parsing JSON; fall back to the raw string if it's not valid.
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(argsJson);
+    parsed = JSON.parse(raw);
   } catch {
-    parsed = null;
+    return truncateArgs(raw);
   }
-  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    const o = parsed as Record<string, unknown>;
-    // Pick the most "identifying" arg first.
-    const primary =
-      o['path'] ??
-      o['file'] ??
-      o['filename'] ??
-      o['url'] ??
-      o['query'] ??
-      o['command'] ??
-      o['cmd'] ??
-      o['op'] ??
-      o['title'] ??
-      o['name'];
-    if (typeof primary === 'string' && primary.length > 0) {
-      return `${name} · ${truncate(primary, 60)}`;
+  if (!parsed || typeof parsed !== 'object') return truncateArgs(raw);
+  const obj = parsed as Record<string, unknown>;
+
+  // Field-name priority: pick the first one present.
+  const priority = [
+    'path',
+    'filePath',
+    'file',
+    'url',
+    'query',
+    'q',
+    'command',
+    'cmd',
+    'ref',
+    'name',
+    'title',
+    'op',
+    'subcommand',
+    'action',
+    'type',
+    'message',
+    'text',
+    'prompt'
+  ];
+  for (const key of priority) {
+    const v = obj[key];
+    if (typeof v === 'string' && v.length > 0) {
+      // For ops/actions, prepend so the user sees `op=navigate url=...`.
+      if (key === 'op' || key === 'subcommand' || key === 'action') {
+        // Look for a secondary value (path/url/etc) to pair with it.
+        for (const k2 of ['url', 'path', 'filePath', 'ref', 'query']) {
+          const v2 = obj[k2];
+          if (typeof v2 === 'string' && v2.length > 0) {
+            return truncate(`${v} ${v2}`, 80);
+          }
+        }
+        return truncate(v, 80);
+      }
+      return truncate(v, 80);
     }
-    const keys = Object.keys(o);
-    if (keys.length === 0) return name;
-    return `${name} · ${keys.slice(0, 3).join(', ')}`;
   }
-  const args = truncateArgs(argsJson);
-  return args.length > 0 ? `${name}(${args})` : name;
+  // Nothing recognised — fall back to compact JSON.
+  return truncateArgs(raw);
+};
+
+/**
+ * Split a tool entry into a `name` part (rendered bold + colored) and a
+ * `detail` part (rendered dim) so the sidebar reads like an IDE log.
+ */
+const formatToolDisplay = (
+  toolName: string,
+  detail: string
+): { readonly name: string; readonly detail: string } => {
+  // Strip the `mcp__server__` prefix from the visible name; the icon
+  // already conveys the MCP origin and the arg detail is what matters.
+  if (toolName.startsWith('mcp__')) {
+    const parts = toolName.split('__');
+    const op = parts[parts.length - 1] ?? toolName;
+    return { name: op, detail };
+  }
+  return { name: toolName, detail };
 };
 
 /** Render a millisecond duration as a compact human label (e.g. "1.2s", "340ms"). */

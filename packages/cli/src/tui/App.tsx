@@ -530,6 +530,13 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   // only: PgUp/PgDn (half page) and Shift+↑/↓ (one line). This also
   // means terminal-native click-and-drag selection just works.
 
+  // Streaming render coalescer: provider chunks fire 30–80×/s, far more
+  // than a terminal can repaint cleanly. We accumulate raw delta text in
+  // a ref and flush a single React update on a ~33ms timer (≈30fps), so
+  // the live assistant bubble updates smoothly instead of stuttering.
+  const deltaBufferRef = useRef('');
+  const deltaTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   const messagesRef = useRef<Message[]>([]);
   // Session: id is shown in the header; the record is mutated in place
   // and persisted via SessionStore.write() on every turn_end. When no
@@ -1686,6 +1693,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             : { effort: thinking };
 
       let assistantBuffer = '';
+      deltaBufferRef.current = '';
       let totalTokens = 0;
       let promptTokens: number | undefined;
       let completionTokens: number | undefined;
@@ -1743,37 +1751,57 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       } catch (e) {
         pushItem('error', `loop crashed: ${(e as Error).message}`);
       } finally {
+        // Cancel any pending coalesced flush — the loop is over, the
+        // turn_end / done branches below already pushed the final text.
+        if (deltaTimerRef.current) {
+          clearTimeout(deltaTimerRef.current);
+          deltaTimerRef.current = null;
+        }
         abortRef.current = null;
         setStreaming(false);
+      }
+
+      // Render the live assistant bubble from the current delta buffer.
+      // Hides any in-progress `<atlas:question>` block so the raw
+      // protocol never flashes into the transcript.
+      function flushDelta(): void {
+        const visible = renderVisibleAssistant(deltaBufferRef.current);
+        setTranscript((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.kind === 'assistant') {
+            if (last.text === visible) return prev;
+            return [...prev.slice(0, -1), { ...last, text: visible }];
+          }
+          if (visible.length === 0) return prev;
+          transcriptKey.current += 1;
+          return [
+            ...prev,
+            {
+              key: `t${transcriptKey.current}`,
+              kind: 'assistant',
+              text: visible,
+              author: assistantAuthor
+            }
+          ];
+        });
+      }
+
+      function scheduleFlush(): void {
+        if (deltaTimerRef.current) return;
+        deltaTimerRef.current = setTimeout(() => {
+          deltaTimerRef.current = null;
+          flushDelta();
+        }, 33);
       }
 
       function handleLoopEvent(ev: LoopEvent): void {
         switch (ev.type) {
           case 'delta':
             assistantBuffer += ev.text;
-            // Render the running assistant text *with the question block
-            // hidden* — once `<atlas:question>` opens, suppress everything
-            // until the matching close tag arrives. Avoids the raw protocol
-            // briefly leaking into the chat.
-            setTranscript((prev) => {
-              const visible = renderVisibleAssistant(assistantBuffer);
-              const last = prev[prev.length - 1];
-              if (last && last.kind === 'assistant') {
-                if (last.text === visible) return prev;
-                return [...prev.slice(0, -1), { ...last, text: visible }];
-              }
-              if (visible.length === 0) return prev;
-              transcriptKey.current += 1;
-              return [
-                ...prev,
-                {
-                  key: `t${transcriptKey.current}`,
-                  kind: 'assistant',
-                  text: visible,
-                  author: assistantAuthor
-                }
-              ];
-            });
+            deltaBufferRef.current = assistantBuffer;
+            // Coalesce per-chunk renders to ~30fps so the live bubble
+            // updates smoothly instead of stuttering on every token.
+            scheduleFlush();
             break;
           case 'thinking':
             updateLastIfSameKind('thinking', ev.text);
@@ -1812,6 +1840,14 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             break;
           }
           case 'turn_end': {
+            // Make sure the last coalesced delta has landed before we
+            // post-process the final assistant message — otherwise the
+            // visible transcript can briefly trail the model.
+            if (deltaTimerRef.current) {
+              clearTimeout(deltaTimerRef.current);
+              deltaTimerRef.current = null;
+            }
+            flushDelta();
             // Detect a structured question in the assistant's last message.
             const found = tryExtractInteraction(assistantBuffer);
             if (found) {
@@ -3644,7 +3680,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     3 /* header */ +
     3 /* input box */ +
     1 /* status */ +
-    (transcript.length === 0 && overlay.kind !== 'setup' ? 6 : 0) +
+    (transcript.length === 0 && overlay.kind !== 'setup' ? 12 : 0) +
     (overlay.kind === 'none' && !streaming && input.startsWith('/') ? 10 : 0) +
     overlayReserve;
   const transcriptRowBudget = Math.max(2, rows - reserved);
@@ -3772,9 +3808,13 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             ↑ {hiddenCount} earlier message{hiddenCount === 1 ? '' : 's'} (PgUp to scroll)
           </Text>
         )}
-        {visibleTranscript.map((item) => (
-          <TranscriptRow key={item.key} item={item} />
-        ))}
+        {visibleTranscript.map((item, i) => {
+          const isLive =
+            streaming &&
+            i === visibleTranscript.length - 1 &&
+            item.kind === 'assistant';
+          return <TranscriptRow key={item.key} item={item} live={isLive} />;
+        })}
         {newerHidden > 0 && (
           <Text color="gray" dimColor>
             ↓ {newerHidden} more line{newerHidden === 1 ? '' : 's'} below (PgDn / End)
@@ -5395,13 +5435,21 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         </Box>
       )}
       {overlay.kind === 'none' && (
-        <Box borderStyle="round" borderColor="gray" paddingX={1}>
+        <Box borderStyle="round" borderColor={streaming ? 'yellow' : 'gray'} paddingX={1}>
           {streaming ? (
             <Box>
               <Text color="yellow">
                 <Spinner type="dots" />
               </Text>
-              <Text> streaming… (Esc to cancel)</Text>
+              <Text color="yellow" bold>
+                {' streaming'}
+              </Text>
+              <Text color="gray" dimColor>
+                {usage
+                  ? ` · ${usage.tokens.toLocaleString()} tok · ${usage.rounds} round${usage.rounds === 1 ? '' : 's'}`
+                  : ''}
+                {' · Esc cancels'}
+              </Text>
             </Box>
           ) : (
             <Box width={cols - 4}>
@@ -5636,7 +5684,13 @@ const providerLongLabel = (kind: ProviderKindLabel): string => {
  * fenced ```code blocks``` (rendered as a bordered box with a copy
  * hint — press Ctrl+Y to copy the most recent block).
  */
-const Markdown = ({ text }: { text: string }): React.JSX.Element => {
+const Markdown = ({
+  text,
+  live = false
+}: {
+  text: string;
+  live?: boolean;
+}): React.JSX.Element => {
   const lines = text.split('\n');
   // Group consecutive lines between ``` fences into a CodeBlock; everything
   // else becomes a plain Text row with inline markdown.
@@ -5691,12 +5745,49 @@ const Markdown = ({ text }: { text: string }): React.JSX.Element => {
     else buf.push(line);
   }
   if (inFence) {
-    // Unclosed fence — render whatever we collected as a code block so the
-    // streaming view shows code as it lands rather than withholding it.
+    // Unclosed fence. While the model is still streaming, defer the
+    // partial code as a placeholder — rendering half-syntax flickers
+    // and the block will "snap into place" once the closing ``` lands
+    // (this is what makes Copilot Chat's code blocks feel polished).
+    // Once the stream is done (live=false) we still surface whatever
+    // we have so the user isn't left wondering.
     flushPlain();
-    blocks.push(<CodeBlock key={`c${blockIdx++}`} lang={lang} code={codeBuf.join('\n')} />);
+    if (live) {
+      blocks.push(
+        <Box
+          key={`c${blockIdx++}`}
+          flexDirection="column"
+          borderStyle="round"
+          borderColor="gray"
+          paddingX={1}
+          marginY={1}
+        >
+          <Box>
+            <Text color="gray" dimColor>
+              {lang ? `◦ ${lang}` : '◦ code'}
+            </Text>
+            <Box flexGrow={1} />
+            <Text color="yellow">
+              <Spinner type="dots" />
+            </Text>
+            <Text color="gray" dimColor>
+              {' writing…'}
+            </Text>
+          </Box>
+        </Box>
+      );
+    } else {
+      blocks.push(<CodeBlock key={`c${blockIdx++}`} lang={lang} code={codeBuf.join('\n')} />);
+    }
   } else {
     flushPlain();
+  }
+  if (live) {
+    blocks.push(
+      <Text key="cursor" color="cyan">
+        {'▍'}
+      </Text>
+    );
   }
   return <Box flexDirection="column">{blocks}</Box>;
 };
@@ -5829,7 +5920,13 @@ const renderInlineMarkdown = (line: string): React.ReactNode[] => {
   return out;
 };
 
-const TranscriptRow = ({ item }: { item: TranscriptItem }): React.JSX.Element => {
+const TranscriptRow = ({
+  item,
+  live = false
+}: {
+  item: TranscriptItem;
+  live?: boolean;
+}): React.JSX.Element => {
   switch (item.kind) {
     case 'user':
       return (
@@ -5857,10 +5954,17 @@ const TranscriptRow = ({ item }: { item: TranscriptItem }): React.JSX.Element =>
           borderColor={color}
           paddingX={1}
         >
-          <Text color={color} bold>
-            {author}
-          </Text>
-          <Markdown text={item.text} />
+          <Box>
+            <Text color={color} bold>
+              {author}
+            </Text>
+            {live && (
+              <Text color="gray" dimColor>
+                {'  • writing…'}
+              </Text>
+            )}
+          </Box>
+          <Markdown text={item.text} live={live} />
         </Box>
       );
     }
@@ -6304,30 +6408,51 @@ const SlashAutocomplete = ({
 };
 
 /**
- * The Atlas startup splash — a tiny ASCII octopus next to the wordmark.
- * Drawn once at the top of the transcript; not part of the chat history.
+ * Atlas startup hero. Centered block-letter wordmark with a faux
+ * cyan→blue gradient (per-row color), followed by tagline + active
+ * model + key-hint row. Drawn once when the transcript is empty;
+ * not part of chat history.
  */
-const Splash = ({ defaultModel }: { defaultModel: string }): React.JSX.Element => (
-  <Box flexDirection="row" marginY={1} paddingX={1}>
-    <Box flexDirection="column" marginRight={2}>
-      <Text color="blue">{`     ___`}</Text>
-      <Text color="blue">{`   /     \\`}</Text>
-      <Text color="blueBright">{`  | () () |`}</Text>
-      <Text color="blue">{`   \\  ^  /`}</Text>
-      <Text color="cyan">{`   //|||\\\\`}</Text>
-      <Text color="cyan">{`  // | | \\\\`}</Text>
-    </Box>
-    <Box flexDirection="column">
-      <Text color="cyanBright" bold>{`Atlas CLI`}</Text>
-      <Text color="gray">spec-driven development crew</Text>
-      <Box marginTop={1} flexDirection="column">
-        <Text color="gray">model · <Text color="white">{defaultModel}</Text></Text>
-        <Text color="gray">type <Text color="cyan">/</Text> for commands · <Text color="cyan">Tab</Text> to switch agent</Text>
-        <Text color="gray">press <Text color="cyan">Ctrl-D</Text> twice to exit (Ctrl-C cancels)</Text>
+const Splash = ({ defaultModel }: { defaultModel: string }): React.JSX.Element => {
+  const lines: readonly string[] = [
+    '  █████╗ ████████╗██╗      █████╗ ███████╗',
+    ' ██╔══██╗╚══██╔══╝██║     ██╔══██╗██╔════╝',
+    ' ███████║   ██║   ██║     ███████║███████╗',
+    ' ██╔══██║   ██║   ██║     ██╔══██║╚════██║',
+    ' ██║  ██║   ██║   ███████╗██║  ██║███████║',
+    ' ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚══════╝'
+  ];
+  const palette = [
+    'cyanBright',
+    'cyanBright',
+    'cyan',
+    'cyan',
+    'blueBright',
+    'blue'
+  ] as const;
+  return (
+    <Box flexDirection="column" alignItems="center" marginY={1}>
+      <Box flexDirection="column">
+        {lines.map((l, i) => (
+          <Text key={i} color={palette[i] ?? 'cyan'} bold>
+            {l}
+          </Text>
+        ))}
+      </Box>
+      <Box marginTop={1}>
+        <Text color="gray">spec-driven development crew · </Text>
+        <Text color="white">{defaultModel}</Text>
+      </Box>
+      <Box marginTop={1}>
+        <Text color="gray">
+          <Text color="cyan">/</Text> commands · <Text color="cyan">Tab</Text> agent ·{' '}
+          <Text color="cyan">Ctrl-O</Text> model · <Text color="cyan">Ctrl-T</Text> thinking ·{' '}
+          <Text color="cyan">Ctrl-D</Text>×2 exit
+        </Text>
       </Box>
     </Box>
-  </Box>
-);
+  );
+};
 
 const truncate = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0, n)}…`);
 const truncateArgs = (s: string): string => truncate(s.replace(/\s+/g, ' '), 80);

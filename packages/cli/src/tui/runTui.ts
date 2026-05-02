@@ -30,6 +30,7 @@ import {
   saveConfig,
   SessionStore,
   startMcpServers,
+  TodoStore,
   type AtlasConfig,
   type McpStartupResult,
   type ModelInfo,
@@ -271,7 +272,7 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
     agents,
     skills,
     tools,
-    toolContext: { cwd: process.cwd(), approve: allowAllPolicy },
+    toolContext: { cwd: process.cwd(), approve: allowAllPolicy, todoStore: new TodoStore() },
     hooks: builtinHookRegistry({
       cwd: process.cwd(),
       ...(cfg?.guardrails ? { config: cfg.guardrails } : {})

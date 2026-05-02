@@ -11,6 +11,7 @@
 import type { z } from 'zod';
 import type { AtlasError } from '../errors.js';
 import type { Result } from '../result.js';
+import type { TodoStore } from './todo-store.js';
 
 export type ApprovalMode = 'auto' | 'ask' | 'never';
 
@@ -35,6 +36,23 @@ export interface ToolContext {
     readonly authorizedSections?: readonly string[];
     readonly forbiddenSections?: readonly string[];
   };
+  /**
+   * In-memory per-session task list shared with the `todo` tool. When
+   * absent, `todo` returns a clear "not initialized" error so it never
+   * silently no-ops.
+   */
+  readonly todoStore?: TodoStore;
+  /**
+   * Host-provided callback that prompts the user with a question
+   * (optionally with multi-choice options) and returns their answer.
+   * The CLI/TUI wires this to its own input layer; tests/scripts can
+   * stub it. When absent, the `clarify` tool returns an error.
+   */
+  readonly clarifyAsk?: (
+    question: string,
+    choices: readonly string[] | undefined,
+    signal?: AbortSignal
+  ) => Promise<string>;
 }
 
 export type ApprovalDecision =

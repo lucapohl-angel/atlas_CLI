@@ -13,6 +13,7 @@ export * from './config/index.js';
 export * from './providers/index.js';
 export * from './tools/index.js';
 export * from './hooks/index.js';
+export * from './security/index.js';
 export * from './skills/index.js';
 export * from './agents/index.js';
 export * from './orchestrator/index.js';

@@ -23,6 +23,8 @@ export type AtlasErrorCode =
   | 'TOOL_BLOCKED_BY_HOOK'
   | 'TOOL_DENIED_BY_USER'
   | 'TOOL_CANCELLED'
+  // Security
+  | 'URL_BLOCKED'
   // Hook
   | 'HOOK_INVALID'
   | 'HOOK_LOAD_FAILED'

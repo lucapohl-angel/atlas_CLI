@@ -53,7 +53,40 @@ export interface ToolContext {
     choices: readonly string[] | undefined,
     signal?: AbortSignal
   ) => Promise<string>;
+  /**
+   * Host-provided runner for the `delegate` tool. The host owns the
+   * provider, model, and agent registry; this callback spawns one
+   * child agent loop and returns its summary. When absent, `delegate`
+   * fails with a clear "not initialized" error.
+   */
+  readonly delegateRun?: DelegateRunFn;
+  /**
+   * Current delegation depth. Incremented by the runner each time it
+   * spawns a child. The `delegate` tool refuses when this hits the
+   * configured cap, breaking spawn loops.
+   */
+  readonly delegateDepth?: number;
 }
+
+export interface DelegateChildRequest {
+  readonly goal: string;
+  readonly context?: string;
+  readonly agent?: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface DelegateChildResult {
+  readonly ok: boolean;
+  /** Final assistant text (or error message) — short, ready to splice in. */
+  readonly summary: string;
+  readonly error?: string;
+  readonly rounds: number;
+  readonly agent?: string;
+}
+
+export type DelegateRunFn = (
+  req: DelegateChildRequest
+) => Promise<DelegateChildResult>;
 
 export type ApprovalDecision =
   | { readonly action: 'allow' }

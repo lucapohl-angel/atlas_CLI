@@ -14,6 +14,8 @@ import { todoTool } from './todo.js';
 import { clarifyTool } from './clarify.js';
 import { webFetchTool } from './web-fetch.js';
 import { webSearchTool } from './web-search.js';
+import { browserTool } from './browser/index.js';
+import { delegateTool } from './delegate.js';
 import { ToolRegistry } from './registry.js';
 
 export * from './types.js';
@@ -37,6 +39,11 @@ export { todoTool } from './todo.js';
 export { clarifyTool } from './clarify.js';
 export { webFetchTool } from './web-fetch.js';
 export { webSearchTool } from './web-search.js';
+export { browserTool } from './browser/index.js';
+export { closeBrowser, browserAvailable } from './browser/session.js';
+export { delegateTool } from './delegate.js';
+export { createDelegateRunner } from './delegate-runner.js';
+export type { CreateDelegateRunnerOptions } from './delegate-runner.js';
 
 /** Returns a fresh registry pre-populated with the built-in tools. */
 export const builtinToolRegistry = (): ToolRegistry => {
@@ -58,5 +65,7 @@ export const builtinToolRegistry = (): ToolRegistry => {
   r.register(clarifyTool);
   r.register(webFetchTool);
   r.register(webSearchTool);
+  r.register(browserTool);
+  r.register(delegateTool);
   return r;
 };

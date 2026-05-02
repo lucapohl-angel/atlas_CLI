@@ -3725,7 +3725,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   // The right activity sidebar steals ~34 cols when the terminal is wide
   // enough (≥ 100 cols). Shrink the wrap budget accordingly so transcript
   // text doesn't render under the sidebar border.
-  const sidebarWidth = cols >= 100 ? 34 : 0;
+  const sidebarWidth = cols >= 110 ? 34 : 0;
   const wrapWidth = Math.max(20, cols - 4 - sidebarWidth);
   const wrappedLineCount = (text: string): number => {
     const lines = text.length === 0 ? [''] : text.split('\n');
@@ -3826,7 +3826,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   }
   const newerHidden = Math.max(0, offset);
 
-  const showSidebar = cols >= 100;
+  const showSidebar = cols >= 110;
   return (
     <Box flexDirection="row" width={cols} height={rows}>
       <Box flexDirection="column" flexGrow={1}>

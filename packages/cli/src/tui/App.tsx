@@ -3864,9 +3864,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   const newerHidden = Math.max(0, offset);
 
   const showSidebar = cols >= 110;
+  const leftWidth = cols - (showSidebar ? 46 : 0);
   return (
     <Box flexDirection="row" width={cols} height={rows} backgroundColor="#0b1416">
-      <Box flexDirection="column" flexGrow={1} backgroundColor="#0b1416">
+      <Box flexDirection="column" width={leftWidth} flexShrink={0} backgroundColor="#0b1416">
       <Header
         agent={activeAgent}
         model={model}
@@ -3879,12 +3880,13 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         sessionId={sessionId}
         phase={activeTask?.phase ?? 'idle'}
         gitBranch={gitBranch}
+        width={leftWidth}
       />
       {transcript.length === 0 && overlay.kind !== 'setup' && <Splash defaultModel={model} />}
-      <Box flexDirection="column" flexGrow={1}>
+      <Box flexDirection="column" flexGrow={1} width={leftWidth} backgroundColor="#0b1416">
         {hiddenCount > 0 && (
-          <Text color="gray" dimColor>
-            ↑ {hiddenCount} earlier message{hiddenCount === 1 ? '' : 's'} (PgUp to scroll)
+          <Text color="gray" backgroundColor="#0b1416" dimColor>
+            {`↑ ${hiddenCount} earlier message${hiddenCount === 1 ? '' : 's'} (PgUp to scroll)`.padEnd(leftWidth, ' ')}
           </Text>
         )}
         {visibleTranscript.map((item, i) => {
@@ -3892,13 +3894,14 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             streaming &&
             i === visibleTranscript.length - 1 &&
             item.kind === 'assistant';
-          return <TranscriptRow key={item.key} item={item} live={isLive} />;
+          return <TranscriptRow key={item.key} item={item} live={isLive} width={leftWidth} />;
         })}
         {newerHidden > 0 && (
-          <Text color="gray" dimColor>
-            ↓ {newerHidden} more line{newerHidden === 1 ? '' : 's'} below (PgDn / End)
+          <Text color="gray" backgroundColor="#0b1416" dimColor>
+            {`↓ ${newerHidden} more line${newerHidden === 1 ? '' : 's'} below (PgDn / End)`.padEnd(leftWidth, ' ')}
           </Text>
         )}
+        <Box flexGrow={1} width={leftWidth} backgroundColor="#0b1416" />
       </Box>
       {overlay.kind === 'agent-picker' && (
         <OverlayBox title="Switch agent (framework specialists are routed automatically)">
@@ -5514,7 +5517,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         </Box>
       )}
       {overlay.kind === 'none' && (
-        <Box borderStyle="round" borderColor={streaming ? 'yellow' : '#2a4a52'} paddingX={1} backgroundColor="#0f1c1f">
+        <Box width={leftWidth} borderStyle="round" borderColor={streaming ? 'yellow' : '#2a4a52'} paddingX={1} backgroundColor="#0f1c1f">
           {streaming ? (
             <Box>
               <Text color="yellow">
@@ -5572,7 +5575,8 @@ const Header = ({
   contextWindow,
   sessionId,
   phase,
-  gitBranch
+  gitBranch,
+  width
 }: {
   agent: Agent;
   model: string;
@@ -5590,6 +5594,7 @@ const Header = ({
   sessionId: string | null;
   phase: Phase;
   gitBranch: string | null;
+  width: number;
 }): React.JSX.Element => {
   const cost =
     usage && usage.promptTokens !== undefined && usage.completionTokens !== undefined
@@ -5598,7 +5603,7 @@ const Header = ({
   void cost;
   void contextWindow;
   return (
-    <Box borderStyle="round" borderColor="#2a4a52" paddingX={1} marginBottom={0} backgroundColor="#0f1c1f">
+    <Box width={width} borderStyle="round" borderColor="#2a4a52" paddingX={1} marginBottom={0} backgroundColor="#0f1c1f">
       <Box flexGrow={1}>
         <Text color={colorForAgent(agent.name)} bold>
           {agent.role}
@@ -6005,15 +6010,18 @@ const renderInlineMarkdown = (line: string): React.ReactNode[] => {
 
 const TranscriptRow = ({
   item,
-  live = false
+  live = false,
+  width
 }: {
   item: TranscriptItem;
   live?: boolean;
+  width: number;
 }): React.JSX.Element => {
   switch (item.kind) {
     case 'user':
       return (
         <Box
+          width={width}
           flexDirection="column"
           borderStyle="round"
           borderColor="cyan"
@@ -6031,6 +6039,7 @@ const TranscriptRow = ({
       const color = colorForAgent(author);
       return (
         <Box
+          width={width}
           flexDirection="column"
           borderStyle="round"
           borderColor={color}

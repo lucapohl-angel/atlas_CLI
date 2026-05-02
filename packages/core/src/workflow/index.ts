@@ -33,6 +33,11 @@ export {
 export { readSignals } from './signals.js';
 export { phasePromptAddendum } from './phase-prompt.js';
 export {
+  DISCOVER_WARNINGS_FILENAME,
+  appendDiscoverWarning,
+  consumeDiscoverWarnings
+} from './discover-warnings.js';
+export {
   CONTEXT_FILENAME,
   CONTEXT_DRAFT_FILENAME,
   appendContextEntry,

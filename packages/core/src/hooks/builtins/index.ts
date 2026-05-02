@@ -9,6 +9,11 @@
 import type { GuardrailsConfig } from '../../config/types.js';
 import { HookRegistry } from '../registry.js';
 import { dangerousCommandHook } from './dangerous-command.js';
+import {
+  contradictionHook,
+  multiQuestionHook,
+  vaguenessHook
+} from './discover-guardrails.js';
 import { pathSafetyHook } from './path-safety.js';
 import { promptInjectionHook } from './prompt-injection.js';
 import { secretRedactorHook } from './secret-redactor.js';
@@ -35,6 +40,11 @@ export const builtinHookRegistry = (opts: BuiltinHookOptions): HookRegistry => {
   if (!cfg || cfg.promptInjectionDetector !== false) {
     reg.register(promptInjectionHook());
   }
+  if (!cfg || cfg.discoverGuardrails !== false) {
+    reg.register(vaguenessHook(opts.cwd));
+    reg.register(contradictionHook(opts.cwd));
+    reg.register(multiQuestionHook(opts.cwd));
+  }
   return reg;
 };
 
@@ -42,3 +52,11 @@ export { dangerousCommandHook } from './dangerous-command.js';
 export { pathSafetyHook } from './path-safety.js';
 export { secretRedactorHook, redactSecrets } from './secret-redactor.js';
 export { promptInjectionHook } from './prompt-injection.js';
+export {
+  contradictionHook,
+  multiQuestionHook,
+  vaguenessHook,
+  isVagueUserMessage,
+  detectContradictions,
+  countQuestions
+} from './discover-guardrails.js';

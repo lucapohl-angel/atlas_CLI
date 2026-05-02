@@ -187,9 +187,9 @@ describe('promptInjectionHook', () => {
 });
 
 describe('builtinHookRegistry', () => {
-  it('registers all four hooks by default', () => {
+  it('registers all default hooks (4 base + 3 discover guardrails)', () => {
     const reg = builtinHookRegistry({ cwd: '/tmp/x' });
-    expect(reg.list().length).toBe(4);
+    expect(reg.list().length).toBe(7);
   });
   it('registers nothing when disabled', () => {
     const reg = builtinHookRegistry({
@@ -200,6 +200,7 @@ describe('builtinHookRegistry', () => {
         pathSafety: true,
         secretRedaction: true,
         promptInjectionDetector: true,
+        discoverGuardrails: true,
         extraDeniedPaths: [],
         extraDeniedCommands: []
       }
@@ -215,6 +216,7 @@ describe('builtinHookRegistry', () => {
         pathSafety: false,
         secretRedaction: false,
         promptInjectionDetector: false,
+        discoverGuardrails: false,
         extraDeniedPaths: [],
         extraDeniedCommands: []
       }

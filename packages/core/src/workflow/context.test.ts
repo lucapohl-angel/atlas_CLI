@@ -64,6 +64,9 @@ describe('workflow/context', () => {
     await setSlot(state, 'goal', 'Build a Postgres-backed receipts API.');
     await setSlot(state, 'success', 'GET /receipts returns 200 with seeded data');
     await setSlot(state, 'constraints', 'TypeScript strict; no `any`.');
+    await setSlot(state, 'context', 'src/api lives in apps/server.');
+    await setSlot(state, 'out_of_scope', 'none');
+    await setSlot(state, 'open_questions', 'none');
     await appendContextEntry(state, { heading: 'Q', body: 'A' });
     const fin = await finalizeContext(state, 'Receipts API, slim slice.');
     expect(fin.ok).toBe(true);

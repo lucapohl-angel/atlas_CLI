@@ -41,8 +41,16 @@ export const SLOT_IDS = [
 
 export type SlotId = (typeof SLOT_IDS)[number];
 
-/** Slots that must be non-empty before `context_finalize` accepts. */
-export const REQUIRED_SLOTS: readonly SlotId[] = ['goal', 'success'] as const;
+/**
+ * Slots that must be non-empty before `context_finalize` accepts.
+ *
+ * All six slots are required so the discover phase produces a fully
+ * structured brief. For slots that legitimately have nothing to put
+ * in them (most often `out_of_scope` and `open_questions`), the model
+ * must write the literal string "none" via `context_set`. That forces
+ * a deliberate decision rather than a silent oversight.
+ */
+export const REQUIRED_SLOTS: readonly SlotId[] = SLOT_IDS;
 
 const SLOT_HEADINGS: Record<SlotId, string> = {
   goal: 'Goal',
@@ -171,12 +179,17 @@ export const setSlot = async (
 
 /**
  * Return the list of required slots that are still empty. Empty array
- * means the slots are ready to finalize.
+ * means the slots are ready to finalize. All six slots are required;
+ * use the literal string "none" for slots that have no content.
  */
 export const missingRequiredSlots = (slots: ContextSlots): readonly SlotId[] => {
   const missing: SlotId[] = [];
   if (slots.goal.trim().length === 0) missing.push('goal');
   if (slots.successCriteria.length === 0) missing.push('success');
+  if (slots.constraints.length === 0) missing.push('constraints');
+  if (slots.context.length === 0) missing.push('context');
+  if (slots.outOfScope.length === 0) missing.push('out_of_scope');
+  if (slots.openQuestions.length === 0) missing.push('open_questions');
   return missing;
 };
 

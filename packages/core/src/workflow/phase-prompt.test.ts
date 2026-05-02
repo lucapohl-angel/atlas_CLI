@@ -10,13 +10,16 @@ describe('workflow/phase-prompt', () => {
     expect(phasePromptAddendum('ship')).toBeNull();
   });
 
-  it('discover addendum mentions slot tools and clarify-with-options', () => {
+  it('discover addendum mentions slot tools, all-six-required, confirm flow, and clarify-with-options', () => {
     const a = phasePromptAddendum('discover');
     expect(a).not.toBeNull();
     if (a) {
       expect(a).toContain('context_set');
       expect(a).toContain('context_status');
       expect(a).toContain('context_finalize');
+      expect(a).toContain('all six are');
+      expect(a).toContain('"none"');
+      expect(a).toContain('confirm: true');
       expect(a).toContain('clarify');
       expect(a).toContain('2–4 plausible options');
       expect(a).toContain('"Other"');

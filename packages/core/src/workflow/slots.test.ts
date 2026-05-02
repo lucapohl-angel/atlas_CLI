@@ -51,21 +51,36 @@ describe('workflow/slots', () => {
     }
   });
 
-  it('missingRequiredSlots reports goal+success when both empty', () => {
+  it('missingRequiredSlots lists every slot when sidecar is empty', () => {
     const m = missingRequiredSlots(emptySlots());
-    expect(m).toEqual(['goal', 'success']);
+    expect(m).toEqual([
+      'goal',
+      'success',
+      'constraints',
+      'context',
+      'out_of_scope',
+      'open_questions'
+    ]);
   });
 
-  it('missingRequiredSlots is empty once both filled', async () => {
+  it('missingRequiredSlots is empty once all six are filled', async () => {
     await setSlot(state, 'goal', 'g');
     await setSlot(state, 'success', 's1');
+    await setSlot(state, 'constraints', 'c1');
+    await setSlot(state, 'context', 'ctx1');
+    await setSlot(state, 'out_of_scope', 'none');
+    await setSlot(state, 'open_questions', 'none');
     const r = await readSlots(state);
     if (r.ok) expect(missingRequiredSlots(r.value)).toEqual([]);
   });
 
-  it('formatSlotStatus shows ready when required slots filled', async () => {
+  it('formatSlotStatus shows ready when every slot is filled', async () => {
     await setSlot(state, 'goal', 'g');
     await setSlot(state, 'success', 's');
+    await setSlot(state, 'constraints', 'c');
+    await setSlot(state, 'context', 'ctx');
+    await setSlot(state, 'out_of_scope', 'none');
+    await setSlot(state, 'open_questions', 'none');
     const r = await readSlots(state);
     if (r.ok) expect(formatSlotStatus(r.value)).toContain('ready to finalize');
   });

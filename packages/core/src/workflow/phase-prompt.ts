@@ -18,18 +18,28 @@ const DISCOVER = `## Discover-phase protocol
 You are in the **discover** phase. Your job this turn is to extract a
 crisp, structured brief — not to write code, plan, or invent scope.
 
-Fill the six CONTEXT.md slots via \`context_set\`:
+Fill the six CONTEXT.md slots via \`context_set\` — **all six are
+required** before \`context_finalize\` will accept:
 
 - \`goal\` (required): one-sentence outcome the user actually wants.
 - \`success\` (required, ≥1): testable bullets that prove the goal is met.
-- \`constraints\`: stack/perf/security/files-not-to-touch.
-- \`context\`: relevant existing files, prior decisions, links.
-- \`out_of_scope\`: things you must NOT do, even if they seem helpful.
-- \`open_questions\`: acknowledged unknowns the user explicitly deferred.
+- \`constraints\` (required): stack/perf/security/files-not-to-touch.
+- \`context\` (required): relevant existing files, prior decisions, links.
+- \`out_of_scope\` (required): things you must NOT do, even if they seem helpful.
+- \`open_questions\` (required): acknowledged unknowns the user explicitly deferred.
+
+For slots that legitimately have nothing to record, write the literal
+string \`"none"\` via \`context_set\`. That makes the empty decision
+deliberate instead of an oversight.
 
 Use \`context_note\` to log the back-and-forth Q+A that backs the slots.
 Use \`context_status\` whenever you're unsure which slots are still empty.
-Call \`context_finalize\` only after \`goal\` and \`success\` are filled.
+
+\`context_finalize\` is two-step. The first call returns a review payload
+of the slot contents. **Read it back to the user verbatim**, ask "does
+this match what you meant?", and only call \`context_finalize\` again
+with \`confirm: true\` after they explicitly approve. Corrections go
+through \`context_set\`, then re-review.
 
 ### How to ask
 

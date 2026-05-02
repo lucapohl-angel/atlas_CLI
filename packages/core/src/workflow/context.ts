@@ -134,7 +134,7 @@ export const finalizeContext = async (
     return err(
       atlasError(
         'WORKFLOW_STATE_WRITE_FAILED',
-        `cannot finalize: required slots empty (${missing.join(', ')}). Call context_set with slot=goal and slot=success first.`
+        `cannot finalize: required slots empty (${missing.join(', ')}). All six slots are required — call context_set for each missing slot. Use content "none" for slots that have nothing to record.`
       )
     );
   }

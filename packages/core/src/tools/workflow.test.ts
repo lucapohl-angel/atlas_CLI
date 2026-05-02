@@ -74,6 +74,12 @@ describe('tools/workflow: context_* end-to-end', () => {
     expect(succ.ok).toBe(true);
     if (succ.ok) expect(succ.value.summary).toBe('slot success: 1 bullet');
 
+    // Fill the remaining required slots with "none" so finalize accepts.
+    await contextSetTool.execute({ slot: 'constraints', content: 'TS strict.' }, ctx);
+    await contextSetTool.execute({ slot: 'context', content: 'apps/server' }, ctx);
+    await contextSetTool.execute({ slot: 'out_of_scope', content: 'none' }, ctx);
+    await contextSetTool.execute({ slot: 'open_questions', content: 'none' }, ctx);
+
     const show1 = await contextShowTool.execute({}, ctx);
     expect(show1.ok).toBe(true);
     if (show1.ok) {
@@ -81,7 +87,16 @@ describe('tools/workflow: context_* end-to-end', () => {
       expect(show1.value.summary).toContain('# Context: demo');
     }
 
-    const fin = await contextFinalizeTool.execute({ summary: 'use postgres' }, ctx);
+    // First call returns the review payload, no file yet.
+    const review = await contextFinalizeTool.execute({ summary: 'use postgres' }, ctx);
+    expect(review.ok).toBe(true);
+    if (review.ok) {
+      expect(review.value.summary).toContain('REVIEW BEFORE FINALIZING');
+      expect(review.value.summary).toContain('Goal:');
+      expect(review.value.summary).toContain('Success criteria:');
+    }
+    // Confirm: actually writes.
+    const fin = await contextFinalizeTool.execute({ summary: 'use postgres', confirm: true }, ctx);
     expect(fin.ok).toBe(true);
     if (fin.ok) expect(fin.value.summary).toMatch(/finalized at/);
 
@@ -110,6 +125,10 @@ describe('tools/workflow: context_* end-to-end', () => {
     }
     await contextSetTool.execute({ slot: 'goal', content: 'g' }, ctx);
     await contextSetTool.execute({ slot: 'success', content: 's' }, ctx);
+    await contextSetTool.execute({ slot: 'constraints', content: 'c' }, ctx);
+    await contextSetTool.execute({ slot: 'context', content: 'ctx' }, ctx);
+    await contextSetTool.execute({ slot: 'out_of_scope', content: 'none' }, ctx);
+    await contextSetTool.execute({ slot: 'open_questions', content: 'none' }, ctx);
     const s2 = await contextStatusTool.execute({}, ctx);
     if (s2.ok) expect(s2.value.summary).toContain('ready to finalize');
   });

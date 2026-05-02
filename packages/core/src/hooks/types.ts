@@ -36,6 +36,12 @@ export interface BeforeToolCtx extends HookCtxBase {
   readonly event: 'beforeTool';
   readonly tool: string;
   readonly input: unknown;
+  /**
+   * Content of the most recent user-role message in the conversation,
+   * if any. Populated by the agent loop so hooks can react to vague /
+   * contradictory user input without re-reading the message history.
+   */
+  readonly lastUserMessage?: string;
 }
 
 export interface AfterToolCtx extends HookCtxBase {

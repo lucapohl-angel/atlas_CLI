@@ -92,6 +92,7 @@ import {
   canRewindTo,
   formatPhaseLine,
   phasePromptAddendum,
+  consumeDiscoverWarnings,
   readSignals,
   startTask,
   titleFromMessage,
@@ -1616,7 +1617,23 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       // on the user's opening message too.
       const predictedPhase = activeTaskRef.current?.phase ?? 'discover';
       const addendum = phasePromptAddendum(predictedPhase);
-      const systemContent = addendum ? `${baseSystem}\n\n${addendum}` : baseSystem;
+      // Drain any pending discover-phase warnings (multi-question
+      // detector etc.) so the next system prompt sees them once and
+      // the buffer is cleared.
+      let pendingWarnings: readonly string[] = [];
+      const taskForWarnings = activeTaskRef.current;
+      if (taskForWarnings && predictedPhase === 'discover') {
+        try {
+          pendingWarnings = await consumeDiscoverWarnings(taskForWarnings);
+        } catch {
+          // observational; never break the loop on a warnings-file glitch
+        }
+      }
+      const warningsBlock =
+        pendingWarnings.length > 0
+          ? `\n\n## Discover-phase reminders\n\n${pendingWarnings.map((w) => `- ${w}`).join('\n')}`
+          : '';
+      const systemContent = (addendum ? `${baseSystem}\n\n${addendum}` : baseSystem) + warningsBlock;
       const seeded: Message[] = [
         { role: 'system', content: systemContent },
         ...messagesRef.current
@@ -3420,6 +3437,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             pathSafety: true,
             secretRedaction: true,
             promptInjectionDetector: true,
+            discoverGuardrails: true,
             extraDeniedPaths: [],
             extraDeniedCommands: []
           },
@@ -3516,6 +3534,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         pathSafety: true,
         secretRedaction: true,
         promptInjectionDetector: true,
+        discoverGuardrails: true,
         extraDeniedPaths: [],
         extraDeniedCommands: []
       },

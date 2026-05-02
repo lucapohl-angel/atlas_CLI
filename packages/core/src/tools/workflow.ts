@@ -138,7 +138,7 @@ export const contextSetTool: Tool<z.infer<typeof ContextSetInput>> = {
   approval: 'auto',
   schema: ContextSetInput,
   whenToUse:
-    "Use during the discover phase to fill the six structured slots that drive the final CONTEXT.md: goal (the single sentence outcome), success (one testable bullet at a time), constraints (stack/perf/files-not-to-touch), context (relevant files / prior decisions), out_of_scope (things you must NOT do), open_questions (acknowledged unknowns). `goal` and `success` are required before `context_finalize` will accept.",
+    "Use during the discover phase to fill the six structured slots that drive the final CONTEXT.md: goal (the single sentence outcome), success (one testable bullet at a time), constraints (stack/perf/files-not-to-touch), context (relevant files / prior decisions), out_of_scope (things you must NOT do), open_questions (acknowledged unknowns). All six are required before `context_finalize` will accept — for slots that legitimately have no content (most often out_of_scope or open_questions), set the literal string \"none\" so the decision is explicit.",
   outputContract:
     'On success, summary is "slot <id>: <count> bullets" (or "slot goal: set").',
   examples: [
@@ -189,9 +189,9 @@ export const contextStatusTool: Tool<z.infer<typeof ContextStatusInput>> = {
   approval: 'auto',
   schema: ContextStatusInput,
   whenToUse:
-    'Use to check whether you have enough structured context to call `context_finalize`. Required slots are: ' +
+    'Use to check whether you have enough structured context to call `context_finalize`. All six slots are required: ' +
     REQUIRED_SLOTS.join(', ') +
-    '.',
+    '. Slots without content should be filled with the literal string "none".',
   outputContract:
     'On success, summary is a per-slot status report ending with either "ready to finalize" or "still required before finalize: ...".',
   async execute(_input, ctx) {
@@ -212,27 +212,109 @@ export const contextStatusTool: Tool<z.infer<typeof ContextStatusInput>> = {
 /* ------------------------------------------------------------------ */
 
 const ContextFinalizeInput = z.object({
-  summary: z.string().min(1).max(2000).optional()
+  /**
+   * Optional 1–3 sentence summary of the agreed scope. Rendered as a
+   * "## Summary" block in the final CONTEXT.md.
+   */
+  summary: z.string().min(1).max(2000).optional(),
+  /**
+   * Set to `true` only after you have read the slot contents back to
+   * the user and they explicitly confirmed. The first call (or any
+   * call without `confirm: true`) returns a review payload instead of
+   * writing the file.
+   */
+  confirm: z.boolean().optional()
 });
+
+const formatReviewPayload = (
+  slots: Awaited<ReturnType<typeof readSlots>> extends infer R
+    ? R extends { ok: true; value: infer V }
+      ? V
+      : never
+    : never,
+  summary: string | undefined
+): string => {
+  const lines: string[] = [];
+  lines.push('REVIEW BEFORE FINALIZING. Read this back to the user verbatim and ask them to confirm or correct each section. Only call context_finalize again with confirm=true after they explicitly approve.');
+  lines.push('');
+  lines.push(`Goal: ${slots.goal}`);
+  const list = (label: string, items: readonly string[]): void => {
+    if (items.length === 0) {
+      lines.push(`${label}: (empty — finalize will refuse)`);
+      return;
+    }
+    lines.push(`${label}:`);
+    for (const it of items) lines.push(`  - ${it}`);
+  };
+  list('Success criteria', slots.successCriteria);
+  list('Constraints', slots.constraints);
+  list('Context', slots.context);
+  list('Out of scope', slots.outOfScope);
+  list('Open questions', slots.openQuestions);
+  if (summary && summary.trim().length > 0) {
+    lines.push('');
+    lines.push(`Summary: ${summary.trim()}`);
+  }
+  lines.push('');
+  lines.push('Next: ask the user "does this match what you meant?". On yes, call context_finalize again with the same arguments plus confirm=true. On corrections, call context_set to fix the relevant slots first.');
+  return lines.join('\n');
+};
 
 export const contextFinalizeTool: Tool<z.infer<typeof ContextFinalizeInput>> = {
   name: 'context_finalize',
   description:
-    'Promote the structured slots (+ Q+A draft) to CONTEXT.md. Refuses if required slots (goal, success) are empty. Signals to the router that discover is done.',
+    'Promote the structured slots (+ Q+A draft) to CONTEXT.md. Two-step: first call returns a review payload to read back to the user; second call with confirm=true writes the file. Refuses if any required slot is empty.',
   approval: 'auto',
   schema: ContextFinalizeInput,
   whenToUse:
-    'Call this exactly once per task, when the goal is settled and at least one testable success criterion is recorded via `context_set`. Add an optional 1–3 sentence summary of the agreed scope.',
-  outputContract: 'On success, summary is "context: finalized at <path>".',
+    'Call this once all six slots are filled (use "none" for slots that have no content). The first call returns a review payload — read it back to the user and ask them to confirm. Only after they explicitly approve, call again with `confirm: true` to write CONTEXT.md.',
+  outputContract:
+    'On a non-confirmed call, summary is the review payload. On confirm=true, summary is "context: finalized at <path>".',
   blockedOps: [
-    'required slots empty (call context_set with slot=goal and slot=success first)'
+    'required slots empty (call context_set for every missing slot first; use content "none" if a slot has no content)'
+  ],
+  examples: [
+    {
+      input: '{}',
+      result: 'returns the slot contents as a review payload for the user to confirm'
+    },
+    {
+      input: '{"confirm":true,"summary":"Add bcrypt-backed signup with one happy-path test."}',
+      result: 'writes CONTEXT.md after the user approved the review'
+    }
   ],
   async execute(input, ctx) {
     const t = await requireActiveTask(ctx);
     if (!t.ok) return t;
+    if (input.confirm !== true) {
+      // Pre-confirmation: surface the slot contents but do NOT write
+      // the file. We still want to refuse early when required slots
+      // are missing so the model gets an actionable error instead of
+      // a misleading "please confirm" prompt for an incomplete brief.
+      const slotsR = await readSlots(t.value);
+      if (!slotsR.ok) return slotsR;
+      const missing = missingRequiredSlots(slotsR.value);
+      if (missing.length > 0) {
+        return err(
+          atlasError(
+            'WORKFLOW_STATE_WRITE_FAILED',
+            `cannot finalize: required slots empty (${missing.join(', ')}). All six slots are required — call context_set for each missing slot. Use content "none" for slots that have nothing to record.`
+          )
+        );
+      }
+      return ok({
+        type: 'ok',
+        summary: formatReviewPayload(slotsR.value, input.summary),
+        data: { confirmed: false, missing }
+      } satisfies ToolOk);
+    }
     const r = await finalizeContext(t.value, input.summary);
     if (!r.ok) return r;
-    return ok({ type: 'ok', summary: `context: finalized at ${r.value.path}` } satisfies ToolOk);
+    return ok({
+      type: 'ok',
+      summary: `context: finalized at ${r.value.path}`,
+      data: { confirmed: true, path: r.value.path }
+    } satisfies ToolOk);
   }
 };
 

@@ -194,10 +194,22 @@ export const runAgentLoop = async function* (
 
       let toolInput: unknown = parsed;
       if (opts.hooks) {
+        // Find the most recent user-role message so beforeTool hooks
+        // can react to vague / contradictory user input without
+        // re-walking the history themselves.
+        let lastUserMessage: string | undefined;
+        for (let i = messages.length - 1; i >= 0; i -= 1) {
+          const m = messages[i];
+          if (m && m.role === 'user' && typeof m.content === 'string') {
+            lastUserMessage = m.content;
+            break;
+          }
+        }
         const decision = await runHooks(opts.hooks, 'beforeTool', {
           event: 'beforeTool',
           tool: call.name,
           input: toolInput,
+          ...(lastUserMessage !== undefined ? { lastUserMessage } : {}),
           ...(opts.signal ? { signal: opts.signal } : {})
         });
         if (decision.action === 'block') {

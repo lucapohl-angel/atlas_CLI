@@ -164,6 +164,14 @@ export const GuardrailsConfigSchema = z
     /** Flag prompt-injection markers in tool output (modify, not block). */
     promptInjectionDetector: z.boolean().default(true),
     /**
+     * Enforce discover-phase guardrails: block context_set when the
+     * last user reply was vague (forces the model to call clarify),
+     * block context_set on likely contradictions with existing slots,
+     * and warn (next turn) when an assistant message asked more than
+     * one question. Disable if you want the looser prompt-only flow.
+     */
+    discoverGuardrails: z.boolean().default(true),
+    /**
      * Extra absolute paths or glob fragments to deny in path-safety
      * (in addition to built-in defaults).
      */

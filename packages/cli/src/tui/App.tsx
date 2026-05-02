@@ -293,6 +293,9 @@ type Overlay =
   | {
       readonly kind: 'session-picker';
       readonly entries: readonly { id: string; updatedAt: string }[];
+      readonly selectedId?: string;
+      readonly confirmDelete?: boolean;
+      readonly statusLine?: string;
     }
   | {
       /** `/tools` browser: every built-in tool with a colored status dot. */
@@ -1466,7 +1469,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 pushItem('system', 'No saved sessions yet.');
                 return;
               }
-              setOverlay({ kind: 'session-picker', entries: list.value.slice(0, 20) });
+              setOverlay({ kind: 'session-picker', entries: list.value.slice(0, 50) });
             })();
             return;
           }
@@ -4198,42 +4201,147 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         </Box>
       )}
       {overlay.kind === 'session-picker' && (
-        <OverlayBox title="Resume a session">
-          <SelectInput
-            items={overlay.entries.map((e) => ({
-              key: e.id,
-              label: `${e.id}    ${new Date(e.updatedAt).toLocaleString()}`,
-              value: e.id
-            }))}
-            onSelect={(item: { value: string }) => {
-              if (!props.sessionStore) {
-                closeOverlay();
-                return;
-              }
-              void (async () => {
-                const r = await props.sessionStore!.load(item.value);
-                closeOverlay();
-                if (!r.ok) {
-                  pushItem('error', `failed to load session ${item.value}: ${r.error.message}`);
-                  return;
-                }
-                sessionRef.current = r.value;
-                messagesRef.current = [...r.value.messages];
-                setSessionId(r.value.id);
-                hydrateTranscriptFromMessages(
-                  r.value.messages,
-                  r.value.agent ?? activeAgent.name
-                );
-                pushItem(
-                  'system',
-                  `Resumed session ${r.value.id} (${r.value.messages.length} messages).`
-                );
-              })();
-            }}
-          />
-          <Box marginTop={1}>
-            <Text color="gray">Showing the {overlay.entries.length} most recent sessions. Esc to cancel.</Text>
-          </Box>
+        <OverlayBox title="Sessions">
+          {!overlay.selectedId && (
+            <>
+              <SelectInput
+                items={overlay.entries.map((e) => ({
+                  key: e.id,
+                  label: `${e.id}    ${new Date(e.updatedAt).toLocaleString()}`,
+                  value: e.id
+                }))}
+                onSelect={(item: { value: string }) => {
+                  setOverlay((o) =>
+                    o.kind === 'session-picker' ? { ...o, selectedId: item.value } : o
+                  );
+                }}
+              />
+              <Box marginTop={1}>
+                <Text color="gray">
+                  {overlay.entries.length} session{overlay.entries.length === 1 ? '' : 's'}. Enter to choose, Esc to cancel.
+                </Text>
+              </Box>
+            </>
+          )}
+          {overlay.selectedId && !overlay.confirmDelete && (
+            <Box flexDirection="column">
+              <Box marginBottom={1}>
+                <Text color="cyan" bold>{overlay.selectedId}</Text>
+              </Box>
+              <SelectInput
+                items={[
+                  { key: 'open', label: 'Open (resume)', value: 'open' },
+                  { key: 'delete', label: 'Delete…', value: 'delete' },
+                  { key: 'back', label: 'Back to list', value: 'back' }
+                ]}
+                onSelect={(item: { value: string }) => {
+                  if (item.value === 'back') {
+                    setOverlay((o) =>
+                      o.kind === 'session-picker'
+                        ? { kind: 'session-picker', entries: o.entries }
+                        : o
+                    );
+                    return;
+                  }
+                  if (item.value === 'delete') {
+                    setOverlay((o) =>
+                      o.kind === 'session-picker' ? { ...o, confirmDelete: true } : o
+                    );
+                    return;
+                  }
+                  if (item.value === 'open') {
+                    if (!props.sessionStore || !overlay.selectedId) {
+                      closeOverlay();
+                      return;
+                    }
+                    const id = overlay.selectedId;
+                    void (async () => {
+                      const r = await props.sessionStore!.load(id);
+                      closeOverlay();
+                      if (!r.ok) {
+                        pushItem('error', `failed to load session ${id}: ${r.error.message}`);
+                        return;
+                      }
+                      sessionRef.current = r.value;
+                      messagesRef.current = [...r.value.messages];
+                      setSessionId(r.value.id);
+                      hydrateTranscriptFromMessages(
+                        r.value.messages,
+                        r.value.agent ?? activeAgent.name
+                      );
+                      pushItem(
+                        'system',
+                        `Resumed session ${r.value.id} (${r.value.messages.length} messages).`
+                      );
+                    })();
+                  }
+                }}
+              />
+              <Box marginTop={1}>
+                <Text color="gray">Esc to cancel.</Text>
+              </Box>
+            </Box>
+          )}
+          {overlay.selectedId && overlay.confirmDelete && (
+            <Box flexDirection="column">
+              <Box marginBottom={1}>
+                <Text color="red">Delete session </Text>
+                <Text color="cyan" bold>{overlay.selectedId}</Text>
+                <Text color="red">? This cannot be undone.</Text>
+              </Box>
+              <SelectInput
+                items={[
+                  { key: 'no', label: 'Cancel', value: 'no' },
+                  { key: 'yes', label: 'Yes, delete', value: 'yes' }
+                ]}
+                onSelect={(item: { value: string }) => {
+                  if (item.value === 'no') {
+                    setOverlay((o) =>
+                      o.kind === 'session-picker' ? { ...o, confirmDelete: false } : o
+                    );
+                    return;
+                  }
+                  if (!props.sessionStore || !overlay.selectedId) {
+                    closeOverlay();
+                    return;
+                  }
+                  const id = overlay.selectedId;
+                  void (async () => {
+                    const r = await props.sessionStore!.remove(id);
+                    if (!r.ok) {
+                      closeOverlay();
+                      pushItem('error', `failed to delete session ${id}: ${r.error.message}`);
+                      return;
+                    }
+                    const refreshed = await props.sessionStore!.list();
+                    if (!refreshed.ok) {
+                      closeOverlay();
+                      pushItem('system', `Deleted session ${id}.`);
+                      return;
+                    }
+                    if (refreshed.value.length === 0) {
+                      closeOverlay();
+                      pushItem('system', `Deleted session ${id}. No saved sessions remain.`);
+                      return;
+                    }
+                    setOverlay({
+                      kind: 'session-picker',
+                      entries: refreshed.value.slice(0, 50),
+                      statusLine: `Deleted ${id}.`
+                    });
+                  })();
+                }}
+              />
+              <Box marginTop={1}>
+                <Text color="gray">Esc to cancel.</Text>
+              </Box>
+            </Box>
+          )}
+          {overlay.statusLine && !overlay.selectedId && (
+            <Box marginTop={1}>
+              <Text color="green">{overlay.statusLine}</Text>
+            </Box>
+          )}
         </OverlayBox>
       )}
       {overlay.kind === 'learn-confirm' && (

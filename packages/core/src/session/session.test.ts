@@ -52,4 +52,26 @@ describe('SessionStore', () => {
     if (!latest.ok) return;
     expect(latest.value).toBeNull();
   });
+
+  it('removes a session from disk', async () => {
+    const store = new SessionStore(dir);
+    const created = await store.create({ cwd: '/x' });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const id = created.value.id;
+
+    const removed = await store.remove(id);
+    expect(removed.ok).toBe(true);
+
+    const list = await store.list();
+    expect(list.ok).toBe(true);
+    if (!list.ok) return;
+    expect(list.value).toHaveLength(0);
+
+    const reloaded = await store.load(id);
+    expect(reloaded.ok).toBe(false);
+
+    const removeMissing = await store.remove(id);
+    expect(removeMissing.ok).toBe(false);
+  });
 });

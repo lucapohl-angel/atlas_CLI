@@ -3,7 +3,7 @@
  *
  * Layout: `<dir>/<id>.json`. Atomic writes via tmpfile + rename.
  */
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { atlasError, type AtlasError } from '../errors.js';
@@ -103,6 +103,16 @@ export class SessionStore {
     if (!list.ok) return err(list.error);
     if (list.value.length === 0) return ok(null);
     return this.load(list.value[0]!.id) as Promise<Result<SessionRecord | null, AtlasError>>;
+  }
+
+  async remove(id: string): Promise<Result<void, AtlasError>> {
+    try {
+      await unlink(join(this.dir, `${id}.json`));
+      return ok(undefined);
+    } catch (e) {
+      const code = (e as { code?: string }).code === 'ENOENT' ? 'SESSION_NOT_FOUND' : 'SESSION_CORRUPT';
+      return err(atlasError(code, `failed to delete session ${id}`, { cause: e }));
+    }
   }
 }
 

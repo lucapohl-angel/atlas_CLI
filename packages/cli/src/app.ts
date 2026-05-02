@@ -9,6 +9,7 @@ import { ATLAS_VERSION, childLogger } from '@atlas/core';
 import { runAsk } from './commands/ask.js';
 import { runInit } from './commands/init.js';
 import { runStatus } from './commands/status.js';
+import { runSearxng } from './commands/searxng.js';
 import { runRepl } from './repl/repl.js';
 import { runTui } from './tui/runTui.js';
 
@@ -109,6 +110,15 @@ export const buildProgram = (): Command => {
     .option('--json', 'print machine-readable JSON')
     .action(async (opts: { json?: boolean }) => {
       const { exitCode } = await runStatus({ json: opts.json === true });
+      if (exitCode !== 0) process.exitCode = exitCode;
+    });
+
+  program
+    .command('searxng')
+    .description('manage the local SearXNG container backing web_search')
+    .argument('[subcommand]', 'status | install | start | stop | remove', 'status')
+    .action(async (sub: string) => {
+      const { exitCode } = await runSearxng({ sub });
       if (exitCode !== 0) process.exitCode = exitCode;
     });
 

@@ -82,7 +82,11 @@ import {
   saveLearnedSkill,
   setSkillDisabled,
   writeRepoMap,
-  type OnboardPreflight
+  type OnboardPreflight,
+  searxngStatus,
+  searxngStart,
+  searxngStop,
+  searxngRemove
 } from '@atlas/core';
 
 export type ThinkingEffort = 'off' | ReasoningEffort | 'xhigh';
@@ -921,6 +925,71 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           }
           case 'onboard': {
             launchOnboardWizard();
+            return;
+          }
+          case 'searxng': {
+            const sub = (rest[0] ?? 'status').toLowerCase();
+            (async () => {
+              if (sub === 'status') {
+                const s = await searxngStatus();
+                if (!s.dockerInstalled) {
+                  pushItem(
+                    'system',
+                    'searxng: docker is not installed (or the daemon is not running). Install Docker, then re-run `/searxng install`.'
+                  );
+                  return;
+                }
+                const lines = [
+                  `searxng status:`,
+                  `  docker:    ok`,
+                  `  image:     ${s.imagePulled ? 'pulled' : 'not pulled'}`,
+                  `  container: ${s.containerExists ? (s.running ? 'running' : 'stopped') : 'not created'}`,
+                  s.url ? `  url:       ${s.url}` : '  url:       (not running)',
+                  '',
+                  `web_search routes through this container exclusively. Commands:`,
+                  `  /searxng install   pull image + create + start container`,
+                  `  /searxng start     start (or recreate) the container`,
+                  `  /searxng stop      stop without removing`,
+                  `  /searxng remove    stop + remove (next start recreates)`
+                ];
+                pushItem('system', lines.join('\n'));
+                return;
+              }
+              if (sub === 'install' || sub === 'start') {
+                pushItem('system', 'searxng: starting (this can take a minute on first install)…');
+                const r = await searxngStart({
+                  progress: (line) => pushItem('system', `searxng: ${line.trim()}`)
+                });
+                if (!r.ok) {
+                  pushItem('error', `searxng: ${r.error.message}`);
+                  return;
+                }
+                pushItem('system', `searxng: running at ${r.value.url ?? '(unknown port)'}.`);
+                return;
+              }
+              if (sub === 'stop') {
+                const r = await searxngStop();
+                if (!r.ok) {
+                  pushItem('error', `searxng: ${r.error.message}`);
+                  return;
+                }
+                pushItem('system', 'searxng: stopped.');
+                return;
+              }
+              if (sub === 'remove') {
+                const r = await searxngRemove();
+                if (!r.ok) {
+                  pushItem('error', `searxng: ${r.error.message}`);
+                  return;
+                }
+                pushItem('system', 'searxng: container removed.');
+                return;
+              }
+              pushItem(
+                'error',
+                `usage: /searxng [status|install|start|stop|remove]`
+              );
+            })();
             return;
           }
           case 'history':
@@ -5271,6 +5340,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'skills', args: '[list|disable <name>|enable <name>]', summary: 'inspect / disable / enable installed skills' },
   { name: 'next', summary: 'ask Atlas which agent or command to run next' },
   { name: 'onboard', summary: 'brownfield onboarding wizard (cost-aware, arrow-key workflow)' },
+  { name: 'searxng', args: '[status|install|start|stop|remove]', summary: 'manage the local SearXNG container that backs web_search' },
   { name: 'exit', summary: 'leave atlas' }
 ];
 

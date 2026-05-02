@@ -1662,8 +1662,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       const ac = new AbortController();
       abortRef.current = ac;
       setStreaming(true);
-      // Reset the activity sidebar at the start of each turn.
-      setActivity([]);
+      // Keep activity history visible across turns; just reset the
+      // per-turn ephemeral thinking line.
       setThinkingLine(null);
 
       // Auto-compaction: if enabled and the running token count is above
@@ -1820,15 +1820,20 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             scheduleFlush();
             break;
           case 'thinking':
-            setThinkingLine(ev.text);
+            // Provider yields per-delta chunks (often word-sized). APPEND
+            // them so the sidebar shows the full thought, not just the
+            // last fragment.
+            setThinkingLine((prev) => (prev ?? '') + ev.text);
             break;
           case 'tool_call_start': {
             toolStartedAt.set(ev.call.id, Date.now());
             const label = `${ev.call.name}(${truncateArgs(ev.call.arguments)})`;
-            setActivity((prev) => [
-              ...prev,
-              { id: ev.call.id, label, status: 'running' as const }
-            ]);
+            setActivity((prev) => {
+              const next = [...prev, { id: ev.call.id, label, status: 'running' as const }];
+              // Cap session-long history so memory stays bounded; sidebar
+              // only renders the last 8 anyway.
+              return next.length > 50 ? next.slice(-50) : next;
+            });
             break;
           }
           case 'tool_call_done': {

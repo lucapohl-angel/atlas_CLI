@@ -36,13 +36,14 @@ describe('toolToSpec', () => {
   });
 
   it('flattens top-level discriminatedUnion into a single object schema', () => {
-    const unioned: Tool<{ op: 'a' | 'b'; ref?: string; url?: string }> = {
+    const unioned: Tool<{ op: 'a' | 'b' | 'c'; ref?: string; url?: string }> = {
       name: 'multi',
       description: 'union tool',
       approval: 'auto',
       schema: z.discriminatedUnion('op', [
         z.object({ op: z.literal('a'), url: z.string().url() }),
-        z.object({ op: z.literal('b'), ref: z.string().min(1) })
+        z.object({ op: z.literal('b'), ref: z.string().min(1) }),
+        z.object({ op: z.literal('c') })
       ]),
       async execute() {
         return ok({ type: 'ok', summary: '' });
@@ -61,9 +62,11 @@ describe('toolToSpec', () => {
     expect(props['op']).toBeDefined();
     expect(props['url']).toBeDefined();
     expect(props['ref']).toBeDefined();
-    // `op` is shared by all branches with different consts -> collapse to enum.
+    // `op` is shared by ALL branches with different consts -> collapse to
+    // an enum that contains EVERY discriminator value.
     const opSchema = props['op'] as Record<string, unknown>;
-    expect(opSchema['enum']).toEqual(['a', 'b']);
+    expect(opSchema['enum']).toEqual(['a', 'b', 'c']);
+    expect(opSchema['const']).toBeUndefined();
     // `op` appears in every branch's `required`, so it stays required.
     expect(params['required']).toContain('op');
     // `url`/`ref` only appear in one branch each, so they must NOT be required.

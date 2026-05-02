@@ -44,19 +44,28 @@ const flattenTopLevelUnion = (schema: JsonObject): JsonObject => {
         continue;
       }
       // Same property in multiple branches — collapse literal `const`s
-      // into an `enum` so the discriminator is still expressive.
+      // (and existing `enum`s) into a single `enum` so the discriminator
+      // is still expressive.
       const existing = mergedProps[key] as JsonObject;
       const a = existing && typeof existing === 'object' ? existing : {};
       const b = val && typeof val === 'object' ? (val as JsonObject) : {};
-      const aConst = 'const' in a ? a['const'] : undefined;
-      const bConst = 'const' in b ? b['const'] : undefined;
-      if (aConst !== undefined && bConst !== undefined && aConst !== bConst) {
-        const enumA = Array.isArray(a['enum']) ? (a['enum'] as unknown[]) : [aConst];
-        mergedProps[key] = {
+      const aValues: unknown[] = Array.isArray(a['enum'])
+        ? (a['enum'] as unknown[])
+        : 'const' in a
+          ? [a['const']]
+          : [];
+      const bValues: unknown[] = Array.isArray(b['enum'])
+        ? (b['enum'] as unknown[])
+        : 'const' in b
+          ? [b['const']]
+          : [];
+      if (aValues.length > 0 && bValues.length > 0) {
+        const merged: JsonObject = {
           ...a,
-          enum: Array.from(new Set([...enumA, bConst]))
+          enum: Array.from(new Set([...aValues, ...bValues]))
         };
-        delete (mergedProps[key] as JsonObject)['const'];
+        delete merged['const'];
+        mergedProps[key] = merged;
       }
     }
     const req = Array.isArray(branch['required']) ? (branch['required'] as string[]) : [];

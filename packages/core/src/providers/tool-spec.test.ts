@@ -73,4 +73,21 @@ describe('toolToSpec', () => {
     expect(params['required']).not.toContain('url');
     expect(params['required']).not.toContain('ref');
   });
+
+  it("guarantees `properties` exists on no-arg tools (OpenAI rejects 'object schema missing properties')", () => {
+    const noargs: Tool<Record<string, never>> = {
+      name: 'noargs',
+      description: 'no args',
+      approval: 'auto',
+      schema: z.object({}),
+      async execute() {
+        return ok({ type: 'ok', summary: '' });
+      }
+    };
+    const spec = toolToSpec(noargs);
+    const params = spec.parameters as Record<string, unknown>;
+    expect(params['type']).toBe('object');
+    expect(params).toHaveProperty('properties');
+    expect(params['properties']).toEqual({});
+  });
 });

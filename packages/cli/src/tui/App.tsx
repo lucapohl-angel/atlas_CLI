@@ -1886,9 +1886,28 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               deltaTimerRef.current = null;
             }
             flushDelta();
-            // Clear the live thinking line; the activity sidebar stays
-            // populated until the next turn so the user can see what ran.
-            setThinkingLine(null);
+            // Move the live thinking line into the activity history so the
+            // user can still see what the model was reasoning about after
+            // the turn ends. Truncate aggressively — full transcripts can
+            // be huge.
+            setThinkingLine((prev) => {
+              if (prev && prev.trim().length > 0) {
+                const summary =
+                  prev.length > 120 ? `${prev.slice(0, 117).trim()}…` : prev.trim();
+                setActivity((items) => {
+                  const next = [
+                    ...items,
+                    {
+                      id: `think-${Date.now()}`,
+                      label: `thinking: ${summary}`,
+                      status: 'info' as const
+                    }
+                  ];
+                  return next.length > 50 ? next.slice(-50) : next;
+                });
+              }
+              return null;
+            });
             // Detect a structured question in the assistant's last message.
             const found = tryExtractInteraction(assistantBuffer);
             if (found) {

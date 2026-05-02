@@ -106,10 +106,17 @@ export const toolToSpec = (tool: Tool<unknown>): ToolSpec => {
   const noUnion = flattenTopLevelUnion(rawSchema);
   // 2. Guarantee top-level `type: "object"` (covers schemas that were
   //    neither unions nor explicit objects, e.g. an empty input).
-  const parameters: JsonObject =
+  const withType: JsonObject =
     noUnion['type'] === 'object'
       ? noUnion
       : { type: 'object', ...noUnion };
+  // 3. OpenAI/Codex also rejects object schemas that are missing the
+  //    `properties` key entirely — even an empty `{}` is fine, but the
+  //    field MUST exist:
+  //      "object schema missing properties"
+  //    MCP-imported tools that take no arguments often hit this.
+  const parameters: JsonObject =
+    'properties' in withType ? withType : { ...withType, properties: {} };
 
   return {
     name: tool.name,

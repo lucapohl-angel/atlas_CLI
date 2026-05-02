@@ -190,7 +190,15 @@ export const ShipConfigSchema = z
      * behavior; `'ours'` / `'theirs'` are pure-git side-pickers; `'ai'` spawns
      * a child agent (requires the host to wire ctx.delegateRun).
      */
-    autoResolve: z.enum(['abort', 'ours', 'theirs', 'ai']).default('abort')
+    autoResolve: z.enum(['abort', 'ours', 'theirs', 'ai']).default('abort'),
+    /**
+     * When `autoResolve` is `'abort'` and a merge conflict occurs, prompt
+     * the user via the TUI to pick a resolution strategy (with an option
+     * to persist their choice as the new default). When false, the tool
+     * just aborts and prints the manual-resolution recipe — the original
+     * pre-prompt behavior. Toggleable from the `/config` menu.
+     */
+    promptOnConflict: z.boolean().default(true)
   })
   .default({});
 

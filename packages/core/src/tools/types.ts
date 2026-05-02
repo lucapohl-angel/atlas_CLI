@@ -79,14 +79,40 @@ export interface ToolContext {
   /**
    * User-set defaults for `ship_apply`. Lets a vibe-coder configure
    * "when auto-merge hits a conflict, just have the AI fix it" once
-   * (via the TUI's `/autoresolve ai` slash command, persisted to
+   * (via the TUI's conflict prompt or `/config` menu, persisted to
    * `~/.atlas/config.yaml`) and forget it. The tool falls back to
    * `'abort'` when this is absent. Per-call `input.autoResolve` still
    * wins so the model can override when it has a specific reason.
    */
   readonly shipDefaults?: {
     readonly autoResolve: 'abort' | 'ours' | 'theirs' | 'ai';
+    /**
+     * When the effective strategy is `'abort'` and a conflict occurs,
+     * the tool calls `shipResolveAsk` if both this is true (default)
+     * AND the host wired the callback. Set false to restore the
+     * pre-prompt behavior (just abort + print recipe).
+     */
+    readonly promptOnConflict?: boolean;
   };
+  /**
+   * Host-supplied interactive prompt invoked by `ship_apply` when an
+   * auto-merge hits a conflict and no preset strategy is configured.
+   * The TUI implementation pops a picker overlay; the user chooses one
+   * of `abort` / `ours` / `theirs` / `ai` and may also tick "set as
+   * default for the future" — in which case the host persists the
+   * choice to `~/.atlas/config.yaml` BEFORE resolving. Return value:
+   *   - `{ strategy, persist }` — apply that strategy now
+   *   - `null` — user dismissed; tool falls back to abort
+   */
+  readonly shipResolveAsk?: (req: {
+    readonly base: string;
+    readonly branch: string;
+    readonly conflictFiles: readonly string[];
+    readonly signal?: AbortSignal;
+  }) => Promise<{
+    readonly strategy: 'abort' | 'ours' | 'theirs' | 'ai';
+    readonly persist: boolean;
+  } | null>;
 }
 
 export interface DelegateChildRequest {

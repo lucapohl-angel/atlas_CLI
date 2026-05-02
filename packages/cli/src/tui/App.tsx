@@ -323,10 +323,25 @@ type Overlay =
     }
   | {
       readonly kind: 'setup';
-      readonly stage: 'menu' | 'key' | 'info';
+      readonly stage: 'menu' | 'key' | 'info' | 'ship';
       readonly draftKey: string;
-      readonly target: 'openrouter' | 'anthropic' | 'claude-code' | 'chatgpt' | 'github' | 'mcp';
+      readonly target: 'openrouter' | 'anthropic' | 'claude-code' | 'chatgpt' | 'github' | 'mcp' | 'ship';
       readonly infoText?: string;
+    }
+  | {
+      /**
+       * Interactive picker shown by `ship_apply mode=auto` when a merge
+       * conflict hits and no preset autoResolve strategy is configured.
+       * The user picks one of abort/ours/theirs/ai and may also tick
+       * "set as default" — in which case App persists to ~/.atlas/config.yaml
+       * before resolving the pending shipResolveAsk promise.
+       */
+      readonly kind: 'ship-conflict';
+      readonly base: string;
+      readonly branch: string;
+      readonly conflictFiles: readonly string[];
+      readonly selected: 'abort' | 'ours' | 'theirs' | 'ai';
+      readonly persist: boolean;
     }
   | {
       readonly kind: 'onboard';
@@ -553,13 +568,24 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     props.config?.compaction?.contextTokens ?? 200_000
   );
 
-  // Ship auto-resolve preference. The model-facing `ship_apply` tool reads
-  // this via ToolContext.shipDefaults on every call; the `/autoresolve`
-  // slash command mutates this ref AND persists to ~/.atlas/config.yaml so
-  // a vibe-coder can set "always have the AI fix conflicts" once.
+  // Ship auto-resolve preference. Read by the model-facing `ship_apply`
+  // tool via ToolContext.shipDefaults on every call. The conflict-resolution
+  // overlay (kind: 'ship-conflict') and the `/config` ship menu mutate these
+  // refs AND persist to ~/.atlas/config.yaml so a vibe-coder can configure
+  // "always have the AI fix conflicts" once.
   const shipAutoResolveRef = useRef<'abort' | 'ours' | 'theirs' | 'ai'>(
     props.config?.ship?.autoResolve ?? 'abort'
   );
+  const shipPromptOnConflictRef = useRef<boolean>(
+    props.config?.ship?.promptOnConflict ?? true
+  );
+  // Pending conflict-prompt resolver. Set by the shipResolveAsk callback
+  // (wired into toolContext per send) when ship_apply hits a conflict;
+  // cleared when the user picks an option in the overlay.
+  const shipResolveResolverRef = useRef<
+    | ((value: { strategy: 'abort' | 'ours' | 'theirs' | 'ai'; persist: boolean } | null) => void)
+    | null
+  >(null);
 
   const pushItem = useCallback(
     (kind: TranscriptItem['kind'], text: string, author?: string): void => {
@@ -1344,49 +1370,6 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             );
             return;
           }
-          case 'autoresolve': {
-            // /autoresolve            → show current setting + options
-            // /autoresolve status     → same as bare
-            // /autoresolve <mode>     → set + persist
-            const sub = rest[0];
-            if (!sub || sub === 'status') {
-              pushItem(
-                'system',
-                `auto-resolve: ${shipAutoResolveRef.current}\n\n` +
-                  `When ship_apply mode=auto hits a merge conflict, atlas will:\n` +
-                  `  abort   stop, print a recipe (default — safest)\n` +
-                  `  ours    keep main's version of conflicting hunks (pure git -X ours)\n` +
-                  `  theirs  keep the branch's version (pure git -X theirs)\n` +
-                  `  ai      spawn a child agent to read the markers and resolve\n\n` +
-                  `Set with: /autoresolve <abort|ours|theirs|ai>  (persists to ~/.atlas/config.yaml)`
-              );
-              return;
-            }
-            if (sub !== 'abort' && sub !== 'ours' && sub !== 'theirs' && sub !== 'ai') {
-              pushItem('error', 'usage: /autoresolve [abort|ours|theirs|ai|status]');
-              return;
-            }
-            shipAutoResolveRef.current = sub;
-            const baseCfg = props.config;
-            if (baseCfg) {
-              const next: AtlasConfig = {
-                ...baseCfg,
-                ship: { ...baseCfg.ship, autoResolve: sub }
-              };
-              void saveConfig(next).then((r) => {
-                if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
-              });
-            }
-            pushItem(
-              'system',
-              sub === 'ai'
-                ? `auto-resolve set to ai. ship_apply mode=auto will now spawn a child agent to fix any merge conflicts (review the auto-resolved commit before pushing).`
-                : sub === 'abort'
-                  ? `auto-resolve set to abort. ship_apply mode=auto will stop on conflict and print a manual-resolution recipe.`
-                  : `auto-resolve set to ${sub}. ship_apply mode=auto will resolve conflicts deterministically using git -X ${sub}.`
-            );
-            return;
-          }
           case 'sessions':
           case 'resume': {
             if (!props.sessionStore) {
@@ -1663,7 +1646,23 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           toolContext: {
             ...props.toolContext,
             approve: mode === 'plan' ? denyAllPolicy : allowAllPolicy,
-            shipDefaults: { autoResolve: shipAutoResolveRef.current },
+            shipDefaults: {
+              autoResolve: shipAutoResolveRef.current,
+              promptOnConflict: shipPromptOnConflictRef.current
+            },
+            shipResolveAsk: async (req) =>
+              new Promise((resolve) => {
+                // Stash the resolver so the overlay can call it on user pick.
+                shipResolveResolverRef.current = resolve;
+                setOverlay({
+                  kind: 'ship-conflict',
+                  base: req.base,
+                  branch: req.branch,
+                  conflictFiles: req.conflictFiles,
+                  selected: shipAutoResolveRef.current === 'abort' ? 'ai' : shipAutoResolveRef.current,
+                  persist: false
+                });
+              }),
             callingAgent: {
               name: activeAgent.name,
               ...(activeAgent.authorizedSections
@@ -1902,6 +1901,143 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
 
   // Global keybindings.
   useInput((char, key) => {
+    // Ship-conflict overlay swallows everything else: number keys pick
+    // a strategy, `p` toggles persist, Enter confirms, Esc aborts (null
+    // resolves the pending shipResolveAsk → tool falls back to abort).
+    if (overlay.kind === 'ship-conflict') {
+      const resolveWith = (
+        pick: { strategy: 'abort' | 'ours' | 'theirs' | 'ai'; persist: boolean } | null
+      ): void => {
+        const r = shipResolveResolverRef.current;
+        shipResolveResolverRef.current = null;
+        if (r) r(pick);
+      };
+      const commit = (
+        strategy: 'abort' | 'ours' | 'theirs' | 'ai',
+        persist: boolean
+      ): void => {
+        if (persist) {
+          shipAutoResolveRef.current = strategy;
+          const baseCfg = props.config;
+          if (baseCfg) {
+            const next: AtlasConfig = {
+              ...baseCfg,
+              ship: { ...baseCfg.ship, autoResolve: strategy }
+            };
+            void saveConfig(next).then((r) => {
+              if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+            });
+          }
+          pushItem(
+            'system',
+            `auto-resolve default set to ${strategy}. Future conflicts will use it without asking.`
+          );
+        }
+        resolveWith({ strategy, persist });
+        setOverlay({ kind: 'none' });
+      };
+      if (key.escape) {
+        resolveWith(null);
+        setOverlay({ kind: 'none' });
+        return;
+      }
+      const STRATS = ['abort', 'ours', 'theirs', 'ai'] as const;
+      if (key.return) {
+        commit(overlay.selected, overlay.persist);
+        return;
+      }
+      if (key.upArrow || (key.shift && key.tab)) {
+        const i = STRATS.indexOf(overlay.selected);
+        const next = STRATS[(i - 1 + STRATS.length) % STRATS.length];
+        if (next) setOverlay({ ...overlay, selected: next });
+        return;
+      }
+      if (key.downArrow || key.tab) {
+        const i = STRATS.indexOf(overlay.selected);
+        const next = STRATS[(i + 1) % STRATS.length];
+        if (next) setOverlay({ ...overlay, selected: next });
+        return;
+      }
+      if (char === '1') {
+        commit('abort', overlay.persist);
+        return;
+      }
+      if (char === '2') {
+        commit('ours', overlay.persist);
+        return;
+      }
+      if (char === '3') {
+        commit('theirs', overlay.persist);
+        return;
+      }
+      if (char === '4') {
+        commit('ai', overlay.persist);
+        return;
+      }
+      if (char === 'p' || char === 'P' || char === ' ') {
+        setOverlay({ ...overlay, persist: !overlay.persist });
+        return;
+      }
+      // Swallow everything else so it doesn't reach the input field.
+      return;
+    }
+    // /config → "Ship: auto-merge" submenu. Number keys set the default
+    // strategy + persist; `p` toggles the prompt-on-conflict; Esc closes.
+    if (overlay.kind === 'setup' && overlay.stage === 'ship') {
+      const setShip = (
+        patch: Partial<{
+          autoResolve: 'abort' | 'ours' | 'theirs' | 'ai';
+          promptOnConflict: boolean;
+        }>
+      ): void => {
+        const baseCfg = props.config;
+        if (patch.autoResolve !== undefined) shipAutoResolveRef.current = patch.autoResolve;
+        if (patch.promptOnConflict !== undefined)
+          shipPromptOnConflictRef.current = patch.promptOnConflict;
+        if (baseCfg) {
+          const next: AtlasConfig = {
+            ...baseCfg,
+            ship: {
+              ...baseCfg.ship,
+              ...(patch.autoResolve !== undefined ? { autoResolve: patch.autoResolve } : {}),
+              ...(patch.promptOnConflict !== undefined
+                ? { promptOnConflict: patch.promptOnConflict }
+                : {})
+            }
+          };
+          void saveConfig(next).then((r) => {
+            if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+          });
+        }
+        // Force re-render of the panel so labels reflect new state.
+        setOverlay({ kind: 'setup', stage: 'ship', draftKey: '', target: 'ship' });
+      };
+      if (key.escape) {
+        setOverlay({ kind: 'none' });
+        return;
+      }
+      if (char === '1') {
+        setShip({ autoResolve: 'abort' });
+        return;
+      }
+      if (char === '2') {
+        setShip({ autoResolve: 'ours' });
+        return;
+      }
+      if (char === '3') {
+        setShip({ autoResolve: 'theirs' });
+        return;
+      }
+      if (char === '4') {
+        setShip({ autoResolve: 'ai' });
+        return;
+      }
+      if (char === 'p' || char === 'P') {
+        setShip({ promptOnConflict: !shipPromptOnConflictRef.current });
+        return;
+      }
+      return;
+    }
     if (key.ctrl && (char === 'c' || char === '\u0003')) {
       handleCtrlC();
       return;
@@ -3170,8 +3306,12 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
 
   const onSetupMenuPick = useCallback(
     async (
-      target: 'openrouter' | 'anthropic' | 'claude-code' | 'chatgpt' | 'github' | 'mcp'
+      target: 'openrouter' | 'anthropic' | 'claude-code' | 'chatgpt' | 'github' | 'mcp' | 'ship'
     ) => {
+      if (target === 'ship') {
+        setOverlay({ kind: 'setup', stage: 'ship', draftKey: '', target: 'ship' });
+        return;
+      }
       if (target === 'openrouter' || target === 'anthropic') {
         setOverlay({ kind: 'setup', stage: 'key', draftKey: '', target });
         return;
@@ -3240,7 +3380,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             extraDeniedPaths: [],
             extraDeniedCommands: []
           },
-          ship: { autoResolve: 'abort' }
+          ship: { autoResolve: 'abort', promptOnConflict: true }
         };
         const nextCfg: AtlasConfig = {
           ...baseCfg,
@@ -3336,7 +3476,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         extraDeniedPaths: [],
         extraDeniedCommands: []
       },
-      ship: { autoResolve: 'abort' }
+      ship: { autoResolve: 'abort', promptOnConflict: true }
     };
 
     const target = overlay.target;
@@ -4996,6 +5136,13 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                       `${mcpCount} configured`
                     )}`,
                     value: 'mcp' as const
+                  },
+                  {
+                    key: 'ship',
+                    label: `Ship: auto-merge    (default: ${cfg?.ship?.autoResolve ?? 'abort'}, prompt: ${
+                      (cfg?.ship?.promptOnConflict ?? true) ? 'on' : 'off'
+                    })`,
+                    value: 'ship' as const
                   }
                 ];
               })()}
@@ -5063,6 +5210,118 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           <Box marginTop={1}>
             <Text color="gray" dimColor>
               ↵ / Esc close
+            </Text>
+          </Box>
+        </Box>
+      )}
+      {overlay.kind === 'setup' && overlay.stage === 'ship' && (
+        <Box
+          flexDirection="column"
+          borderStyle="double"
+          borderColor="cyan"
+          paddingX={1}
+          marginY={1}
+        >
+          <Text color="cyan" bold>
+            ⚙  Ship: auto-merge conflict handling
+          </Text>
+          <Box marginTop={1} flexDirection="column">
+            <Text>
+              When <Text color="cyan">ship_apply mode=auto</Text> hits a merge
+              conflict, atlas can resolve it automatically.
+            </Text>
+            <Box marginTop={1}>
+              <Text color="gray">
+                Default strategy{'  '}
+                <Text color="green">(currently: {shipAutoResolveRef.current})</Text>
+              </Text>
+            </Box>
+            {(['abort', 'ours', 'theirs', 'ai'] as const).map((s, i) => {
+              const active = shipAutoResolveRef.current === s;
+              const desc =
+                s === 'abort'
+                  ? 'stop on conflict, print a recipe (safest)'
+                  : s === 'ours'
+                    ? "keep base's version (pure git -X ours)"
+                    : s === 'theirs'
+                      ? "keep branch's version (pure git -X theirs)"
+                      : 'spawn a child agent to resolve markers';
+              return (
+                <Text key={s} color={active ? 'cyan' : undefined}>
+                  {`  ${active ? '●' : '○'} [${i + 1}] ${s.padEnd(7)} ${desc}`}
+                </Text>
+              );
+            })}
+            <Box marginTop={1}>
+              <Text color="gray">Prompt me when a conflict happens?</Text>
+            </Box>
+            <Text>
+              {`  ${shipPromptOnConflictRef.current ? '☑' : '☐'} [p] prompt-on-conflict (when default = abort, ask which strategy to use)`}
+            </Text>
+            <Box marginTop={1}>
+              <Text color="gray" dimColor>
+                Disable to restore the original behavior (just abort + print recipe).
+              </Text>
+            </Box>
+          </Box>
+          <Box marginTop={1}>
+            <Text color="gray" dimColor>
+              1-4 set default · p toggle prompt · Esc close (saved to ~/.atlas/config.yaml)
+            </Text>
+          </Box>
+        </Box>
+      )}
+      {overlay.kind === 'ship-conflict' && (
+        <Box
+          flexDirection="column"
+          borderStyle="double"
+          borderColor="yellow"
+          paddingX={1}
+          marginY={1}
+        >
+          <Text color="yellow" bold>
+            ⚠  Merge conflict — how should atlas resolve it?
+          </Text>
+          <Box marginTop={1} flexDirection="column">
+            <Text>
+              Merging <Text color="cyan">{overlay.branch}</Text> into{' '}
+              <Text color="cyan">{overlay.base}</Text> hit{' '}
+              {overlay.conflictFiles.length} conflicting file
+              {overlay.conflictFiles.length === 1 ? '' : 's'}:
+            </Text>
+            {overlay.conflictFiles.slice(0, 8).map((f) => (
+              <Text key={f} color="gray">
+                {`  · ${f}`}
+              </Text>
+            ))}
+            {overlay.conflictFiles.length > 8 && (
+              <Text color="gray">{`  · (+${overlay.conflictFiles.length - 8} more)`}</Text>
+            )}
+          </Box>
+          <Box marginTop={1} flexDirection="column">
+            {(['abort', 'ours', 'theirs', 'ai'] as const).map((s, i) => {
+              const active = overlay.selected === s;
+              const desc =
+                s === 'abort'
+                  ? 'stop, print manual-resolution recipe'
+                  : s === 'ours'
+                    ? "keep main's version of conflicting hunks"
+                    : s === 'theirs'
+                      ? "keep branch's version of conflicting hunks"
+                      : 'spawn a child agent to resolve markers (review before pushing!)';
+              return (
+                <Text key={s} color={active ? 'cyan' : undefined}>
+                  {`  ${active ? '▶' : ' '} [${i + 1}] ${s.padEnd(7)} ${desc}`}
+                </Text>
+              );
+            })}
+          </Box>
+          <Box marginTop={1}>
+            <Text>{`  ${overlay.persist ? '☑' : '☐'} [p / space] save this choice as my default for the future`}</Text>
+          </Box>
+          <Box marginTop={1}>
+            <Text color="gray" dimColor>
+              ↑/↓ select · 1-4 jump · ↵ confirm · Esc abort
             </Text>
           </Box>
         </Box>
@@ -5775,7 +6034,6 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'sessions', args: '[id]', summary: 'list / resume saved sessions' },
   { name: 'resume', args: '[id]', summary: 'resume a session (alias of /sessions)' },
   { name: 'compact', args: '[now|status|on|off|model [id]|threshold <0..1>]', summary: 'auto-compaction controls' },
-  { name: 'autoresolve', args: '[abort|ours|theirs|ai|status]', summary: 'when auto-merge hits a conflict, how should atlas handle it?' },
   { name: 'learn', args: '[on|off|status]', summary: 'self-improvement loop: distill the current turn into a learned skill' },
   { name: 'skills', args: '[list|disable <name>|enable <name>]', summary: 'inspect / disable / enable installed skills' },
   { name: 'next', summary: 'ask Atlas which agent or command to run next' },

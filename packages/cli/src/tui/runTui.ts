@@ -360,7 +360,14 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
         todoStore,
         ...(delegateRun ? { delegateRun } : {}),
         ...(executePlanRun ? { executePlanRun } : {}),
-        ...(cfg?.ship ? { shipDefaults: { autoResolve: cfg.ship.autoResolve } } : {})
+        ...(cfg?.ship
+          ? {
+              shipDefaults: {
+                autoResolve: cfg.ship.autoResolve,
+                promptOnConflict: cfg.ship.promptOnConflict
+              }
+            }
+          : {})
       };
     })(),
     hooks: builtinHookRegistry({

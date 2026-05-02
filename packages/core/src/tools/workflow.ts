@@ -659,8 +659,69 @@ export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
         .map((s) => s.trim())
         .filter(Boolean);
 
+      // Per-branch effective strategy. Starts at the request-level
+      // autoResolve; gets overridden by the user's interactive pick
+      // when autoResolve='abort' and a TUI prompt is available.
+      let effective = autoResolve;
+      const canPrompt =
+        autoResolve === 'abort' &&
+        ctx.shipResolveAsk !== undefined &&
+        (ctx.shipDefaults?.promptOnConflict ?? true);
+      if (canPrompt && ctx.shipResolveAsk) {
+        const pick = await ctx.shipResolveAsk({
+          base,
+          branch,
+          conflictFiles,
+          ...(ctx.signal ? { signal: ctx.signal } : {})
+        });
+        if (pick && pick.strategy !== 'abort') {
+          effective = pick.strategy;
+          lines.push(
+            `  → conflict: user chose ${pick.strategy}${pick.persist ? ' (saved as default)' : ''}`
+          );
+          // For ours/theirs we need to abort the in-progress merge so we
+          // can re-issue with -X. For ai we keep the conflicted state so
+          // the agent can read the markers in place.
+          if (effective === 'ours' || effective === 'theirs') {
+            const abortIt = await runGit(['merge', '--abort'], ctx.cwd, ctx.signal);
+            if (abortIt.code !== 0) {
+              lines.push(
+                `    could not abort to re-merge with -X ${effective}: ${abortIt.stderr.trim().split('\n')[0] ?? 'unknown'}`
+              );
+              effective = 'abort';
+            } else {
+              const remerge = await runGit(
+                [
+                  'merge',
+                  '--no-ff',
+                  '-X',
+                  effective,
+                  '-m',
+                  `merge ${branch}`,
+                  branch
+                ],
+                ctx.cwd,
+                ctx.signal
+              );
+              if (remerge.code === 0) {
+                merged.push(branch);
+                autoResolved.push({ branch, how: `-X ${effective}` });
+                lines.push(`  ✓ merged ${branch}  (strategy: -X ${effective})`);
+                estCost += estTokens(lines[lines.length - 1] ?? '');
+                continue;
+              }
+              lines.push(
+                `    -X ${effective} re-merge failed: ${remerge.stderr.trim().split('\n')[0] ?? 'unknown'}`
+              );
+              // Fall through to abort.
+              effective = 'abort';
+            }
+          }
+        }
+      }
+
       // ai mode: spawn a child agent to fix the conflicts in-place.
-      if (autoResolve === 'ai' && ctx.delegateRun) {
+      if (effective === 'ai' && ctx.delegateRun) {
         const goal =
           `You are resolving git merge conflicts on branch ${base} after merging ${branch}.\n\n` +
           `Conflicted files (each contains <<<<<<<, =======, >>>>>>> markers):\n` +
@@ -704,8 +765,8 @@ export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
             `  ✗ ${branch}: ai resolution failed (${stillConflicted ? `${recheck.stdout.trim().split('\n').length} file(s) still have conflict markers` : child.error ?? 'agent did not finish'})`
           );
         }
-        // Fall through to abort+report as if autoResolve='abort'.
-      } else if (autoResolve === 'ai' && !ctx.delegateRun) {
+        // Fall through to abort+report as if effective='abort'.
+      } else if (effective === 'ai' && !ctx.delegateRun) {
         lines.push('  ! autoResolve=ai requested but host did not wire ctx.delegateRun — falling back to abort');
       }
 

@@ -412,6 +412,68 @@ describe('tools/workflow: ship_summary + ship_apply', () => {
     expect(content).toBe('branch version\n');
   });
 
+  it('ship_apply mode=auto calls shipResolveAsk on conflict and applies the user pick', async () => {
+    const { writeFile, readFile } = await import('node:fs/promises');
+    await writeFile(join(cwd, 'shared.txt'), 'main version\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'main: shared'], { cwd });
+    await sh('git', ['checkout', 'atlas/02-second'], { cwd });
+    await writeFile(join(cwd, 'shared.txt'), 'branch version\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'second: shared'], { cwd });
+    await sh('git', ['checkout', 'main'], { cwd });
+
+    const asked: { branch: string; files: readonly string[] }[] = [];
+    const ctxAsk: ToolContext = {
+      ...ctx,
+      shipResolveAsk: async (req) => {
+        asked.push({ branch: req.branch, files: req.conflictFiles });
+        return { strategy: 'ours', persist: false };
+      }
+    };
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'auto' }, ctxAsk);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).toMatch(/user chose ours/);
+      expect(r.value.summary).toMatch(/-X ours/);
+    }
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.branch).toBe('atlas/02-second');
+    expect(asked[0]?.files).toContain('shared.txt');
+    const content = await readFile(join(cwd, 'shared.txt'), 'utf8');
+    expect(content).toBe('main version\n');
+  });
+
+  it('ship_apply mode=auto skips shipResolveAsk when promptOnConflict=false', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(cwd, 'shared.txt'), 'main version\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'main: shared'], { cwd });
+    await sh('git', ['checkout', 'atlas/02-second'], { cwd });
+    await writeFile(join(cwd, 'shared.txt'), 'branch version\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'second: shared'], { cwd });
+    await sh('git', ['checkout', 'main'], { cwd });
+
+    let askedCount = 0;
+    const ctxNoPrompt: ToolContext = {
+      ...ctx,
+      shipDefaults: { autoResolve: 'abort', promptOnConflict: false },
+      shipResolveAsk: async () => {
+        askedCount += 1;
+        return { strategy: 'ours', persist: false };
+      }
+    };
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'auto' }, ctxNoPrompt);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).toMatch(/aborted/);
+    }
+    expect(askedCount).toBe(0);
+  });
+
   it('ship_apply mode=auto autoResolve=theirs keeps the branch side on conflict', async () => {
     const { writeFile, readFile } = await import('node:fs/promises');
     await writeFile(join(cwd, 'shared.txt'), 'main version\n', 'utf8');

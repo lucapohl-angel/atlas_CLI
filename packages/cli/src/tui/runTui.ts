@@ -334,14 +334,19 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
                 baseToolContext: { cwd: req.worktree.path },
                 currentDepth: 0
               });
+              const stopWhenLine =
+                req.task.stopWhen && req.task.stopWhen.trim().length > 0
+                  ? `\n\nStop / abort condition (treat as a hard budget — if you hit it, stop and report instead of pushing through):\n${req.task.stopWhen}`
+                  : '';
               const goal =
                 `Implement plan task ${req.task.id} (${req.task.name}).\n\n` +
                 `Files to touch (relative to this cwd):\n` +
                 req.task.files.map((f) => `  - ${f}`).join('\n') +
                 `\n\nAction:\n${req.task.action}\n\n` +
                 `Done criterion:\n${req.task.done}\n\n` +
-                `Verify command (will be run automatically after you finish — do NOT run it yourself):\n${req.task.verify}\n\n` +
-                `You are working inside an isolated git worktree. Make only the changes ` +
+                `Verify command (will be run automatically after you finish — do NOT run it yourself):\n${req.task.verify}` +
+                stopWhenLine +
+                `\n\nYou are working inside an isolated git worktree. Make only the changes ` +
                 `this task requires. Do not commit — that happens automatically after verify passes.`;
               const out = await childRunner({
                 goal,

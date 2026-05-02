@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { appendContextEntry, finalizeContext, readContext } from './context.js';
+import { setSlot } from './slots.js';
 import { startTask } from './state.js';
 import type { TaskState } from './types.js';
 
@@ -52,19 +53,32 @@ describe('workflow/context', () => {
     }
   });
 
-  it('finalizeContext requires a draft to exist', async () => {
+  it('finalizeContext refuses when required slots are empty', async () => {
+    await appendContextEntry(state, { heading: 'Q', body: 'A' });
     const r = await finalizeContext(state);
     expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toContain('required slots');
   });
 
-  it('finalizeContext promotes draft to CONTEXT.md and embeds summary', async () => {
+  it('finalizeContext composes structured CONTEXT.md from slots + log', async () => {
+    await setSlot(state, 'goal', 'Build a Postgres-backed receipts API.');
+    await setSlot(state, 'success', 'GET /receipts returns 200 with seeded data');
+    await setSlot(state, 'constraints', 'TypeScript strict; no `any`.');
     await appendContextEntry(state, { heading: 'Q', body: 'A' });
-    const fin = await finalizeContext(state, 'Build a Postgres-backed API.');
+    const fin = await finalizeContext(state, 'Receipts API, slim slice.');
     expect(fin.ok).toBe(true);
     if (fin.ok) {
       const body = await readFile(fin.value.path, 'utf8');
+      expect(body).toContain('## Goal');
+      expect(body).toContain('Build a Postgres-backed receipts API.');
+      expect(body).toContain('## Success criteria');
+      expect(body).toContain('- GET /receipts returns 200');
+      expect(body).toContain('## Constraints');
+      expect(body).toContain('## Out of scope');
+      expect(body).toContain('## Discovery log');
+      expect(body).toContain('## Q');
       expect(body).toContain('## Summary');
-      expect(body).toContain('Build a Postgres-backed API.');
+      expect(body).toContain('Receipts API, slim slice.');
       expect(body).toContain('<!-- atlas:finalized -->');
       expect(fin.value.path.endsWith('CONTEXT.md')).toBe(true);
     }

@@ -91,6 +91,7 @@ import {
   clearActiveTask,
   canRewindTo,
   formatPhaseLine,
+  phasePromptAddendum,
   readSignals,
   startTask,
   titleFromMessage,
@@ -1602,11 +1603,20 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       const skills = props.skills.list();
       // Per-agent override takes precedence over the global model.
       const effectiveModel = agentModels.get(activeAgent.name) ?? model;
-      const systemContent = buildSystemPrompt(activeAgent, skills, {
+      const baseSystem = buildSystemPrompt(activeAgent, skills, {
         model: effectiveModel,
         providerLabel: providerLongLabel(activeProviderKind),
         atlasVersion: ATLAS_VERSION
       });
+      // Phase-aware addendum — pushes the model toward structured
+      // discovery (slot tools + clarify-with-options for vague answers)
+      // and toward stopWhen budgets in the plan phase. We use the
+      // current task's phase as a proxy; if no task is active yet,
+      // treat the very first turn as `discover` so the addendum fires
+      // on the user's opening message too.
+      const predictedPhase = activeTaskRef.current?.phase ?? 'discover';
+      const addendum = phasePromptAddendum(predictedPhase);
+      const systemContent = addendum ? `${baseSystem}\n\n${addendum}` : baseSystem;
       const seeded: Message[] = [
         { role: 'system', content: systemContent },
         ...messagesRef.current

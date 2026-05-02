@@ -5,9 +5,14 @@
  * file-existence signals get flipped.
  *
  * Tools:
- *   - context_note      append a Q+A or note to CONTEXT.draft.md
+ *   - context_note      append a free-form Q+A or note to CONTEXT.draft.md
  *   - context_show      read whichever context file currently exists
- *   - context_finalize  promote the draft to CONTEXT.md (advances phase)
+ *   - context_set       write a value into one of the structured slots
+ *                       (goal / success / constraints / context /
+ *                       out_of_scope / open_questions)
+ *   - context_status    report which required slots are still empty
+ *   - context_finalize  promote slots + draft to CONTEXT.md
+ *                       (refuses if goal/success empty)
  *   - plan_write        emit/overwrite PLAN.xml from a structured input
  *   - plan_show         read + parse the current plan
  *   - plan_check        validate a plan input without writing it
@@ -34,6 +39,15 @@ import {
   type Plan,
   type PlanTask
 } from '../workflow/plan.js';
+import {
+  REQUIRED_SLOTS,
+  SLOT_IDS,
+  formatSlotStatus,
+  missingRequiredSlots,
+  readSlots,
+  setSlot,
+  type SlotId
+} from '../workflow/slots.js';
 import { loadActiveTask } from '../workflow/state.js';
 import type { TaskState } from '../workflow/types.js';
 import type { Tool, ToolContext, ToolOk } from './types.js';
@@ -70,7 +84,7 @@ export const contextNoteTool: Tool<z.infer<typeof ContextNoteInput>> = {
   approval: 'auto',
   schema: ContextNoteInput,
   whenToUse:
-    'Use during the discover phase to record clarifying questions and their answers, decisions you and the user reached, or constraints the user surfaced. The accumulated draft becomes CONTEXT.md after context_finalize.',
+    'Use during the discover phase to record the back-and-forth Q+A and free-form notes that produce CONTEXT.md. Use `context_set` for the structured slots (goal / success / constraints / out_of_scope / etc.); use this tool for the conversational log that backs them up.',
   outputContract: 'On success, summary is "context: +<heading>".',
   async execute(input, ctx) {
     const t = await requireActiveTask(ctx);
@@ -109,6 +123,91 @@ export const contextShowTool: Tool<z.infer<typeof ContextShowInput>> = {
 };
 
 /* ------------------------------------------------------------------ */
+/* context_set                                                        */
+/* ------------------------------------------------------------------ */
+
+const ContextSetInput = z.object({
+  slot: z.enum(SLOT_IDS),
+  content: z.string().min(1).max(2000)
+});
+
+export const contextSetTool: Tool<z.infer<typeof ContextSetInput>> = {
+  name: 'context_set',
+  description:
+    'Write a value into the structured CONTEXT.md slot store. `goal` replaces; the others append a bullet.',
+  approval: 'auto',
+  schema: ContextSetInput,
+  whenToUse:
+    "Use during the discover phase to fill the six structured slots that drive the final CONTEXT.md: goal (the single sentence outcome), success (one testable bullet at a time), constraints (stack/perf/files-not-to-touch), context (relevant files / prior decisions), out_of_scope (things you must NOT do), open_questions (acknowledged unknowns). `goal` and `success` are required before `context_finalize` will accept.",
+  outputContract:
+    'On success, summary is "slot <id>: <count> bullets" (or "slot goal: set").',
+  examples: [
+    {
+      input: '{"slot":"goal","content":"Ship a Postgres-backed receipts API."}',
+      result: 'replaces the goal slot'
+    },
+    {
+      input: '{"slot":"success","content":"GET /receipts returns 200 with seeded data"}',
+      result: 'appends a success-criterion bullet'
+    }
+  ],
+  async execute(input, ctx) {
+    const t = await requireActiveTask(ctx);
+    if (!t.ok) return t;
+    const r = await setSlot(t.value, input.slot as SlotId, input.content);
+    if (!r.ok) return r;
+    const summary =
+      input.slot === 'goal'
+        ? 'slot goal: set'
+        : (() => {
+            const n =
+              input.slot === 'success'
+                ? r.value.successCriteria.length
+                : input.slot === 'constraints'
+                  ? r.value.constraints.length
+                  : input.slot === 'context'
+                    ? r.value.context.length
+                    : input.slot === 'out_of_scope'
+                      ? r.value.outOfScope.length
+                      : r.value.openQuestions.length;
+            return `slot ${input.slot}: ${n} bullet${n === 1 ? '' : 's'}`;
+          })();
+    return ok({ type: 'ok', summary } satisfies ToolOk);
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* context_status                                                     */
+/* ------------------------------------------------------------------ */
+
+const ContextStatusInput = z.object({});
+
+export const contextStatusTool: Tool<z.infer<typeof ContextStatusInput>> = {
+  name: 'context_status',
+  description:
+    'Report which CONTEXT.md slots are filled and which required slots are still empty.',
+  approval: 'auto',
+  schema: ContextStatusInput,
+  whenToUse:
+    'Use to check whether you have enough structured context to call `context_finalize`. Required slots are: ' +
+    REQUIRED_SLOTS.join(', ') +
+    '.',
+  outputContract:
+    'On success, summary is a per-slot status report ending with either "ready to finalize" or "still required before finalize: ...".',
+  async execute(_input, ctx) {
+    const t = await requireActiveTask(ctx);
+    if (!t.ok) return t;
+    const r = await readSlots(t.value);
+    if (!r.ok) return r;
+    return ok({
+      type: 'ok',
+      summary: formatSlotStatus(r.value),
+      data: { missing: missingRequiredSlots(r.value) }
+    } satisfies ToolOk);
+  }
+};
+
+/* ------------------------------------------------------------------ */
 /* context_finalize                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -118,12 +217,16 @@ const ContextFinalizeInput = z.object({
 
 export const contextFinalizeTool: Tool<z.infer<typeof ContextFinalizeInput>> = {
   name: 'context_finalize',
-  description: 'Promote CONTEXT.draft.md to CONTEXT.md. Signals to the router that discover is done.',
+  description:
+    'Promote the structured slots (+ Q+A draft) to CONTEXT.md. Refuses if required slots (goal, success) are empty. Signals to the router that discover is done.',
   approval: 'auto',
   schema: ContextFinalizeInput,
   whenToUse:
-    'Call this exactly once per task, when you and the user have agreed on enough context that you can write a plan with no remaining gray-area decisions. Add an optional 1–3 sentence summary of the agreed scope.',
+    'Call this exactly once per task, when the goal is settled and at least one testable success criterion is recorded via `context_set`. Add an optional 1–3 sentence summary of the agreed scope.',
   outputContract: 'On success, summary is "context: finalized at <path>".',
+  blockedOps: [
+    'required slots empty (call context_set with slot=goal and slot=success first)'
+  ],
   async execute(input, ctx) {
     const t = await requireActiveTask(ctx);
     if (!t.ok) return t;
@@ -144,6 +247,7 @@ const PlanTaskInput = z.object({
   action: z.string().min(1).max(4000),
   verify: z.string().min(1).max(1000),
   done: z.string().min(1).max(1000),
+  stopWhen: z.string().min(1).max(1000).optional(),
   deps: z.array(z.string().min(1).max(40)).optional()
 });
 
@@ -161,6 +265,7 @@ const toPlan = (input: z.infer<typeof PlanWriteInput>): Plan => ({
       action: t.action,
       verify: t.verify,
       done: t.done,
+      ...(t.stopWhen ? { stopWhen: t.stopWhen } : {}),
       deps: t.deps ?? []
     })
   )
@@ -172,7 +277,7 @@ export const planWriteTool: Tool<z.infer<typeof PlanWriteInput>> = {
   approval: 'auto',
   schema: PlanWriteInput,
   whenToUse:
-    'Use during the plan phase, after CONTEXT.md is finalized. Decompose the work into ordered, independently-verifiable tasks. Each task must list the files it touches, a one-line action, a shell command that proves it works, and an explicit done criterion. Use `deps` (referencing other task ids in this same plan) when ordering matters.',
+    'Use during the plan phase, after CONTEXT.md is finalized. Decompose the work into ordered, independently-verifiable tasks. Each task must list the files it touches, a one-line action, a shell command that proves it works, and an explicit done criterion. Add an optional `stopWhen` budget when the action could loop (e.g. "abort after 3 failed test fixes; ask the user instead of refactoring shared code"). Use `deps` (referencing other task ids in this same plan) when ordering matters.',
   outputContract: 'On success, summary is "plan: <n> tasks at <path>".',
   blockedOps: [
     'duplicate task ids (rejected by validator)',

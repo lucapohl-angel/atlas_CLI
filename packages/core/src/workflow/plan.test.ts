@@ -64,6 +64,34 @@ describe('workflow/plan: serialize/parse round trip', () => {
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(parsed.value).toEqual(plan);
   });
+
+  it('round-trips an optional stopWhen field', () => {
+    const plan: Plan = {
+      version: 1,
+      tasks: [
+        {
+          id: '01',
+          name: 'flaky test',
+          files: ['t.ts'],
+          action: 'fix failing test',
+          verify: 'pnpm test',
+          done: 'green',
+          stopWhen: 'abort after 3 retries; ask the user instead of refactoring shared code',
+          deps: []
+        }
+      ]
+    };
+    const xml = serializePlan(plan);
+    expect(xml).toContain('<stop_when>');
+    const parsed = parsePlan(xml);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value).toEqual(plan);
+  });
+
+  it('omits <stop_when> when not set', () => {
+    const xml = serializePlan(samplePlan());
+    expect(xml).not.toContain('<stop_when>');
+  });
 });
 
 describe('workflow/plan: parsePlan errors', () => {

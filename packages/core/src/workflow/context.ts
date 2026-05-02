@@ -15,6 +15,12 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atlasError, type AtlasError } from '../errors.js';
 import { err, ok, type Result } from '../result.js';
+import {
+  missingRequiredSlots,
+  readSlots,
+  renderSlotsMarkdown,
+  type SlotId
+} from './slots.js';
 import { taskDir } from './state.js';
 import type { TaskState } from './types.js';
 
@@ -106,35 +112,53 @@ export const readContext = async (
 /**
  * Promote the draft to `CONTEXT.md`. The slice-1 signal probe picks
  * up the renamed file on the next user message and the router
- * advances the phase to `plan`. Returns an error when no draft
- * exists yet (model called finalize too early).
+ * advances the phase to `plan`.
+ *
+ * Finalization requires that the structured slot sidecar
+ * (`CONTEXT.slots.json`, written via `context_set`) has at minimum
+ * a `goal` and one success-criterion bullet. Free-form Q+A
+ * collected via `context_note` is appended after the rendered
+ * slots so reviewers still see the conversation that produced the
+ * brief.
  */
 export const finalizeContext = async (
   state: TaskState,
   summary?: string
-): Promise<Result<{ readonly path: string }, AtlasError>> => {
-  const draft = contextDraftPath(state);
-  const final = contextFinalPath(state);
-  if (!(await fileExists(draft))) {
+): Promise<
+  Result<{ readonly path: string; readonly missing: readonly SlotId[] }, AtlasError>
+> => {
+  const slotsR = await readSlots(state);
+  if (!slotsR.ok) return slotsR;
+  const missing = missingRequiredSlots(slotsR.value);
+  if (missing.length > 0) {
     return err(
       atlasError(
         'WORKFLOW_STATE_WRITE_FAILED',
-        'cannot finalize: no CONTEXT.draft.md yet (call context_note first)'
+        `cannot finalize: required slots empty (${missing.join(', ')}). Call context_set with slot=goal and slot=success first.`
       )
     );
   }
+  const draft = contextDraftPath(state);
+  const final = contextFinalPath(state);
+  const draftBody = (await fileExists(draft)) ? await readFile(draft, 'utf8') : '';
   try {
-    if (summary) {
-      const tail = `---\n\n## Summary\n\n${summary.trim()}\n\n<!-- atlas:finalized -->\n`;
-      await writeFile(draft, tail, { flag: 'a', encoding: 'utf8' });
-    } else {
-      await writeFile(draft, `\n<!-- atlas:finalized -->\n`, {
-        flag: 'a',
-        encoding: 'utf8'
-      });
-    }
-    await rename(draft, final);
-    return ok({ path: final });
+    const header = `# Context: ${state.title}\n\n` +
+      `> Task: ${state.id}\n` +
+      `> Started: ${state.createdAt}\n\n`;
+    const slotsMd = renderSlotsMarkdown(slotsR.value);
+    const summaryBlock = summary ? `## Summary\n\n${summary.trim()}\n\n` : '';
+    // Strip the auto-header from the legacy draft so we don't repeat it.
+    const log = draftBody
+      .replace(/^# Context:[\s\S]*?<!-- entries appended[^\n]*-->\n+/, '')
+      .trim();
+    const logBlock = log.length > 0 ? `## Discovery log\n\n${log}\n\n` : '';
+    const body =
+      header + slotsMd + '\n' + summaryBlock + logBlock + '<!-- atlas:finalized -->\n';
+    await mkdir(join(final, '..'), { recursive: true });
+    const tmp = `${final}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tmp, body, 'utf8');
+    await rename(tmp, final);
+    return ok({ path: final, missing });
   } catch (e) {
     return err(
       atlasError('WORKFLOW_STATE_WRITE_FAILED', 'failed to finalize context', {

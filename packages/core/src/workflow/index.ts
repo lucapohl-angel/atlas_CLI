@@ -31,6 +31,7 @@ export {
   type UpdateTaskPatch
 } from './state.js';
 export { readSignals } from './signals.js';
+export { phasePromptAddendum } from './phase-prompt.js';
 export {
   CONTEXT_FILENAME,
   CONTEXT_DRAFT_FILENAME,
@@ -39,6 +40,19 @@ export {
   readContext,
   type ContextEntry
 } from './context.js';
+export {
+  CONTEXT_SLOTS_FILENAME,
+  REQUIRED_SLOTS,
+  SLOT_IDS,
+  emptySlots,
+  formatSlotStatus,
+  missingRequiredSlots,
+  readSlots,
+  renderSlotsMarkdown,
+  setSlot,
+  type ContextSlots,
+  type SlotId
+} from './slots.js';
 export {
   PLAN_FILENAME,
   serializePlan,

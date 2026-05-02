@@ -14,6 +14,7 @@
  *       <action>What to do, prose</action>
  *       <verify>shell command(s) that prove it works</verify>
  *       <done>concrete acceptance criteria</done>
+ *       <stop_when>optional: budget/abort condition for the executor</stop_when>
  *       <deps>
  *         <dep>00</dep>
  *       </deps>
@@ -41,6 +42,8 @@ export interface PlanTask {
   readonly action: string;
   readonly verify: string;
   readonly done: string;
+  /** Optional executor budget / abort condition surfaced into the agent goal. */
+  readonly stopWhen?: string;
   readonly deps: readonly string[];
 }
 
@@ -86,6 +89,9 @@ export const serializePlan = (plan: Plan): string => {
     lines.push(`    <action>${escapeXml(t.action)}</action>`);
     lines.push(`    <verify>${escapeXml(t.verify)}</verify>`);
     lines.push(`    <done>${escapeXml(t.done)}</done>`);
+    if (t.stopWhen && t.stopWhen.trim().length > 0) {
+      lines.push(`    <stop_when>${escapeXml(t.stopWhen)}</stop_when>`);
+    }
     if (t.deps.length > 0) {
       lines.push('    <deps>');
       for (const d of t.deps) lines.push(`      <dep>${escapeXml(d)}</dep>`);
@@ -150,6 +156,9 @@ export const parsePlan = (xml: string): Result<Plan, AtlasError> => {
     const done = pickOne('done');
     if (!done.ok) return done;
 
+    const stopWhenMatch = body.match(/<stop_when>([\s\S]*?)<\/stop_when>/);
+    const stopWhen = stopWhenMatch ? unescapeXml((stopWhenMatch[1] ?? '').trim()) : undefined;
+
     const deps: string[] = [];
     const depsBlock = body.match(/<deps>([\s\S]*?)<\/deps>/);
     if (depsBlock) {
@@ -165,6 +174,7 @@ export const parsePlan = (xml: string): Result<Plan, AtlasError> => {
       action: action.value,
       verify: verify.value,
       done: done.value,
+      ...(stopWhen && stopWhen.length > 0 ? { stopWhen } : {}),
       deps
     });
   }

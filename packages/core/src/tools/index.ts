@@ -19,6 +19,8 @@ import { delegateTool } from './delegate.js';
 import {
   contextNoteTool,
   contextShowTool,
+  contextSetTool,
+  contextStatusTool,
   contextFinalizeTool,
   planWriteTool,
   planShowTool,
@@ -59,6 +61,8 @@ export type { CreateDelegateRunnerOptions } from './delegate-runner.js';
 export {
   contextNoteTool,
   contextShowTool,
+  contextSetTool,
+  contextStatusTool,
   contextFinalizeTool,
   planWriteTool,
   planShowTool,
@@ -92,6 +96,8 @@ export const builtinToolRegistry = (): ToolRegistry => {
   r.register(delegateTool);
   r.register(contextNoteTool);
   r.register(contextShowTool);
+  r.register(contextSetTool);
+  r.register(contextStatusTool);
   r.register(contextFinalizeTool);
   r.register(planWriteTool);
   r.register(planShowTool);

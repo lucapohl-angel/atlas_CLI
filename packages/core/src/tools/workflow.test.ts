@@ -6,7 +6,9 @@ import { startTask } from '../workflow/state.js';
 import {
   contextFinalizeTool,
   contextNoteTool,
+  contextSetTool,
   contextShowTool,
+  contextStatusTool,
   planCheckTool,
   planExecuteTool,
   planShowTool,
@@ -56,13 +58,21 @@ describe('tools/workflow: context_* end-to-end', () => {
     await rm(cwd, { recursive: true, force: true });
   });
 
-  it('note → show → finalize → show', async () => {
+  it('note → set slots → show → finalize → show', async () => {
     const note = await contextNoteTool.execute(
       { heading: 'Q: db?', body: 'Postgres', category: 'storage' },
       ctx
     );
     expect(note.ok).toBe(true);
     if (note.ok) expect(note.value.summary).toContain('Q: db?');
+
+    const goal = await contextSetTool.execute({ slot: 'goal', content: 'Ship a Postgres-backed receipts API.' }, ctx);
+    expect(goal.ok).toBe(true);
+    if (goal.ok) expect(goal.value.summary).toBe('slot goal: set');
+
+    const succ = await contextSetTool.execute({ slot: 'success', content: 'GET /receipts returns 200' }, ctx);
+    expect(succ.ok).toBe(true);
+    if (succ.ok) expect(succ.value.summary).toBe('slot success: 1 bullet');
 
     const show1 = await contextShowTool.execute({}, ctx);
     expect(show1.ok).toBe(true);
@@ -77,6 +87,8 @@ describe('tools/workflow: context_* end-to-end', () => {
 
     const show2 = await contextShowTool.execute({}, ctx);
     if (show2.ok) {
+      expect(show2.value.summary).toContain('## Goal');
+      expect(show2.value.summary).toContain('## Success criteria');
       expect(show2.value.summary).toContain('## Summary');
       expect(show2.value.summary).toContain('use postgres');
     }
@@ -85,6 +97,21 @@ describe('tools/workflow: context_* end-to-end', () => {
   it('finalize before any note fails', async () => {
     const fin = await contextFinalizeTool.execute({}, ctx);
     expect(fin.ok).toBe(false);
+    if (!fin.ok) expect(fin.error.message).toContain('required slots');
+  });
+
+  it('context_status reports missing required slots, then ready', async () => {
+    const s1 = await contextStatusTool.execute({}, ctx);
+    expect(s1.ok).toBe(true);
+    if (s1.ok) {
+      expect(s1.value.summary).toContain('still required before finalize');
+      expect(s1.value.summary).toContain('goal');
+      expect(s1.value.summary).toContain('success');
+    }
+    await contextSetTool.execute({ slot: 'goal', content: 'g' }, ctx);
+    await contextSetTool.execute({ slot: 'success', content: 's' }, ctx);
+    const s2 = await contextStatusTool.execute({}, ctx);
+    if (s2.ok) expect(s2.value.summary).toContain('ready to finalize');
   });
 
   it('show with no context returns the empty marker', async () => {

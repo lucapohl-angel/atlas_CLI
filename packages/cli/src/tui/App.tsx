@@ -5242,10 +5242,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 s === 'abort'
                   ? 'stop on conflict, print a recipe (safest)'
                   : s === 'ours'
-                    ? "keep base's version (pure git -X ours)"
+                    ? "keep YOUR side — the branch you're merging INTO (e.g. main)"
                     : s === 'theirs'
-                      ? "keep branch's version (pure git -X theirs)"
-                      : 'spawn a child agent to resolve markers';
+                      ? "keep THEIR side — the branch you're merging IN"
+                      : 'let an AI agent read both sides + resolve the markers';
               return (
                 <Text key={s} color={active ? 'cyan' : undefined}>
                   {`  ${active ? '●' : '○'} [${i + 1}] ${s.padEnd(7)} ${desc}`}
@@ -5305,16 +5305,21 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 s === 'abort'
                   ? 'stop, print manual-resolution recipe'
                   : s === 'ours'
-                    ? "keep main's version of conflicting hunks"
+                    ? `keep YOUR side — ${overlay.base} wins on every conflict`
                     : s === 'theirs'
-                      ? "keep branch's version of conflicting hunks"
-                      : 'spawn a child agent to resolve markers (review before pushing!)';
+                      ? `keep THEIR side — ${overlay.branch} wins on every conflict`
+                      : 'let an AI agent read both sides + resolve markers (review before pushing!)';
               return (
                 <Text key={s} color={active ? 'cyan' : undefined}>
                   {`  ${active ? '▶' : ' '} [${i + 1}] ${s.padEnd(7)} ${desc}`}
                 </Text>
               );
             })}
+            <Box marginTop={1}>
+              <Text color="gray" dimColor>
+                {`tip: "ours" = the branch you're ON (${overlay.base}). "theirs" = the one being merged IN (${overlay.branch}). git's wording, not ours.`}
+              </Text>
+            </Box>
           </Box>
           <Box marginTop={1}>
             <Text>{`  ${overlay.persist ? '☑' : '☐'} [p / space] save this choice as my default for the future`}</Text>

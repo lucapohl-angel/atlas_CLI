@@ -537,6 +537,19 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   const deltaBufferRef = useRef('');
   const deltaTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Right-side activity sidebar: a per-turn live log of tool calls and
+  // thinking. Cleared at the start of each turn. Keeps the main
+  // transcript clean (assistant + user only) while still surfacing
+  // what's happening behind the scenes.
+  type ActivityEntry = {
+    readonly id: string;
+    readonly label: string;
+    readonly status: 'running' | 'ok' | 'err' | 'info';
+    readonly elapsedMs?: number;
+  };
+  const [activity, setActivity] = useState<readonly ActivityEntry[]>([]);
+  const [thinkingLine, setThinkingLine] = useState<string | null>(null);
+
   const messagesRef = useRef<Message[]>([]);
   // Session: id is shown in the header; the record is mutated in place
   // and persisted via SessionStore.write() on every turn_end. When no
@@ -556,12 +569,6 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   const turnRoundsRef = useRef(0);
   const turnToolErrorsRef = useRef(0);
   const lastUserMessageRef = useRef('');
-  // Key threshold at the start of the current turn. Used at turn_end to
-  // collapse ephemeral thinking + verbose tool-call items into a single dim
-  // summary line, keeping the history clean while still showing tool names.
-  const turnStartKeyRef = useRef(0);
-  // Tool names called in the current turn (for the summary line).
-  const turnToolNamesRef = useRef<string[]>([]);
   /** Inflight reflection abort controller (Esc cancels it). */
   const reflectAbortRef = useRef<AbortController | null>(null);
   /** Soft toggle: user can disable auto-learn via `/learn off`. Defaults on. */
@@ -1655,10 +1662,9 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       const ac = new AbortController();
       abortRef.current = ac;
       setStreaming(true);
-      // Snapshot the transcript key so turn_end can identify which
-      // thinking/tool items belong to this turn.
-      turnStartKeyRef.current = transcriptKey.current;
-      turnToolNamesRef.current = [];
+      // Reset the activity sidebar at the start of each turn.
+      setActivity([]);
+      setThinkingLine(null);
 
       // Auto-compaction: if enabled and the running token count is above
       // the configured threshold, ask a model (the active one by default,
@@ -1858,39 +1864,9 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               deltaTimerRef.current = null;
             }
             flushDelta();
-            // Collapse thinking + tool-call items from this turn into a
-            // single dim summary line. This keeps message history clean
-            // while still showing which tools ran and how many.
-            const turnStartKey = turnStartKeyRef.current;
-            const toolNames = turnToolNamesRef.current;
-            setTranscript((prev) => {
-              // Partition: items before this turn vs items added during it.
-              const before = prev.filter(
-                (it) => Number(it.key.slice(1)) <= turnStartKey
-              );
-              const thisTurn = prev.filter(
-                (it) => Number(it.key.slice(1)) > turnStartKey
-              );
-              // Separate assistant (keep as-is) from ephemeral items.
-              const assistantItems = thisTurn.filter((it) => it.kind === 'assistant');
-              const errorItems = thisTurn.filter((it) => it.kind === 'error');
-              if (toolNames.length === 0 && errorItems.length === 0) {
-                // Nothing to summarise — just drop thinking rows.
-                return [...before, ...assistantItems];
-              }
-              // Build a compact one-liner: ↳ tool_a · tool_b
-              const toolLine = toolNames.join(' · ');
-              const errSuffix = errorItems.length > 0
-                ? `  ✗ ${errorItems.length} error${errorItems.length > 1 ? 's' : ''}`
-                : '';
-              transcriptKey.current += 1;
-              const summary: TranscriptItem = {
-                key: `t${transcriptKey.current}`,
-                kind: 'tool',
-                text: `↳ ${toolLine || '0 tools'}${errSuffix}`
-              };
-              return [...before, summary, ...assistantItems];
-            });
+            // Clear the live thinking line; the activity sidebar stays
+            // populated until the next turn so the user can see what ran.
+            setThinkingLine(null);
             // Detect a structured question in the assistant's last message.
             const found = tryExtractInteraction(assistantBuffer);
             if (found) {
@@ -3729,7 +3705,11 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   const transcriptRowBudget = Math.max(2, rows - reserved);
   // Estimate rendered height of each transcript item by counting hard
   // newlines and wrapping long lines against the terminal width.
-  const wrapWidth = Math.max(20, cols - 4);
+  // The right activity sidebar steals ~34 cols when the terminal is wide
+  // enough (≥ 100 cols). Shrink the wrap budget accordingly so transcript
+  // text doesn't render under the sidebar border.
+  const sidebarWidth = cols >= 100 ? 34 : 0;
+  const wrapWidth = Math.max(20, cols - 4 - sidebarWidth);
   const wrappedLineCount = (text: string): number => {
     const lines = text.length === 0 ? [''] : text.split('\n');
     let n = 0;
@@ -3845,23 +3825,38 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         gitBranch={gitBranch}
       />
       {transcript.length === 0 && overlay.kind !== 'setup' && <Splash defaultModel={model} />}
-      <Box flexDirection="column" flexGrow={1}>
-        {hiddenCount > 0 && (
-          <Text color="gray" dimColor>
-            ↑ {hiddenCount} earlier message{hiddenCount === 1 ? '' : 's'} (PgUp to scroll)
-          </Text>
-        )}
-        {visibleTranscript.map((item, i) => {
-          const isLive =
-            streaming &&
-            i === visibleTranscript.length - 1 &&
-            item.kind === 'assistant';
-          return <TranscriptRow key={item.key} item={item} live={isLive} />;
-        })}
-        {newerHidden > 0 && (
-          <Text color="gray" dimColor>
-            ↓ {newerHidden} more line{newerHidden === 1 ? '' : 's'} below (PgDn / End)
-          </Text>
+      <Box flexDirection="row" flexGrow={1}>
+        <Box flexDirection="column" flexGrow={1}>
+          {hiddenCount > 0 && (
+            <Text color="gray" dimColor>
+              ↑ {hiddenCount} earlier message{hiddenCount === 1 ? '' : 's'} (PgUp to scroll)
+            </Text>
+          )}
+          {visibleTranscript.map((item, i) => {
+            const isLive =
+              streaming &&
+              i === visibleTranscript.length - 1 &&
+              item.kind === 'assistant';
+            return <TranscriptRow key={item.key} item={item} live={isLive} />;
+          })}
+          {newerHidden > 0 && (
+            <Text color="gray" dimColor>
+              ↓ {newerHidden} more line{newerHidden === 1 ? '' : 's'} below (PgDn / End)
+            </Text>
+          )}
+        </Box>
+        {cols >= 100 && (
+          <ActivitySidebar
+            activity={activity}
+            thinking={thinkingLine}
+            streaming={streaming}
+            cost={
+              usage && usage.promptTokens !== undefined && usage.completionTokens !== undefined
+                ? estimateCost(model, usage.promptTokens, usage.completionTokens)
+                : undefined
+            }
+            usage={usage}
+          />
         )}
       </Box>
       {overlay.kind === 'agent-picker' && (
@@ -5544,6 +5539,7 @@ const Header = ({
     usage && usage.promptTokens !== undefined && usage.completionTokens !== undefined
       ? estimateCost(model, usage.promptTokens, usage.completionTokens)
       : undefined;
+  void cost;
   // "Used" = tokens of the most recent turn (input + output), since that's
   // what currently fills the model's context window. Falls back to 0 pre-turn.
   const used = usage?.tokens ?? 0;
@@ -5596,12 +5592,6 @@ const Header = ({
           <>
             <Text color="gray"> · </Text>
             <Text color="gray">{usage.rounds}rd</Text>
-          </>
-        )}
-        {cost !== undefined && (
-          <>
-            <Text color="gray"> · </Text>
-            <Text color="green">{formatCost(cost)}</Text>
           </>
         )}
       </Box>
@@ -6446,6 +6436,126 @@ const SlashAutocomplete = ({
           ↑↓ select · Tab complete · Enter run
         </Text>
       )}
+    </Box>
+  );
+};
+
+/**
+ * Right-side activity sidebar. Shows the current turn's running tool
+ * calls + thinking + cost/usage. Inspired by opencode's layout: keep
+ * the main transcript clean (assistant + user messages only) and
+ * surface the noisy "what's happening" state in a separate column.
+ *
+ * Width is 34 cols; only rendered when the terminal is at least
+ * 100 cols wide. Below that, the sidebar is hidden and the transcript
+ * uses the full width (degrades to a tall narrow layout cleanly).
+ */
+const ActivitySidebar = ({
+  activity,
+  thinking,
+  streaming,
+  cost,
+  usage
+}: {
+  activity: readonly {
+    readonly id: string;
+    readonly label: string;
+    readonly status: 'running' | 'ok' | 'err' | 'info';
+    readonly elapsedMs?: number;
+  }[];
+  thinking: string | null;
+  streaming: boolean;
+  cost: number | undefined;
+  usage: {
+    readonly tokens: number;
+    readonly rounds: number;
+    readonly promptTokens?: number;
+    readonly completionTokens?: number;
+  } | null;
+}): React.JSX.Element => {
+  // Cap to last 18 entries so a chatty turn doesn't blow out the column.
+  const items = activity.slice(-18);
+  return (
+    <Box
+      flexDirection="column"
+      width={34}
+      marginLeft={1}
+      borderStyle="round"
+      borderColor="gray"
+      paddingX={1}
+    >
+      <Box>
+        <Text color="cyan" bold>
+          activity
+        </Text>
+        <Box flexGrow={1} />
+        {streaming && (
+          <Text color="yellow">
+            <Spinner type="dots" />
+          </Text>
+        )}
+      </Box>
+      {items.length === 0 && !thinking && (
+        <Text color="gray" dimColor italic>
+          {streaming ? 'thinking…' : 'idle'}
+        </Text>
+      )}
+      {items.map((e) => {
+        const icon =
+          e.status === 'running' ? '◌' : e.status === 'ok' ? '✓' : e.status === 'err' ? '✗' : '·';
+        const color =
+          e.status === 'running'
+            ? 'yellow'
+            : e.status === 'ok'
+              ? 'green'
+              : e.status === 'err'
+                ? 'red'
+                : 'gray';
+        // Truncate hard to keep the sidebar compact (28 visible cols
+        // after the icon + space).
+        const text = e.label.length > 28 ? `${e.label.slice(0, 27)}…` : e.label;
+        const elapsed = e.elapsedMs !== undefined ? ` (${formatElapsed(e.elapsedMs)})` : '';
+        return (
+          <Text key={e.id}>
+            <Text color={color}>{icon}</Text>
+            <Text> {text}</Text>
+            <Text color="gray" dimColor>
+              {elapsed}
+            </Text>
+          </Text>
+        );
+      })}
+      {thinking && (
+        <Box marginTop={1} flexDirection="column">
+          <Text color="magenta" dimColor>
+            ◦ thinking
+          </Text>
+          <Text color="magenta" dimColor italic>
+            {thinking.length > 90 ? `${thinking.slice(0, 89)}…` : thinking}
+          </Text>
+        </Box>
+      )}
+      <Box marginTop={1} flexDirection="column">
+        <Text color="gray" dimColor>
+          ──────────────────────────────
+        </Text>
+        {usage && (
+          <Text color="gray">
+            <Text color="white">{usage.tokens.toLocaleString()}</Text>
+            <Text color="gray" dimColor> tok · </Text>
+            <Text color="white">{usage.rounds}</Text>
+            <Text color="gray" dimColor> rd</Text>
+          </Text>
+        )}
+        {cost !== undefined && (
+          <Text>
+            <Text color="gray" dimColor>cost </Text>
+            <Text color="green" bold>
+              {formatCost(cost)}
+            </Text>
+          </Text>
+        )}
+      </Box>
     </Box>
   );
 };

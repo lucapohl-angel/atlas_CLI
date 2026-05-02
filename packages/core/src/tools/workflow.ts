@@ -282,7 +282,8 @@ export const planCheckTool: Tool<z.infer<typeof PlanCheckInput>> = {
 const PlanExecuteInput = z.object({
   maxConcurrent: z.number().int().min(1).max(8).optional(),
   cleanupWorktrees: z.boolean().optional(),
-  base: z.string().optional()
+  base: z.string().optional(),
+  maxVerifyRetries: z.number().int().min(0).max(5).optional()
 });
 
 export const planExecuteTool: Tool<z.infer<typeof PlanExecuteInput>> = {
@@ -319,6 +320,9 @@ export const planExecuteTool: Tool<z.infer<typeof PlanExecuteInput>> = {
       ...(input.maxConcurrent !== undefined ? { maxConcurrent: input.maxConcurrent } : {}),
       ...(input.cleanupWorktrees !== undefined ? { cleanupWorktrees: input.cleanupWorktrees } : {}),
       ...(input.base !== undefined ? { base: input.base } : {}),
+      ...(input.maxVerifyRetries !== undefined
+        ? { maxVerifyRetries: input.maxVerifyRetries }
+        : { maxVerifyRetries: 2 }),
       ...(ctx.signal ? { signal: ctx.signal } : {})
     });
     if (!r.ok) return r;
@@ -335,6 +339,74 @@ export const planExecuteTool: Tool<z.infer<typeof PlanExecuteInput>> = {
       type: 'ok',
       summary: `${head}\n${lines.join('\n')}`,
       data: { allOk: r.value.allOk, outcomes: r.value.outcomes }
+    } satisfies ToolOk);
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* ship_summary                                                       */
+/* ------------------------------------------------------------------ */
+
+const ShipSummaryInput = z.object({});
+
+export const shipSummaryTool: Tool<z.infer<typeof ShipSummaryInput>> = {
+  name: 'ship_summary',
+  description:
+    'Summarize the worktree branches produced during execute, with paste-ready git/gh commands. Read-only.',
+  approval: 'auto',
+  schema: ShipSummaryInput,
+  whenToUse:
+    'Call once at the start of the ship phase. The user decides what to do with the branches — Atlas never auto-merges, auto-pushes, or opens PRs without an explicit ask.',
+  outputContract:
+    'On success, summary is "ship: <n> branches\\nbranch — last commit subject\\n  merge: git merge --no-ff <branch>\\n  pr: gh pr create --base <baseGuess> --head <branch>".',
+  async execute(_input, ctx) {
+    const t = await requireActiveTask(ctx);
+    if (!t.ok) return t;
+    const ids = t.value.worktreeIds ?? [];
+    if (ids.length === 0) {
+      return ok({
+        type: 'ok',
+        summary: 'ship: no worktrees recorded — nothing to ship'
+      } satisfies ToolOk);
+    }
+    const { spawn } = await import('node:child_process');
+    const runGit = (args: readonly string[], cwd: string): Promise<{ code: number; stdout: string }> =>
+      new Promise((resolveP) => {
+        const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] });
+        let stdout = '';
+        child.stdout.on('data', (b: Buffer) => {
+          stdout += b.toString('utf8');
+        });
+        child.on('error', () => resolveP({ code: 1, stdout: '' }));
+        child.on('close', (code) => resolveP({ code: code ?? 0, stdout }));
+      });
+    const branchesRaw = await runGit(['branch', '--list', 'atlas/*'], ctx.cwd);
+    const allAtlasBranches = branchesRaw.stdout
+      .split('\n')
+      .map((s) => s.replace(/^[*\s]+/, '').trim())
+      .filter(Boolean);
+    const matching = ids.flatMap((id) =>
+      allAtlasBranches.filter((b) => b.startsWith(`atlas/${id}`))
+    );
+    if (matching.length === 0) {
+      return ok({
+        type: 'ok',
+        summary: `ship: ${ids.length} task(s) recorded but no atlas/* branches found in repo (already merged or worktrees removed?)`
+      } satisfies ToolOk);
+    }
+    const baseGuess = (await runGit(['symbolic-ref', '--short', 'HEAD'], ctx.cwd)).stdout.trim() || 'main';
+    const lines: string[] = [`ship: ${matching.length} branch${matching.length === 1 ? '' : 'es'}`];
+    for (const branch of matching) {
+      const last = await runGit(['log', '-1', '--pretty=%h %s', branch], ctx.cwd);
+      const subject = last.stdout.trim() || '(no commits)';
+      lines.push(`${branch} — ${subject}`);
+      lines.push(`  merge: git merge --no-ff ${branch}`);
+      lines.push(`  pr:    gh pr create --base ${baseGuess} --head ${branch} --fill`);
+    }
+    return ok({
+      type: 'ok',
+      summary: lines.join('\n'),
+      data: { branches: matching, baseGuess }
     } satisfies ToolOk);
   }
 };

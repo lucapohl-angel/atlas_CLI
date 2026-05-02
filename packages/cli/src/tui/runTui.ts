@@ -312,11 +312,54 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
               currentDepth: 0
             })
           : undefined;
+      // Wire the slice-3 plan executor: each plan task gets its own
+      // child agent loop rooted at the freshly-created worktree path.
+      // We construct a fresh per-task runner so the child's cwd is the
+      // worktree, not the user's cwd. The runner itself bans recursion
+      // (delegate is stripped from child registries, depth-capped).
+      const executePlanRun: import('@atlas/core').RunTaskFn | undefined =
+        provider && defaultAgent
+          ? async (req) => {
+              const childRunner = createDelegateRunner({
+                provider,
+                model: defaultModel,
+                fallbackModels,
+                agents: new Map(agents.list().map((a) => [a.name, a])),
+                defaultAgent,
+                skills: skills.list(),
+                baseTools: tools,
+                // Block plan_execute inside a child to prevent a child
+                // task from re-entering the wave executor.
+                blockedTools: ['plan_execute'],
+                baseToolContext: { cwd: req.worktree.path },
+                currentDepth: 0
+              });
+              const goal =
+                `Implement plan task ${req.task.id} (${req.task.name}).\n\n` +
+                `Files to touch (relative to this cwd):\n` +
+                req.task.files.map((f) => `  - ${f}`).join('\n') +
+                `\n\nAction:\n${req.task.action}\n\n` +
+                `Done criterion:\n${req.task.done}\n\n` +
+                `Verify command (will be run automatically after you finish — do NOT run it yourself):\n${req.task.verify}\n\n` +
+                `You are working inside an isolated git worktree. Make only the changes ` +
+                `this task requires. Do not commit — that happens automatically after verify passes.`;
+              const out = await childRunner({
+                goal,
+                ...(req.signal ? { signal: req.signal } : {})
+              });
+              return {
+                ok: out.ok,
+                summary: out.summary,
+                ...(out.error ? { error: out.error } : {})
+              };
+            }
+          : undefined;
       return {
         cwd,
         approve: allowAllPolicy,
         todoStore,
-        ...(delegateRun ? { delegateRun } : {})
+        ...(delegateRun ? { delegateRun } : {}),
+        ...(executePlanRun ? { executePlanRun } : {})
       };
     })(),
     hooks: builtinHookRegistry({

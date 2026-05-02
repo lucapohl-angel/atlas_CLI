@@ -52,6 +52,13 @@ export interface ExecutorOpts {
   readonly repoRoot?: string;
   /** When true, removes per-task worktrees after completion (default: keep). */
   readonly cleanupWorktrees?: boolean;
+  /**
+   * Slice-3 verify loop: when a task's <verify> exits non-zero, the
+   * executor re-dispatches the same RunTaskFn up to this many times
+   * with a debugger-flavored goal that includes the failing verify
+   * output. Each retry runs verify again. Default 0 (no retry).
+   */
+  readonly maxVerifyRetries?: number;
 }
 
 export interface TaskOutcome {
@@ -63,6 +70,8 @@ export interface TaskOutcome {
   readonly error?: string;
   readonly worktreePath?: string;
   readonly commitSha?: string;
+  /** Number of agent dispatches (1 = first try, >1 = verify retries). */
+  readonly attempts?: number;
 }
 
 export interface ExecutionReport {
@@ -138,6 +147,22 @@ const runWithConcurrency = async <T, R>(
   return out;
 };
 
+const debuggerGoal = (
+  task: PlanTask,
+  attempt: number,
+  prevStdout: string,
+  prevStderr: string
+): string =>
+  `RETRY ${attempt}: the previous attempt at task ${task.id} (${task.name}) ` +
+  `failed its verify command.\n\n` +
+  `Verify command:\n${task.verify}\n\n` +
+  `Failing stdout:\n${truncate(prevStdout)}\n\n` +
+  `Failing stderr:\n${truncate(prevStderr)}\n\n` +
+  `Diagnose what's wrong, fix it in this worktree, then stop. The verify ` +
+  `command will be re-run automatically — do not run it yourself.\n\n` +
+  `Original action:\n${task.action}\n\n` +
+  `Done criterion:\n${task.done}`;
+
 const runOneTask = async (
   task: PlanTask,
   opts: ExecutorOpts,
@@ -151,7 +176,8 @@ const runOneTask = async (
         stage: 'agent',
         ok: false,
         summary: 'cancelled before agent dispatch',
-        error: 'cancelled'
+        error: 'cancelled',
+        attempts: 0
       }
     };
   }
@@ -171,93 +197,124 @@ const runOneTask = async (
         stage: 'agent',
         ok: false,
         summary: `worktree creation failed: ${wt.error.message}`,
-        error: wt.error.message
+        error: wt.error.message,
+        attempts: 0
       }
     };
   }
   const worktree = wt.value;
+  const maxRetries = opts.maxVerifyRetries ?? 0;
+  let attempts = 0;
+  let lastVerifyStdout = '';
+  let lastVerifyStderr = '';
+  let lastVerifyExit = 0;
 
-  const agentResult = await opts.run({
-    task,
-    worktree,
-    ...(opts.signal ? { signal: opts.signal } : {})
-  });
+  // Initial agent dispatch + verify, then up to maxRetries debugger
+  // re-dispatches if verify keeps failing.
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    if (opts.signal?.aborted) break;
+    attempts += 1;
+    const agentResult =
+      attempt === 0
+        ? await opts.run({
+            task,
+            worktree,
+            ...(opts.signal ? { signal: opts.signal } : {})
+          })
+        : await opts.run({
+            task: { ...task, action: debuggerGoal(task, attempt, lastVerifyStdout, lastVerifyStderr) },
+            worktree,
+            ...(opts.signal ? { signal: opts.signal } : {})
+          });
 
-  if (!agentResult.ok) {
-    return {
-      outcome: {
-        id: task.id,
-        name: task.name,
-        stage: 'agent',
-        ok: false,
-        summary: agentResult.summary,
-        ...(agentResult.error ? { error: agentResult.error } : {}),
-        worktreePath: worktree.path
-      },
-      worktreeId: worktree.id
-    };
+    if (!agentResult.ok) {
+      return {
+        outcome: {
+          id: task.id,
+          name: task.name,
+          stage: 'agent',
+          ok: false,
+          summary: agentResult.summary,
+          ...(agentResult.error ? { error: agentResult.error } : {}),
+          worktreePath: worktree.path,
+          attempts
+        },
+        worktreeId: worktree.id
+      };
+    }
+
+    const v = await runVerify(worktree.path, task.verify, opts.signal);
+    if (!v.ok) {
+      return {
+        outcome: {
+          id: task.id,
+          name: task.name,
+          stage: 'verify',
+          ok: false,
+          summary: `verify could not run: ${v.error.message}`,
+          error: v.error.message,
+          worktreePath: worktree.path,
+          attempts
+        },
+        worktreeId: worktree.id
+      };
+    }
+    lastVerifyStdout = v.value.stdout;
+    lastVerifyStderr = v.value.stderr;
+    lastVerifyExit = v.value.code;
+    if (v.value.code === 0) {
+      const commit = await commitWorktree(
+        worktree.path,
+        `feat(${task.id}): ${task.name}`,
+        opts.signal
+      );
+      if (!commit.ok) {
+        return {
+          outcome: {
+            id: task.id,
+            name: task.name,
+            stage: 'commit',
+            ok: false,
+            summary: `commit failed: ${commit.error.message}`,
+            error: commit.error.message,
+            worktreePath: worktree.path,
+            attempts
+          },
+          worktreeId: worktree.id
+        };
+      }
+      return {
+        outcome: {
+          id: task.id,
+          name: task.name,
+          stage: 'done',
+          ok: true,
+          summary: commit.value.committed
+            ? `done (${commit.value.sha?.slice(0, 7) ?? 'committed'}${attempts > 1 ? `, ${attempts} attempts` : ''})`
+            : `done (no changes to commit${attempts > 1 ? `, ${attempts} attempts` : ''})`,
+          worktreePath: worktree.path,
+          ...(commit.value.sha ? { commitSha: commit.value.sha } : {}),
+          attempts
+        },
+        worktreeId: worktree.id
+      };
+    }
+    log.debug(
+      { task: task.id, attempt: attempts, exit: v.value.code },
+      'verify failed; retrying with debugger goal'
+    );
   }
 
-  const v = await runVerify(worktree.path, task.verify, opts.signal);
-  if (!v.ok) {
-    return {
-      outcome: {
-        id: task.id,
-        name: task.name,
-        stage: 'verify',
-        ok: false,
-        summary: `verify could not run: ${v.error.message}`,
-        error: v.error.message,
-        worktreePath: worktree.path
-      },
-      worktreeId: worktree.id
-    };
-  }
-  if (v.value.code !== 0) {
-    return {
-      outcome: {
-        id: task.id,
-        name: task.name,
-        stage: 'verify',
-        ok: false,
-        summary: `verify exit ${v.value.code}\nstdout:\n${truncate(v.value.stdout)}\nstderr:\n${truncate(v.value.stderr)}`,
-        error: `verify failed (exit ${v.value.code})`,
-        worktreePath: worktree.path
-      },
-      worktreeId: worktree.id
-    };
-  }
-
-  const commit = await commitWorktree(
-    worktree.path,
-    `feat(${task.id}): ${task.name}`,
-    opts.signal
-  );
-  if (!commit.ok) {
-    return {
-      outcome: {
-        id: task.id,
-        name: task.name,
-        stage: 'commit',
-        ok: false,
-        summary: `commit failed: ${commit.error.message}`,
-        error: commit.error.message,
-        worktreePath: worktree.path
-      },
-      worktreeId: worktree.id
-    };
-  }
   return {
     outcome: {
       id: task.id,
       name: task.name,
-      stage: 'done',
-      ok: true,
-      summary: commit.value.committed
-        ? `done (${commit.value.sha?.slice(0, 7) ?? 'committed'})`
-        : 'done (no changes to commit)',
+      stage: 'verify',
+      ok: false,
+      summary: `verify exit ${lastVerifyExit} after ${attempts} attempt${attempts === 1 ? '' : 's'}\nstdout:\n${truncate(lastVerifyStdout)}\nstderr:\n${truncate(lastVerifyStderr)}`,
+      error: `verify failed (exit ${lastVerifyExit}, ${attempts} attempts)`,
       worktreePath: worktree.path,
-      ...(commit.value.sha ? { commitSha: commit.value.sha } : {})
+      attempts
     },
     worktreeId: worktree.id
   };

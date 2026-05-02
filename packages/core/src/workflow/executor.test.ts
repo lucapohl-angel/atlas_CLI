@@ -122,4 +122,44 @@ describe('workflow/executor: executePlan (integration with real git)', () => {
       expect(failed[0]!.stage).toBe('verify');
     }
   });
+
+  it('retries on verify failure, succeeds on second attempt', async () => {
+    const perTask = new Map<string, number>();
+    const report = await executePlan({
+      state,
+      maxVerifyRetries: 2,
+      run: async ({ task, worktree }) => {
+        const n = (perTask.get(task.id) ?? 0) + 1;
+        perTask.set(task.id, n);
+        // First attempt: do nothing (verify fails). Second+: create file.
+        if (n >= 2) {
+          await writeFile(join(worktree.path, `${task.name.split(' ')[1]}.txt`), 'fixed\n', 'utf8');
+        }
+        return { ok: true, summary: `attempt ${n}` };
+      }
+    });
+    if (report.ok) {
+      expect(report.value.allOk).toBe(true);
+      for (const o of report.value.outcomes) {
+        expect(o.ok).toBe(true);
+        expect(o.attempts).toBe(2);
+      }
+    }
+  });
+
+  it('exhausts retries and reports verify FAIL with attempt count', async () => {
+    const report = await executePlan({
+      state,
+      maxVerifyRetries: 2,
+      run: async () => ({ ok: true, summary: 'never fixes anything' })
+    });
+    if (report.ok) {
+      expect(report.value.allOk).toBe(false);
+      const failed = report.value.outcomes.filter((o) => !o.ok);
+      expect(failed.length).toBeGreaterThan(0);
+      expect(failed[0]!.stage).toBe('verify');
+      expect(failed[0]!.attempts).toBe(3); // initial + 2 retries
+      expect(failed[0]!.error).toMatch(/3 attempts/);
+    }
+  });
 });

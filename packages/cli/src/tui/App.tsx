@@ -3826,8 +3826,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   }
   const newerHidden = Math.max(0, offset);
 
+  const showSidebar = cols >= 100;
   return (
-    <Box flexDirection="column" width={cols} height={rows}>
+    <Box flexDirection="row" width={cols} height={rows}>
+      <Box flexDirection="column" flexGrow={1}>
       <Header
         agent={activeAgent}
         model={model}
@@ -3842,39 +3844,23 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         gitBranch={gitBranch}
       />
       {transcript.length === 0 && overlay.kind !== 'setup' && <Splash defaultModel={model} />}
-      <Box flexDirection="row" flexGrow={1}>
-        <Box flexDirection="column" flexGrow={1}>
-          {hiddenCount > 0 && (
-            <Text color="gray" dimColor>
-              ↑ {hiddenCount} earlier message{hiddenCount === 1 ? '' : 's'} (PgUp to scroll)
-            </Text>
-          )}
-          {visibleTranscript.map((item, i) => {
-            const isLive =
-              streaming &&
-              i === visibleTranscript.length - 1 &&
-              item.kind === 'assistant';
-            return <TranscriptRow key={item.key} item={item} live={isLive} />;
-          })}
-          {newerHidden > 0 && (
-            <Text color="gray" dimColor>
-              ↓ {newerHidden} more line{newerHidden === 1 ? '' : 's'} below (PgDn / End)
-            </Text>
-          )}
-        </Box>
-        {cols >= 100 && (
-          <ActivitySidebar
-            activity={activity}
-            thinking={thinkingLine}
-            streaming={streaming}
-            cost={
-              usage && usage.promptTokens !== undefined && usage.completionTokens !== undefined
-                ? estimateCost(model, usage.promptTokens, usage.completionTokens)
-                : undefined
-            }
-            usage={usage}
-            contextWindow={contextWindowFor(model, modelCatalog)}
-          />
+      <Box flexDirection="column" flexGrow={1}>
+        {hiddenCount > 0 && (
+          <Text color="gray" dimColor>
+            ↑ {hiddenCount} earlier message{hiddenCount === 1 ? '' : 's'} (PgUp to scroll)
+          </Text>
+        )}
+        {visibleTranscript.map((item, i) => {
+          const isLive =
+            streaming &&
+            i === visibleTranscript.length - 1 &&
+            item.kind === 'assistant';
+          return <TranscriptRow key={item.key} item={item} live={isLive} />;
+        })}
+        {newerHidden > 0 && (
+          <Text color="gray" dimColor>
+            ↓ {newerHidden} more line{newerHidden === 1 ? '' : 's'} below (PgDn / End)
+          </Text>
         )}
       </Box>
       {overlay.kind === 'agent-picker' && (
@@ -5508,7 +5494,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               </Text>
             </Box>
           ) : (
-            <Box width={cols - 4}>
+            <Box width={cols - 4 - (showSidebar ? 36 : 0)}>
               <Text color="cyan">› </Text>
               <TextInput value={input} onChange={setInput} onSubmit={handleInputSubmit} />
             </Box>
@@ -5519,6 +5505,21 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         <SlashAutocomplete matches={matchSlashCommands(input)} activeIdx={slashIdx} />
       )}
       <StatusBar pendingExit={pendingExit} streaming={streaming} mode={mode} />
+      </Box>
+      {showSidebar && (
+        <ActivitySidebar
+          activity={activity}
+          thinking={thinkingLine}
+          streaming={streaming}
+          cost={
+            usage && usage.promptTokens !== undefined && usage.completionTokens !== undefined
+              ? estimateCost(model, usage.promptTokens, usage.completionTokens)
+              : undefined
+          }
+          usage={usage}
+          contextWindow={contextWindowFor(model, modelCatalog)}
+        />
+      )}
     </Box>
   );
 };

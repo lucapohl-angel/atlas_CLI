@@ -6,6 +6,81 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { composeToolDescription, type Tool, type ToolRegistry } from '../tools/index.js';
 import type { ToolSpec } from './types.js';
 
+type JsonObject = Record<string, unknown>;
+
+/**
+ * OpenAI's function-call schema validator is strict:
+ *
+ *   "schema must have type 'object' and not have
+ *    'oneOf'/'anyOf'/'allOf'/'enum'/'not' at the top level."
+ *
+ * Zod `discriminatedUnion` (and plain `union`) emit `oneOf`/`anyOf` with no
+ * top-level `type`, which trips both rules. We flatten the union into a
+ * single permissive `object` schema by merging every branch's properties
+ * together. The model still sees the discriminator (e.g. `op`) as an enum
+ * of the literal values, and Zod re-validates the actual call at runtime,
+ * so we don't lose any safety — we just relax the wire schema enough for
+ * OpenAI/Codex to accept it.
+ */
+const flattenTopLevelUnion = (schema: JsonObject): JsonObject => {
+  const variants =
+    (Array.isArray(schema['oneOf']) && (schema['oneOf'] as unknown[])) ||
+    (Array.isArray(schema['anyOf']) && (schema['anyOf'] as unknown[])) ||
+    null;
+  if (!variants || variants.length === 0) return schema;
+
+  const mergedProps: JsonObject = {};
+  const requiredCounts = new Map<string, number>();
+  let branchCount = 0;
+
+  for (const v of variants) {
+    if (!v || typeof v !== 'object') continue;
+    const branch = v as JsonObject;
+    branchCount += 1;
+    const props = (branch['properties'] as JsonObject | undefined) ?? {};
+    for (const [key, val] of Object.entries(props)) {
+      if (!(key in mergedProps)) {
+        mergedProps[key] = val;
+        continue;
+      }
+      // Same property in multiple branches — collapse literal `const`s
+      // into an `enum` so the discriminator is still expressive.
+      const existing = mergedProps[key] as JsonObject;
+      const a = existing && typeof existing === 'object' ? existing : {};
+      const b = val && typeof val === 'object' ? (val as JsonObject) : {};
+      const aConst = 'const' in a ? a['const'] : undefined;
+      const bConst = 'const' in b ? b['const'] : undefined;
+      if (aConst !== undefined && bConst !== undefined && aConst !== bConst) {
+        const enumA = Array.isArray(a['enum']) ? (a['enum'] as unknown[]) : [aConst];
+        mergedProps[key] = {
+          ...a,
+          enum: Array.from(new Set([...enumA, bConst]))
+        };
+        delete (mergedProps[key] as JsonObject)['const'];
+      }
+    }
+    const req = Array.isArray(branch['required']) ? (branch['required'] as string[]) : [];
+    for (const r of req) requiredCounts.set(r, (requiredCounts.get(r) ?? 0) + 1);
+  }
+
+  // Only keep `required` entries shared by ALL branches — anything else is
+  // optional from the union's perspective.
+  const required = [...requiredCounts.entries()]
+    .filter(([, n]) => n === branchCount)
+    .map(([k]) => k);
+
+  const flattened: JsonObject = {
+    type: 'object',
+    properties: mergedProps,
+    additionalProperties: false
+  };
+  if (required.length > 0) flattened['required'] = required;
+  if (typeof schema['description'] === 'string') {
+    flattened['description'] = schema['description'];
+  }
+  return flattened;
+};
+
 export const toolToSpec = (tool: Tool<unknown>): ToolSpec => {
   const schema = zodToJsonSchema(tool.schema, {
     // Use jsonSchema7 (not openApi3) so we emit standard JSON Schema without
@@ -13,17 +88,20 @@ export const toolToSpec = (tool: Tool<unknown>): ToolSpec => {
     // rejects (requires JSON Schema draft 2020-12 compatibility).
     target: 'jsonSchema7',
     $refStrategy: 'none'
-  }) as Record<string, unknown>;
+  }) as JsonObject;
   // Strip top-level $schema — some providers reject it.
   const { $schema: _drop, ...rawSchema } = schema;
   void _drop;
-  // OpenAI/Codex requires parameters.type === "object". Zod discriminated
-  // unions emit a top-level oneOf without a type field — providers reject
-  // this with HTTP 400 ("type: None"). Inject type:'object' when absent so
-  // the wire schema is always valid. The model still uses oneOf/anyOf for
-  // generation, so this does not change call semantics.
-  const parameters: Record<string, unknown> =
-    'type' in rawSchema ? rawSchema : { type: 'object', ...rawSchema };
+
+  // 1. Flatten top-level oneOf/anyOf into a single object schema.
+  const noUnion = flattenTopLevelUnion(rawSchema);
+  // 2. Guarantee top-level `type: "object"` (covers schemas that were
+  //    neither unions nor explicit objects, e.g. an empty input).
+  const parameters: JsonObject =
+    noUnion['type'] === 'object'
+      ? noUnion
+      : { type: 'object', ...noUnion };
+
   return {
     name: tool.name,
     description: composeToolDescription(tool),
@@ -33,3 +111,4 @@ export const toolToSpec = (tool: Tool<unknown>): ToolSpec => {
 
 export const registryToSpecs = (registry: ToolRegistry): readonly ToolSpec[] =>
   registry.list().map(toolToSpec);
+

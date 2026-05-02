@@ -3725,7 +3725,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   // The right activity sidebar steals ~34 cols when the terminal is wide
   // enough (≥ 100 cols). Shrink the wrap budget accordingly so transcript
   // text doesn't render under the sidebar border.
-  const sidebarWidth = cols >= 110 ? 34 : 0;
+  const sidebarWidth = cols >= 110 ? 46 : 0;
   const wrapWidth = Math.max(20, cols - 4 - sidebarWidth);
   const wrappedLineCount = (text: string): number => {
     const lines = text.length === 0 ? [''] : text.split('\n');
@@ -5494,7 +5494,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               </Text>
             </Box>
           ) : (
-            <Box width={cols - 4 - (showSidebar ? 36 : 0)}>
+            <Box width={cols - 4 - (showSidebar ? 48 : 0)}>
               <Text color="cyan">› </Text>
               <TextInput value={input} onChange={setInput} onSubmit={handleInputSubmit} />
             </Box>
@@ -6494,7 +6494,7 @@ const ActivitySidebar = ({
   return (
     <Box
       flexDirection="column"
-      width={34}
+      width={46}
       flexGrow={0}
       flexShrink={0}
       marginLeft={1}
@@ -6530,16 +6530,20 @@ const ActivitySidebar = ({
                 : e.status === 'err'
                   ? 'red'
                   : 'gray';
-          const text = e.label.length > 28 ? `${e.label.slice(0, 27)}…` : e.label;
           const elapsed = e.elapsedMs !== undefined ? ` (${formatElapsed(e.elapsedMs)})` : '';
           return (
-            <Text key={e.id}>
+            <Box key={e.id} flexDirection="row">
               <Text color={color}>{icon}</Text>
-              <Text> {text}</Text>
-              <Text color="gray" dimColor>
-                {elapsed}
-              </Text>
-            </Text>
+              <Text> </Text>
+              <Box flexGrow={1} flexShrink={1}>
+                <Text wrap="truncate-end">{e.label}</Text>
+              </Box>
+              {elapsed && (
+                <Text color="gray" dimColor>
+                  {elapsed}
+                </Text>
+              )}
+            </Box>
           );
         })}
         {thinking && (
@@ -6547,15 +6551,15 @@ const ActivitySidebar = ({
             <Text color="magenta" dimColor>
               ◦ thinking
             </Text>
-            <Text color="magenta" dimColor italic>
-              {thinking.length > 90 ? `${thinking.slice(0, 89)}…` : thinking}
+            <Text color="magenta" dimColor italic wrap="wrap">
+              {thinking}
             </Text>
           </Box>
         )}
       </Box>
       <Box flexDirection="column" marginTop={1}>
         <Text color="gray" dimColor>
-          ──────────────────────────────
+          ──────────────────────────────────────────
         </Text>
         <Box>
           <ContextBar used={used} total={contextWindow} />

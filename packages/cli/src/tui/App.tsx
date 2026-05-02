@@ -553,6 +553,14 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     props.config?.compaction?.contextTokens ?? 200_000
   );
 
+  // Ship auto-resolve preference. The model-facing `ship_apply` tool reads
+  // this via ToolContext.shipDefaults on every call; the `/autoresolve`
+  // slash command mutates this ref AND persists to ~/.atlas/config.yaml so
+  // a vibe-coder can set "always have the AI fix conflicts" once.
+  const shipAutoResolveRef = useRef<'abort' | 'ours' | 'theirs' | 'ai'>(
+    props.config?.ship?.autoResolve ?? 'abort'
+  );
+
   const pushItem = useCallback(
     (kind: TranscriptItem['kind'], text: string, author?: string): void => {
       transcriptKey.current += 1;
@@ -1336,6 +1344,49 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             );
             return;
           }
+          case 'autoresolve': {
+            // /autoresolve            → show current setting + options
+            // /autoresolve status     → same as bare
+            // /autoresolve <mode>     → set + persist
+            const sub = rest[0];
+            if (!sub || sub === 'status') {
+              pushItem(
+                'system',
+                `auto-resolve: ${shipAutoResolveRef.current}\n\n` +
+                  `When ship_apply mode=auto hits a merge conflict, atlas will:\n` +
+                  `  abort   stop, print a recipe (default — safest)\n` +
+                  `  ours    keep main's version of conflicting hunks (pure git -X ours)\n` +
+                  `  theirs  keep the branch's version (pure git -X theirs)\n` +
+                  `  ai      spawn a child agent to read the markers and resolve\n\n` +
+                  `Set with: /autoresolve <abort|ours|theirs|ai>  (persists to ~/.atlas/config.yaml)`
+              );
+              return;
+            }
+            if (sub !== 'abort' && sub !== 'ours' && sub !== 'theirs' && sub !== 'ai') {
+              pushItem('error', 'usage: /autoresolve [abort|ours|theirs|ai|status]');
+              return;
+            }
+            shipAutoResolveRef.current = sub;
+            const baseCfg = props.config;
+            if (baseCfg) {
+              const next: AtlasConfig = {
+                ...baseCfg,
+                ship: { ...baseCfg.ship, autoResolve: sub }
+              };
+              void saveConfig(next).then((r) => {
+                if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+              });
+            }
+            pushItem(
+              'system',
+              sub === 'ai'
+                ? `auto-resolve set to ai. ship_apply mode=auto will now spawn a child agent to fix any merge conflicts (review the auto-resolved commit before pushing).`
+                : sub === 'abort'
+                  ? `auto-resolve set to abort. ship_apply mode=auto will stop on conflict and print a manual-resolution recipe.`
+                  : `auto-resolve set to ${sub}. ship_apply mode=auto will resolve conflicts deterministically using git -X ${sub}.`
+            );
+            return;
+          }
           case 'sessions':
           case 'resume': {
             if (!props.sessionStore) {
@@ -1612,6 +1663,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           toolContext: {
             ...props.toolContext,
             approve: mode === 'plan' ? denyAllPolicy : allowAllPolicy,
+            shipDefaults: { autoResolve: shipAutoResolveRef.current },
             callingAgent: {
               name: activeAgent.name,
               ...(activeAgent.authorizedSections
@@ -3187,7 +3239,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             promptInjectionDetector: true,
             extraDeniedPaths: [],
             extraDeniedCommands: []
-          }
+          },
+          ship: { autoResolve: 'abort' }
         };
         const nextCfg: AtlasConfig = {
           ...baseCfg,
@@ -3282,7 +3335,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         promptInjectionDetector: true,
         extraDeniedPaths: [],
         extraDeniedCommands: []
-      }
+      },
+      ship: { autoResolve: 'abort' }
     };
 
     const target = overlay.target;
@@ -5721,6 +5775,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'sessions', args: '[id]', summary: 'list / resume saved sessions' },
   { name: 'resume', args: '[id]', summary: 'resume a session (alias of /sessions)' },
   { name: 'compact', args: '[now|status|on|off|model [id]|threshold <0..1>]', summary: 'auto-compaction controls' },
+  { name: 'autoresolve', args: '[abort|ours|theirs|ai|status]', summary: 'when auto-merge hits a conflict, how should atlas handle it?' },
   { name: 'learn', args: '[on|off|status]', summary: 'self-improvement loop: distill the current turn into a learned skill' },
   { name: 'skills', args: '[list|disable <name>|enable <name>]', summary: 'inspect / disable / enable installed skills' },
   { name: 'next', summary: 'ask Atlas which agent or command to run next' },

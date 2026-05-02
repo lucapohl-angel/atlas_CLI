@@ -383,6 +383,35 @@ describe('tools/workflow: ship_summary + ship_apply', () => {
     expect(content).toBe('main version\n');
   });
 
+  it('ship_apply mode=auto falls back to ctx.shipDefaults.autoResolve when input omits it', async () => {
+    // Conflict scenario.
+    const { writeFile, readFile } = await import('node:fs/promises');
+    await writeFile(join(cwd, 'shared.txt'), 'main version\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'main: shared'], { cwd });
+    await sh('git', ['checkout', 'atlas/02-second'], { cwd });
+    await writeFile(join(cwd, 'shared.txt'), 'branch version\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'second: shared'], { cwd });
+    await sh('git', ['checkout', 'main'], { cwd });
+
+    // Host configures shipDefaults.autoResolve='theirs'; the model omits
+    // input.autoResolve. Tool should pick up the host default.
+    const ctxWithDefault: ToolContext = {
+      ...ctx,
+      shipDefaults: { autoResolve: 'theirs' }
+    };
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'auto' }, ctxWithDefault);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).toMatch(/autoResolve: theirs/);
+      expect(r.value.summary).toMatch(/-X theirs/);
+    }
+    const content = await readFile(join(cwd, 'shared.txt'), 'utf8');
+    expect(content).toBe('branch version\n');
+  });
+
   it('ship_apply mode=auto autoResolve=theirs keeps the branch side on conflict', async () => {
     const { writeFile, readFile } = await import('node:fs/promises');
     await writeFile(join(cwd, 'shared.txt'), 'main version\n', 'utf8');

@@ -599,7 +599,8 @@ export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
         )
       );
     }
-    const autoResolve = input.autoResolve ?? 'abort';
+    // Resolution order: per-call input → host-configured default → safe abort.
+    const autoResolve = input.autoResolve ?? ctx.shipDefaults?.autoResolve ?? 'abort';
     // Token cost of merge-commit messages we'll emit. Auto mode itself sends
     // no diff back to the model — only the per-branch result lines below
     // (and possibly an AI-resolve agent transcript, but that's accounted

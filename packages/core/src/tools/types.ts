@@ -76,6 +76,17 @@ export interface ToolContext {
    * tool returns a clear "not initialized" error when absent.
    */
   readonly executePlanRun?: import('../workflow/executor.js').RunTaskFn;
+  /**
+   * User-set defaults for `ship_apply`. Lets a vibe-coder configure
+   * "when auto-merge hits a conflict, just have the AI fix it" once
+   * (via the TUI's `/autoresolve ai` slash command, persisted to
+   * `~/.atlas/config.yaml`) and forget it. The tool falls back to
+   * `'abort'` when this is absent. Per-call `input.autoResolve` still
+   * wins so the model can override when it has a specific reason.
+   */
+  readonly shipDefaults?: {
+    readonly autoResolve: 'abort' | 'ours' | 'theirs' | 'ai';
+  };
 }
 
 export interface DelegateChildRequest {

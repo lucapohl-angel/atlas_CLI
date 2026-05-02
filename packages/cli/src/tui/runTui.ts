@@ -359,7 +359,8 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
         approve: allowAllPolicy,
         todoStore,
         ...(delegateRun ? { delegateRun } : {}),
-        ...(executePlanRun ? { executePlanRun } : {})
+        ...(executePlanRun ? { executePlanRun } : {}),
+        ...(cfg?.ship ? { shipDefaults: { autoResolve: cfg.ship.autoResolve } } : {})
       };
     })(),
     hooks: builtinHookRegistry({

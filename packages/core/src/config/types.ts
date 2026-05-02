@@ -176,6 +176,24 @@ export const GuardrailsConfigSchema = z
   })
   .default({});
 
+/**
+ * Ship-time defaults — applied by `ship_apply` when the model (or the user)
+ * does not pass an explicit value. Lets a vibe-coder set "always auto-resolve
+ * with AI" once and forget it instead of remembering to type the option each
+ * time. The model can still override per-call.
+ */
+export const ShipConfigSchema = z
+  .object({
+    /**
+     * Default conflict-resolution strategy for `ship_apply mode=auto` when
+     * the call doesn't specify one. `'abort'` keeps the current safe-by-default
+     * behavior; `'ours'` / `'theirs'` are pure-git side-pickers; `'ai'` spawns
+     * a child agent (requires the host to wire ctx.delegateRun).
+     */
+    autoResolve: z.enum(['abort', 'ours', 'theirs', 'ai']).default('abort')
+  })
+  .default({});
+
 export const AtlasConfigSchema = z
   .object({
     defaultProvider: z.enum(['openrouter', 'anthropic']).default('openrouter'),
@@ -186,7 +204,8 @@ export const AtlasConfigSchema = z
     mcp: McpConfigSchema,
     github: GitHubAuthConfigSchema,
     compaction: CompactionConfigSchema,
-    guardrails: GuardrailsConfigSchema
+    guardrails: GuardrailsConfigSchema,
+    ship: ShipConfigSchema
   })
   .default({});
 
@@ -200,4 +219,5 @@ export type McpConfig = z.infer<typeof McpConfigSchema>;
 export type CompactionConfig = z.infer<typeof CompactionConfigSchema>;
 export type GitHubAuthConfig = z.infer<typeof GitHubAuthConfigSchema>;
 export type GuardrailsConfig = z.infer<typeof GuardrailsConfigSchema>;
+export type ShipConfig = z.infer<typeof ShipConfigSchema>;
 export type AtlasConfig = z.infer<typeof AtlasConfigSchema>;

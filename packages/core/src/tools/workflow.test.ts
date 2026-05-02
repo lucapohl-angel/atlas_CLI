@@ -238,7 +238,7 @@ describe('tools/workflow: ship_summary + ship_apply', () => {
     await rm(cwd, { recursive: true, force: true });
   });
 
-  it('ship_summary lists the atlas branches and prompts for a mode', async () => {
+  it('ship_summary lists branches with diff stats and a token estimate per mode', async () => {
     const { shipSummaryTool } = await import('./workflow.js');
     const r = await shipSummaryTool.execute({}, ctx);
     expect(r.ok).toBe(true);
@@ -249,10 +249,15 @@ describe('tools/workflow: ship_summary + ship_apply', () => {
       expect(r.value.summary).toMatch(/\[a\] auto/);
       expect(r.value.summary).toMatch(/\[r\] review/);
       expect(r.value.summary).toMatch(/\[m\] manual/);
+      expect(r.value.summary).toMatch(/~\d.* tokens/); // review-mode estimate
+      expect(r.value.summary).toMatch(/insertion/); // shortstat
+      expect(r.value.data?.estReviewTokens).toBeTypeOf('number');
     }
   });
 
-  it('ship_apply mode=manual prints paste-ready commands without touching the repo', async () => {
+  it('ship_apply mode=manual prints git, gh, and (if origin set) GitHub web URLs', async () => {
+    // add a fake github origin so the web URL path runs
+    await sh('git', ['remote', 'add', 'origin', 'git@github.com:acme/widgets.git'], { cwd });
     const { shipApplyTool } = await import('./workflow.js');
     const before = (await sh('git', ['rev-parse', 'main'], { cwd })).stdout.trim();
     const r = await shipApplyTool.execute({ mode: 'manual' }, ctx);
@@ -263,18 +268,33 @@ describe('tools/workflow: ship_summary + ship_apply', () => {
       expect(r.value.summary).toMatch(/manual/);
       expect(r.value.summary).toContain('git merge --no-ff atlas/01-first');
       expect(r.value.summary).toContain('gh pr create');
+      expect(r.value.summary).toContain(
+        'https://github.com/acme/widgets/compare/main...atlas/01-first?expand=1'
+      );
     }
   });
 
-  it('ship_apply mode=review returns per-branch diff stats and diffs', async () => {
+  it('ship_apply mode=manual without a github origin omits web URLs and notes that', async () => {
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'manual' }, ctx);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).not.toContain('https://github.com');
+      expect(r.value.summary).toMatch(/no github\.com origin detected/);
+    }
+  });
+
+  it('ship_apply mode=review returns per-branch diffs with token totals', async () => {
     const { shipApplyTool } = await import('./workflow.js');
     const r = await shipApplyTool.execute({ mode: 'review' }, ctx);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.summary).toContain('=== atlas/01-first ===');
-      expect(r.value.summary).toContain('=== atlas/02-second ===');
+      expect(r.value.summary).toContain('=== atlas/01-first');
+      expect(r.value.summary).toContain('=== atlas/02-second');
       expect(r.value.summary).toContain('a.txt');
       expect(r.value.summary).toContain('b.txt');
+      expect(r.value.summary).toMatch(/Total review payload: ~\d+ tokens/);
+      expect(r.value.data?.estTokens).toBeGreaterThan(0);
     }
   });
 
@@ -300,5 +320,41 @@ describe('tools/workflow: ship_summary + ship_apply', () => {
     const r = await shipApplyTool.execute({ mode: 'auto' }, ctx);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.message).toMatch(/uncommitted/);
+  });
+
+  it('ship_apply mode=auto preserves earlier merges and prints recipe on conflict', async () => {
+    // Make atlas/02-second touch a file that base also touches → guaranteed conflict.
+    const { writeFile } = await import('node:fs/promises');
+    // First put a conflicting line on main
+    await writeFile(join(cwd, 'shared.txt'), 'main version\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'main: shared'], { cwd });
+    // And a different line on atlas/02-second
+    await sh('git', ['checkout', 'atlas/02-second'], { cwd });
+    await writeFile(join(cwd, 'shared.txt'), 'branch version\n', 'utf8');
+    await sh('git', ['add', 'shared.txt'], { cwd });
+    await sh('git', ['commit', '-m', 'second: shared'], { cwd });
+    await sh('git', ['checkout', 'main'], { cwd });
+
+    const baseShaBefore = (await sh('git', ['rev-parse', 'main'], { cwd })).stdout.trim();
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'auto' }, ctx);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      // atlas/01-first should have merged cleanly (it touches a.txt only).
+      expect(r.value.summary).toMatch(/merged atlas\/01-first/);
+      expect(r.value.summary).toMatch(/atlas\/02-second.*merge conflict/);
+      expect(r.value.summary).toMatch(/State: 1\/2 branches landed/);
+      expect(r.value.summary).toMatch(/git merge --no-ff atlas\/02-second/);
+      expect(r.value.summary).toMatch(/conflicting files/);
+    }
+    // Working tree must be clean after abort (no merge in progress).
+    const status = (
+      await sh('git', ['status', '--porcelain', '--untracked-files=no'], { cwd })
+    ).stdout.trim();
+    expect(status).toBe('');
+    // base should now be ahead of where it was (atlas/01-first landed).
+    const baseShaAfter = (await sh('git', ['rev-parse', 'main'], { cwd })).stdout.trim();
+    expect(baseShaAfter).not.toBe(baseShaBefore);
   });
 });

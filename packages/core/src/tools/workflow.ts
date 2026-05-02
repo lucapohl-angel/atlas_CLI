@@ -428,20 +428,27 @@ export const shipSummaryTool: Tool<z.infer<typeof ShipSummaryInput>> = {
     const lines: string[] = [
       `ship: ${branches.length} branch${branches.length === 1 ? '' : 'es'} ready (base: ${baseGuess})`
     ];
+    let totalDiffChars = 0;
     for (const branch of branches) {
       const last = await runGit(['log', '-1', '--pretty=%h %s', branch], ctx.cwd, ctx.signal);
       const subject = last.stdout.trim() || '(no commits)';
-      lines.push(`  ${branch} — ${subject}`);
+      const stat = await runGit(['diff', '--shortstat', `${baseGuess}...${branch}`], ctx.cwd, ctx.signal);
+      const shortStat = stat.stdout.trim();
+      lines.push(`  ${branch} — ${subject}${shortStat ? `  [${shortStat}]` : ''}`);
+      // Estimate the token cost of putting this diff into the model context (used by review mode).
+      const diff = await runGit(['diff', `${baseGuess}...${branch}`], ctx.cwd, ctx.signal);
+      totalDiffChars += Math.min(diff.stdout.length, 4000); // matches review-mode 4kB truncation
     }
+    const reviewTokens = Math.ceil(totalDiffChars / 4);
     lines.push('');
     lines.push('How do you want to ship? Pick one:');
-    lines.push('  [a] auto    — merge every branch into ' + baseGuess + ' (--no-ff). Aborts on conflict.');
-    lines.push('  [r] review  — read each diff and surface bugs/risks before you decide.');
-    lines.push('  [m] manual  — just print git/gh commands; you run them.');
+    lines.push(`  [a] auto    — merge every branch into ${baseGuess} (--no-ff). ~free, no diffs sent to model. Aborts on conflict (earlier merges stay).`);
+    lines.push(`  [r] review  — read each diff and surface bugs/risks before you decide. ~${reviewTokens.toLocaleString()} tokens of input.`);
+    lines.push('  [m] manual  — print git commands, gh CLI commands, and GitHub web compare URLs. ~free.');
     return ok({
       type: 'ok',
       summary: lines.join('\n'),
-      data: { branches, baseGuess }
+      data: { branches, baseGuess, estReviewTokens: reviewTokens }
     } satisfies ToolOk);
   }
 };
@@ -459,6 +466,30 @@ const ShipApplyInput = z.object({
 const truncateDiff = (s: string, limit = 4000): string =>
   s.length <= limit ? s : `${s.slice(0, limit)}\n… [+${s.length - limit} bytes truncated]`;
 
+/** Cheap chars/4 token estimate; matches @atlas/core context/window default. */
+const estTokens = (s: string): number => Math.ceil(s.length / 4);
+
+/** Parse `owner/repo` from `origin` remote URL. Supports https + ssh. */
+const parseGithubSlug = (url: string): { owner: string; repo: string } | null => {
+  const cleaned = url.trim().replace(/\.git$/, '');
+  // git@github.com:owner/repo
+  const ssh = /^git@github\.com:([^/]+)\/(.+)$/.exec(cleaned);
+  if (ssh && ssh[1] && ssh[2]) return { owner: ssh[1], repo: ssh[2] };
+  // https://github.com/owner/repo
+  const https = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)$/.exec(cleaned);
+  if (https && https[1] && https[2]) return { owner: https[1], repo: https[2] };
+  return null;
+};
+
+const githubSlug = async (
+  cwd: string,
+  signal?: AbortSignal
+): Promise<{ owner: string; repo: string } | null> => {
+  const r = await runGit(['remote', 'get-url', 'origin'], cwd, signal);
+  if (r.code !== 0) return null;
+  return parseGithubSlug(r.stdout);
+};
+
 export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
   name: 'ship_apply',
   description:
@@ -468,11 +499,11 @@ export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
   whenToUse:
     'Call after ship_summary once the user has picked a mode. Pass mode=auto|review|manual; optionally restrict to a subset of branches.',
   outputContract:
-    'mode=manual: same git/gh commands as ship_summary. mode=review: one diff block per branch (truncated to 4kB) for the model to summarize. mode=auto: per-branch merge result; on conflict the merge is aborted and the tool stops.',
+    'mode=manual: git/gh commands plus GitHub compare URLs. mode=review: per-branch diff (truncated to 4kB) with token estimate. mode=auto: per-branch merge result with token-cost note; on conflict the merge is aborted, earlier merges stay, and the tool prints the exact resolve recipe.',
   blockedOps: [
     'auto-merge while you have uncommitted changes on base (refuses)',
     'pushing to remote (never — user does that)',
-    'opening PRs (never — user runs `gh pr create`)'
+    'opening PRs (never — user runs `gh pr create` or uses the printed URL)'
   ],
   async execute(input, ctx) {
     const t = await requireActiveTask(ctx);
@@ -489,35 +520,60 @@ export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
     }
 
     if (input.mode === 'manual') {
+      const slug = await githubSlug(ctx.cwd, ctx.signal);
       const lines: string[] = [`ship_apply manual (base: ${base}):`];
       for (const branch of branches) {
-        lines.push(`  git merge --no-ff ${branch}`);
-        lines.push(`  gh pr create --base ${base} --head ${branch} --fill`);
+        lines.push(`  • ${branch}`);
+        lines.push(`      git: git merge --no-ff ${branch}`);
+        lines.push(`      gh:  gh pr create --base ${base} --head ${branch} --fill`);
+        if (slug) {
+          // GitHub's compare/PR-creation URL — opens the "Open a pull request"
+          // page pre-filled with base ↔ head.
+          lines.push(
+            `      web: https://github.com/${slug.owner}/${slug.repo}/compare/${base}...${branch}?expand=1`
+          );
+        }
       }
       lines.push('');
-      lines.push(`Combined: git checkout ${base} && git merge --no-ff ${branches.join(' ')}`);
-      return ok({ type: 'ok', summary: lines.join('\n'), data: { branches, base } } satisfies ToolOk);
+      lines.push(`Combined merge: git checkout ${base} && git merge --no-ff ${branches.join(' ')}`);
+      if (!slug) {
+        lines.push('(no github.com origin detected — web URLs skipped)');
+      }
+      return ok({
+        type: 'ok',
+        summary: lines.join('\n'),
+        data: { branches, base, github: slug }
+      } satisfies ToolOk);
     }
 
     if (input.mode === 'review') {
       const lines: string[] = [`ship_apply review (base: ${base}, ${branches.length} branch(es)):`];
+      let totalTokens = 0;
       for (const branch of branches) {
         const stat = await runGit(['diff', '--stat', `${base}...${branch}`], ctx.cwd, ctx.signal);
         const diff = await runGit(['diff', `${base}...${branch}`], ctx.cwd, ctx.signal);
+        const truncated = truncateDiff(diff.stdout);
+        const tokens = estTokens(truncated) + estTokens(stat.stdout);
+        totalTokens += tokens;
         lines.push('');
-        lines.push(`=== ${branch} ===`);
+        lines.push(`=== ${branch}  (~${tokens.toLocaleString()} tokens) ===`);
         lines.push(stat.stdout.trim() || '(no diff)');
         if (diff.stdout.trim().length > 0) {
           lines.push('--- diff ---');
-          lines.push(truncateDiff(diff.stdout));
+          lines.push(truncated);
         }
       }
       lines.push('');
       lines.push(
-        'Review the diffs above and report any bugs, security risks, or concerns per branch. ' +
+        `Total review payload: ~${totalTokens.toLocaleString()} tokens (chars/4 estimate). ` +
+          'Review the diffs above and report any bugs, security risks, or concerns per branch. ' +
           'Then ask the user whether to proceed with auto-merge, drop a branch, or switch to manual.'
       );
-      return ok({ type: 'ok', summary: lines.join('\n'), data: { branches, base } } satisfies ToolOk);
+      return ok({
+        type: 'ok',
+        summary: lines.join('\n'),
+        data: { branches, base, estTokens: totalTokens }
+      } satisfies ToolOk);
     }
 
     // mode === 'auto'
@@ -534,6 +590,9 @@ export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
         )
       );
     }
+    // Token cost of merge-commit messages we'll emit. Auto mode itself sends
+    // no diff back to the model — only the per-branch result lines below.
+    let estCost = 0;
     const checkout = await runGit(['checkout', base], ctx.cwd, ctx.signal);
     if (checkout.code !== 0) {
       return err(
@@ -553,27 +612,61 @@ export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
       );
       if (merge.code === 0) {
         merged.push(branch);
-        lines.push(`  ✓ merged ${branch}`);
+        const line = `  ✓ merged ${branch}`;
+        lines.push(line);
+        estCost += estTokens(line);
         continue;
       }
-      // Conflict — abort and stop.
-      await runGit(['merge', '--abort'], ctx.cwd, ctx.signal);
-      lines.push(`  ✗ ${branch}: merge conflict — aborted`);
-      lines.push(`    stderr: ${merge.stderr.trim().split('\n').slice(0, 5).join(' | ')}`);
-      lines.push('');
-      lines.push(
-        `Merged ${merged.length}/${branches.length} before stopping. Resolve ${branch} manually:`
+      // Conflict path. Capture conflict files BEFORE aborting (the abort
+      // resets the index, after which `--diff-filter=U` returns nothing).
+      // `git merge --abort` then rolls back the in-progress merge (resets
+      // working tree + index back to base HEAD). Already-merged earlier
+      // branches stay merged on base — that's a deliberate choice: partial
+      // progress is preserved, the user fixes the one bad branch, then
+      // re-runs ship_apply with --branches to land the rest.
+      const conflicts = await runGit(
+        ['diff', '--name-only', '--diff-filter=U'],
+        ctx.cwd,
+        ctx.signal
       );
-      lines.push(`  git merge --no-ff ${branch}`);
-      lines.push('  # fix conflicts, then: git commit');
+      const abort = await runGit(['merge', '--abort'], ctx.cwd, ctx.signal);
+      lines.push(`  ✗ ${branch}: merge conflict — aborted (base unchanged for this branch)`);
+      if (abort.code !== 0) {
+        lines.push(`    abort failed: ${abort.stderr.trim().split('\n')[0] ?? 'unknown'}`);
+      }
+      const conflictFiles = conflicts.stdout
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (conflictFiles.length > 0) {
+        lines.push(`    conflicting files: ${conflictFiles.slice(0, 8).join(', ')}${conflictFiles.length > 8 ? ` (+${conflictFiles.length - 8} more)` : ''}`);
+      }
+      lines.push('');
+      lines.push(`State: ${merged.length}/${branches.length} branches landed on ${base}, ${branch} did NOT merge, ${branches.length - merged.length - 1} branch(es) not yet attempted.`);
+      lines.push('');
+      lines.push(`To resolve manually:`);
+      lines.push(`  1. git merge --no-ff ${branch}`);
+      lines.push(`  2. resolve conflicts in your editor (look for <<<<<<< markers)`);
+      lines.push(`  3. git add <fixed files> && git commit`);
+      const remaining = branches.slice(branches.indexOf(branch) + 1);
+      if (remaining.length > 0) {
+        lines.push(
+          `  4. then to land the rest: ship_apply mode=auto branches=[${remaining.map((b) => `"${b}"`).join(', ')}]`
+        );
+      }
+      lines.push('');
+      lines.push(`Or to back out everything you just merged: git reset --hard origin/${base} (DANGEROUS — only if origin/${base} is up to date).`);
       return ok({
         type: 'ok',
         summary: lines.join('\n'),
-        data: { merged, failedAt: branch, base }
+        data: { merged, failedAt: branch, conflictFiles, base, remaining }
       } satisfies ToolOk);
     }
     lines.push('');
-    lines.push(`All ${merged.length} branch(es) merged into ${base}. Push when ready: git push`);
+    lines.push(
+      `All ${merged.length} branch(es) merged into ${base}. Push when ready: git push origin ${base}`
+    );
+    lines.push(`(~${estCost.toLocaleString()} tokens of output, no diffs sent to model)`);
     return ok({
       type: 'ok',
       summary: lines.join('\n'),
@@ -581,4 +674,5 @@ export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
     } satisfies ToolOk);
   }
 };
+
 

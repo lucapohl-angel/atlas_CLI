@@ -854,6 +854,39 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     );
   }, [allowedThinking]);
 
+  // Current git branch shown in the header. `null` = not a git repo (or
+  // detached HEAD); we just hide the segment in that case. Polled every
+  // 3s and immediately on mount — covers both `git checkout` from another
+  // terminal and ship_apply switching base mid-session.
+  const [gitBranch, setGitBranch] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const detect = (): void => {
+      const child = spawn('git', ['symbolic-ref', '--short', 'HEAD'], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        cwd: process.cwd()
+      });
+      let out = '';
+      child.stdout?.on('data', (chunk: Buffer) => {
+        out += chunk.toString('utf8');
+      });
+      child.on('close', (code) => {
+        if (cancelled) return;
+        const next = code === 0 ? out.trim() || null : null;
+        setGitBranch((prev) => (prev === next ? prev : next));
+      });
+      child.on('error', () => {
+        if (!cancelled) setGitBranch(null);
+      });
+    };
+    detect();
+    const id = setInterval(detect, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
   // Request autopilot. If the user has already consented this session, just
   // flip the mode; otherwise show the consent overlay first.
   const requestAutopilot = useCallback((): void => {
@@ -3701,6 +3734,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         contextWindow={contextWindowFor(model, modelCatalog)}
         sessionId={sessionId}
         phase={activeTask?.phase ?? 'idle'}
+        gitBranch={gitBranch}
       />
       {transcript.length === 0 && overlay.kind !== 'setup' && <Splash defaultModel={model} />}
       <Box flexDirection="column" flexGrow={1}>
@@ -5366,7 +5400,8 @@ const Header = ({
   streaming,
   contextWindow,
   sessionId,
-  phase
+  phase,
+  gitBranch
 }: {
   agent: Agent;
   model: string;
@@ -5383,6 +5418,7 @@ const Header = ({
   contextWindow: number;
   sessionId: string | null;
   phase: Phase;
+  gitBranch: string | null;
 }): React.JSX.Element => {
   const cost =
     usage && usage.promptTokens !== undefined && usage.completionTokens !== undefined
@@ -5425,6 +5461,12 @@ const Header = ({
           <>
             <Text color="gray"> · session </Text>
             <Text color="cyan">{sessionId}</Text>
+          </>
+        )}
+        {gitBranch && (
+          <>
+            <Text color="gray"> · base </Text>
+            <Text color="green">⎇ {gitBranch}</Text>
           </>
         )}
       </Box>

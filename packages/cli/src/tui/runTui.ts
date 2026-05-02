@@ -25,6 +25,7 @@ import {
   loadAgents,
   loadConfig,
   loadSkills,
+  loadActiveTask,
   loadClaudeCodeCredentials,
   loadToolsState,
   providerFromConfigAsync,
@@ -275,6 +276,14 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
     if (created.ok) initialSession = created.value;
   }
 
+  // Workflow phase router — load the cwd's active task (if any) so the
+  // TUI's status chip reflects the in-flight phase from the moment it
+  // mounts. A missing or stale `.atlas/tasks/current.json` resolves to
+  // null (idle) without surfacing an error — the workflow store is a
+  // local convenience, not a hard dependency.
+  const activeTask = await loadActiveTask(process.cwd());
+  const initialActiveTask = activeTask.ok ? activeTask.value : null;
+
   const props = {
     provider,
     providers,
@@ -320,6 +329,7 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
     modelCatalog,
     sessionStore,
     ...(initialSession ? { initialSession } : {}),
+    initialActiveTask,
     mcpStatus: {
       running: mcpStartup.running.map((r) => ({
         name: r.spec.name,

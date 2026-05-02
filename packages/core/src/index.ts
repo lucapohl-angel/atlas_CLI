@@ -25,6 +25,7 @@ export * from './onboarding/index.js';
 export * from './templates/index.js';
 export * from './checklists/index.js';
 export * from './workflows/index.js';
+export * from './workflow/index.js';
 export * from './builtins/index.js';
 export * from './mcp/index.js';
 export * from './protocol/index.js';

@@ -86,7 +86,18 @@ import {
   type CatalogEntry,
   type ResolvedToolStatus,
   resolveCatalogStatus,
-  runToolAction
+  runToolAction,
+  classifyIntent,
+  clearActiveTask,
+  canRewindTo,
+  formatPhaseLine,
+  readSignals,
+  startTask,
+  titleFromMessage,
+  updateTask,
+  PHASES,
+  type Phase,
+  type TaskState
 } from '@atlas/core';
 
 export type ThinkingEffort = 'off' | ReasoningEffort | 'xhigh';
@@ -173,6 +184,16 @@ export interface TuiAppProps {
   readonly sessionStore?: SessionStore;
   /** Initial session — created or loaded by runTui before mounting. */
   readonly initialSession?: SessionRecord;
+  /**
+   * Workflow phase state for the current cwd, loaded by runTui at
+   * boot. When null, the user has no active task and the phase chip
+   * shows `idle`. The App advances this state implicitly as the
+   * conversation progresses — there are no explicit slash commands
+   * for the phase pipeline (`/discuss`, `/plan`, etc.). The user
+   * still has a small set of operational overrides: `/status`,
+   * `/back <phase>`, `/skip`, `/abort`.
+   */
+  readonly initialActiveTask?: TaskState | null;
 }
 
 type Mode = 'plan' | 'build' | 'autopilot';
@@ -458,6 +479,21 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     readonly completionTokens?: number;
   } | null>(null);
   const [pendingExit, setPendingExit] = useState(false);
+
+  /**
+   * Workflow phase router state. `activeTask` is null when the user
+   * has no in-progress task for this cwd; the phase chip in the
+   * header shows `idle`. As the user talks, `classifyIntent` advances
+   * this state implicitly (see post-submit hook below). Persisted to
+   * `<cwd>/.atlas/tasks/<id>/state.json` so it survives restarts.
+   */
+  const [activeTask, setActiveTask] = useState<TaskState | null>(
+    props.initialActiveTask ?? null
+  );
+  const activeTaskRef = useRef<TaskState | null>(activeTask);
+  useEffect(() => {
+    activeTaskRef.current = activeTask;
+  }, [activeTask]);
 
   const pickCheapestModel = useCallback((): string => {
     const ranked = availableModelIds.find((id) => /(mini|flash|haiku|kimi|nano|lite)/i.test(id));
@@ -1343,6 +1379,96 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             return;
           }
           default:
+            // Workflow phase commands. Kept as a small operational
+            // surface (status / back / skip / abort) — the actual
+            // pipeline progression is implicit, not command-driven.
+            if (cmd === 'status') {
+              const current = activeTaskRef.current;
+              if (!current) {
+                pushItem('system', formatPhaseLine(null));
+                return;
+              }
+              void (async () => {
+                const signals = await readSignals(current);
+                const head = formatPhaseLine(current, signals);
+                const meta = `task: ${current.id} — ${current.title}`;
+                pushItem('system', `${head}\n${meta}`);
+              })();
+              return;
+            }
+            if (cmd === 'back') {
+              const current = activeTaskRef.current;
+              if (!current) {
+                pushItem('error', 'no active task to rewind');
+                return;
+              }
+              const target = (rest[0] ?? '').toLowerCase() as Phase;
+              if (!PHASES.includes(target)) {
+                pushItem(
+                  'error',
+                  `usage: /back <${PHASES.filter((p) => p !== 'idle').join('|')}>`
+                );
+                return;
+              }
+              const check = canRewindTo(current, target);
+              if (!check.ok) {
+                pushItem('error', `cannot rewind: ${check.reason}`);
+                return;
+              }
+              void (async () => {
+                const u = await updateTask(current, { phase: target });
+                if (u.ok) {
+                  setActiveTask(u.value);
+                  pushItem('system', `phase rewound: ${current.phase} → ${target}`);
+                } else {
+                  pushItem('error', `failed to update task: ${u.error.message}`);
+                }
+              })();
+              return;
+            }
+            if (cmd === 'skip') {
+              const current = activeTaskRef.current;
+              if (!current) {
+                pushItem('error', 'no active task');
+                return;
+              }
+              const idx = PHASES.indexOf(current.phase);
+              const next = PHASES[idx + 1];
+              if (!next) {
+                pushItem('error', `already at terminal phase: ${current.phase}`);
+                return;
+              }
+              void (async () => {
+                const u = await updateTask(current, { phase: next });
+                if (u.ok) {
+                  setActiveTask(u.value);
+                  pushItem('system', `phase skipped: ${current.phase} → ${next}`);
+                } else {
+                  pushItem('error', `failed to update task: ${u.error.message}`);
+                }
+              })();
+              return;
+            }
+            if (cmd === 'abort') {
+              const current = activeTaskRef.current;
+              if (!current) {
+                pushItem('error', 'no active task to abort');
+                return;
+              }
+              void (async () => {
+                const r = await clearActiveTask(props.toolContext.cwd);
+                if (r.ok) {
+                  setActiveTask(null);
+                  pushItem(
+                    'system',
+                    `task aborted (state preserved at .atlas/tasks/${current.id}/)`
+                  );
+                } else {
+                  pushItem('error', `failed to abort: ${r.error.message}`);
+                }
+              })();
+              return;
+            }
             pushItem('error', `unknown command: /${cmd ?? ''}`);
             return;
         }
@@ -1365,6 +1491,45 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       turnRoundsRef.current = 0;
       turnToolErrorsRef.current = 0;
       lastUserMessageRef.current = trimmed;
+
+      // Workflow phase router — observe & advance the implicit pipeline.
+      // Runs in the background so a slow disk write never blocks the
+      // model turn. Failures are swallowed: a broken workflow store
+      // must never break chat. The router only advances *forward*; the
+      // user gets explicit `/back` / `/skip` / `/abort` for overrides.
+      void (async () => {
+        try {
+          const cwd = props.toolContext.cwd;
+          const current = activeTaskRef.current;
+          const signals = current
+            ? await readSignals(current)
+            : {
+                hasContextDoc: false,
+                hasPlanDoc: false,
+                allTasksCommitted: false,
+                allVerifyPassed: false
+              };
+          const decision = classifyIntent({
+            state: current,
+            userMessage: trimmed,
+            signals
+          });
+          if (decision.startsNewTask) {
+            const created = await startTask({
+              cwd,
+              title: titleFromMessage(trimmed)
+            });
+            if (created.ok) setActiveTask(created.value);
+          } else if (current && decision.nextPhase !== current.phase) {
+            const updated = await updateTask(current, {
+              phase: decision.nextPhase
+            });
+            if (updated.ok) setActiveTask(updated.value);
+          }
+        } catch {
+          // intentionally swallowed — workflow tracking is observational
+        }
+      })();
 
       // Compose system message from the active agent on each turn (cheap).
       const skills = props.skills.list();
@@ -3341,6 +3506,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         streaming={streaming}
         contextWindow={contextWindowFor(model, modelCatalog)}
         sessionId={sessionId}
+        phase={activeTask?.phase ?? 'idle'}
       />
       {transcript.length === 0 && overlay.kind !== 'setup' && <Splash defaultModel={model} />}
       <Box flexDirection="column" flexGrow={1}>
@@ -4881,7 +5047,8 @@ const Header = ({
   usage,
   streaming,
   contextWindow,
-  sessionId
+  sessionId,
+  phase
 }: {
   agent: Agent;
   model: string;
@@ -4897,6 +5064,7 @@ const Header = ({
   streaming: boolean;
   contextWindow: number;
   sessionId: string | null;
+  phase: Phase;
 }): React.JSX.Element => {
   const cost =
     usage && usage.promptTokens !== undefined && usage.completionTokens !== undefined
@@ -4919,6 +5087,14 @@ const Header = ({
         <Text color={modeColor(mode)} bold={mode === 'autopilot'}>
           {mode}
         </Text>
+        {phase !== 'idle' && (
+          <>
+            <Text color="gray"> · phase </Text>
+            <Text color={phaseColor(phase)} bold>
+              {phase}
+            </Text>
+          </>
+        )}
         <Text color="gray"> · think </Text>
         <Text color={thinking === 'off' ? 'gray' : 'magenta'}>{thinking}</Text>
         {streaming && (
@@ -5506,6 +5682,23 @@ const modeColor = (mode: Mode): string => {
   }
 };
 
+const phaseColor = (phase: Phase): string => {
+  switch (phase) {
+    case 'idle':
+      return 'gray';
+    case 'discover':
+      return 'cyan';
+    case 'plan':
+      return 'magenta';
+    case 'execute':
+      return 'yellow';
+    case 'verify':
+      return 'blue';
+    case 'ship':
+      return 'green';
+  }
+};
+
 interface SlashCommand {
   readonly name: string;
   readonly args?: string;
@@ -5533,6 +5726,10 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'next', summary: 'ask Atlas which agent or command to run next' },
   { name: 'onboard', summary: 'brownfield onboarding wizard (cost-aware, arrow-key workflow)' },
   { name: 'tools', summary: 'browse / enable / disable / install built-in tools (web_search, browser, …)' },
+  { name: 'status', summary: 'show current workflow phase and active task' },
+  { name: 'back', args: '<phase>', summary: 'rewind the workflow to an earlier phase' },
+  { name: 'skip', summary: 'jump forward to the next workflow phase' },
+  { name: 'abort', summary: 'abandon the current task (state preserved)' },
   { name: 'exit', summary: 'leave atlas' }
 ];
 

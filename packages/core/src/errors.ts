@@ -66,6 +66,11 @@ export type AtlasErrorCode =
   // Onboarding
   | 'ONBOARDING_SCAN_FAILED'
   | 'ONBOARDING_WRITE_FAILED'
+  // Workflow / phase router
+  | 'WORKFLOW_STATE_PARSE_FAILED'
+  | 'WORKFLOW_STATE_WRITE_FAILED'
+  | 'WORKFLOW_TASK_NOT_FOUND'
+  | 'WORKFLOW_INVALID_TRANSITION'
   // Generic
   | 'INTERNAL'
   | 'CANCELLED'

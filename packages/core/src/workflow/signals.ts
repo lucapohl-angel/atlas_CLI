@@ -46,7 +46,7 @@ export const readSignals = async (state: TaskState): Promise<PhaseSignals> => {
   return {
     hasContextDoc,
     hasPlanDoc,
-    allTasksCommitted: false,
-    allVerifyPassed: false
+    allTasksCommitted: state.allTasksCommitted ?? false,
+    allVerifyPassed: state.allVerifyPassed ?? false
   };
 };

@@ -58,6 +58,10 @@ export interface TaskState {
   readonly planDocPath?: string;
   /** Worktree task ids spawned during execute (slice 3). */
   readonly worktreeIds?: readonly string[];
+  /** Slice 3: set true once every plan task committed in its worktree. */
+  readonly allTasksCommitted?: boolean;
+  /** Slice 3: set true once every <verify> command exited 0. */
+  readonly allVerifyPassed?: boolean;
 }
 
 /**
@@ -77,7 +81,9 @@ export const TaskStateSchema = z.object({
   note: z.string().optional(),
   contextDocPath: z.string().optional(),
   planDocPath: z.string().optional(),
-  worktreeIds: z.array(z.string()).optional()
+  worktreeIds: z.array(z.string()).optional(),
+  allTasksCommitted: z.boolean().optional(),
+  allVerifyPassed: z.boolean().optional()
 });
 
 /**

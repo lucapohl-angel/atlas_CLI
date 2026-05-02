@@ -8,6 +8,7 @@ import {
   contextNoteTool,
   contextShowTool,
   planCheckTool,
+  planExecuteTool,
   planShowTool,
   planWriteTool
 } from './workflow.js';
@@ -186,5 +187,16 @@ describe('tools/workflow: plan_* end-to-end', () => {
   it('plan_check reports issues for malformed inline xml', async () => {
     const r = await planCheckTool.execute({ xml: '<not-a-plan/>' }, ctx);
     if (r.ok) expect(r.value.summary).toMatch(/^issues: parse:/);
+  });
+
+  it('plan_execute returns a clear error when host did not wire executePlanRun', async () => {
+    // write a valid plan first so the failure is the runner check, not no-plan
+    await planWriteTool.execute(
+      { tasks: [{ id: '01', name: 'x', files: ['a.ts'], action: 'a', verify: 'v', done: 'd' }] },
+      ctx
+    );
+    const r = await planExecuteTool.execute({}, ctx);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toMatch(/not initialized/);
   });
 });

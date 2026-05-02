@@ -24,6 +24,7 @@ import {
   finalizeContext,
   readContext
 } from '../workflow/context.js';
+import { executePlan } from '../workflow/executor.js';
 import {
   checkPlan,
   parsePlan,
@@ -271,5 +272,69 @@ export const planCheckTool: Tool<z.infer<typeof PlanCheckInput>> = {
     }
     const detail = issues.map((i) => `[${i.taskId}] ${i.message}`).join('; ');
     return ok({ type: 'ok', summary: `issues: ${detail}` } satisfies ToolOk);
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* plan_execute                                                       */
+/* ------------------------------------------------------------------ */
+
+const PlanExecuteInput = z.object({
+  maxConcurrent: z.number().int().min(1).max(8).optional(),
+  cleanupWorktrees: z.boolean().optional(),
+  base: z.string().optional()
+});
+
+export const planExecuteTool: Tool<z.infer<typeof PlanExecuteInput>> = {
+  name: 'plan_execute',
+  description:
+    'Execute the on-disk PLAN.xml wave by wave: each task runs in its own git worktree, then verify, then commit.',
+  approval: 'ask',
+  schema: PlanExecuteInput,
+  whenToUse:
+    'Call exactly once at the start of the execute phase, after PLAN.xml has been written and validated. Re-running is allowed but will create new worktrees only for tasks that don\'t already have one.',
+  outputContract:
+    'On success, summary lists per-task outcomes "id stage ok|FAIL: msg". data carries {allOk, outcomes: [...]}.',
+  blockedOps: [
+    'running without a host-wired executePlanRun (returns TOOL_EXECUTION_FAILED)',
+    'running outside a git repository (worktree creation will fail)',
+    'running with no PLAN.xml on disk'
+  ],
+  async execute(input, ctx) {
+    if (ctx.signal?.aborted) return err(atlasError('TOOL_CANCELLED', 'plan_execute cancelled'));
+    const t = await requireActiveTask(ctx);
+    if (!t.ok) return t;
+    const runner = ctx.executePlanRun;
+    if (!runner) {
+      return err(
+        atlasError(
+          'TOOL_EXECUTION_FAILED',
+          'plan_execute is not initialized: host did not wire executePlanRun. Wire createDelegateRunner per worktree.'
+        )
+      );
+    }
+    const r = await executePlan({
+      state: t.value,
+      run: runner,
+      ...(input.maxConcurrent !== undefined ? { maxConcurrent: input.maxConcurrent } : {}),
+      ...(input.cleanupWorktrees !== undefined ? { cleanupWorktrees: input.cleanupWorktrees } : {}),
+      ...(input.base !== undefined ? { base: input.base } : {}),
+      ...(ctx.signal ? { signal: ctx.signal } : {})
+    });
+    if (!r.ok) return r;
+    const lines = r.value.outcomes.map((o) => {
+      const head = `${o.id} ${o.stage} ${o.ok ? 'ok' : 'FAIL'}`;
+      const sha = o.commitSha ? ` ${o.commitSha.slice(0, 7)}` : '';
+      const why = o.ok ? '' : `: ${o.error ?? o.summary.split('\n')[0] ?? 'unknown'}`;
+      return `${head}${sha}${why}`;
+    });
+    const head = r.value.allOk
+      ? `plan_execute: all ${r.value.outcomes.length} tasks committed`
+      : `plan_execute: FAILED (${r.value.outcomes.filter((o) => o.ok).length}/${r.value.outcomes.length} ok)`;
+    return ok({
+      type: 'ok',
+      summary: `${head}\n${lines.join('\n')}`,
+      data: { allOk: r.value.allOk, outcomes: r.value.outcomes }
+    } satisfies ToolOk);
   }
 };

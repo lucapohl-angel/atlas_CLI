@@ -66,6 +66,16 @@ export interface ToolContext {
    * configured cap, breaking spawn loops.
    */
   readonly delegateDepth?: number;
+  /**
+   * Host-supplied per-plan-task runner used by the slice-3
+   * `plan_execute` tool. Each call dispatches one child agent into
+   * a freshly-created git worktree (cwd = `req.worktree.path`),
+   * runs the task's `<verify>` command, then commits.
+   *
+   * The host wires this from a per-cwd delegate-runner factory; the
+   * tool returns a clear "not initialized" error when absent.
+   */
+  readonly executePlanRun?: import('../workflow/executor.js').RunTaskFn;
 }
 
 export interface DelegateChildRequest {

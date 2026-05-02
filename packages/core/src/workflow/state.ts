@@ -240,6 +240,8 @@ export interface UpdateTaskPatch {
   readonly contextDocPath?: string;
   readonly planDocPath?: string;
   readonly worktreeIds?: readonly string[];
+  readonly allTasksCommitted?: boolean;
+  readonly allVerifyPassed?: boolean;
 }
 
 export const updateTask = async (
@@ -256,6 +258,12 @@ export const updateTask = async (
       : {}),
     ...(patch.planDocPath !== undefined ? { planDocPath: patch.planDocPath } : {}),
     ...(patch.worktreeIds !== undefined ? { worktreeIds: patch.worktreeIds } : {}),
+    ...(patch.allTasksCommitted !== undefined
+      ? { allTasksCommitted: patch.allTasksCommitted }
+      : {}),
+    ...(patch.allVerifyPassed !== undefined
+      ? { allVerifyPassed: patch.allVerifyPassed }
+      : {}),
     updatedAt: now.toISOString()
   };
   const wrote = await saveTaskState(next);

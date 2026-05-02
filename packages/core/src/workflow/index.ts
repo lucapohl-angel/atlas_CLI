@@ -50,3 +50,20 @@ export {
   type PlanTask,
   type PlanIssue
 } from './plan.js';
+export { groupIntoWaves, type Wave } from './waves.js';
+export {
+  createWorktree,
+  commitWorktree,
+  removeWorktree,
+  type WorktreeHandle,
+  type CreateWorktreeOpts
+} from './worktree.js';
+export {
+  executePlan,
+  type ExecutorOpts,
+  type ExecutionReport,
+  type RunTaskFn,
+  type RunTaskRequest,
+  type RunTaskOutcome,
+  type TaskOutcome
+} from './executor.js';

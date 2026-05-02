@@ -24,7 +24,8 @@ import {
   planShowTool,
   planCheckTool,
   planExecuteTool,
-  shipSummaryTool
+  shipSummaryTool,
+  shipApplyTool
 } from './workflow.js';
 import { ToolRegistry } from './registry.js';
 
@@ -63,7 +64,8 @@ export {
   planShowTool,
   planCheckTool,
   planExecuteTool,
-  shipSummaryTool
+  shipSummaryTool,
+  shipApplyTool
 } from './workflow.js';
 
 /** Returns a fresh registry pre-populated with the built-in tools. */
@@ -96,5 +98,6 @@ export const builtinToolRegistry = (): ToolRegistry => {
   r.register(planCheckTool);
   r.register(planExecuteTool);
   r.register(shipSummaryTool);
+  r.register(shipApplyTool);
   return r;
 };

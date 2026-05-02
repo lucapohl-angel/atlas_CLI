@@ -347,18 +347,67 @@ export const planExecuteTool: Tool<z.infer<typeof PlanExecuteInput>> = {
 /* ship_summary                                                       */
 /* ------------------------------------------------------------------ */
 
+interface GitRunResult {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+const runGit = async (
+  args: readonly string[],
+  cwd: string,
+  signal?: AbortSignal
+): Promise<GitRunResult> => {
+  const { spawn } = await import('node:child_process');
+  return new Promise((resolveP) => {
+    const child = spawn('git', args, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...(signal ? { signal } : {})
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (b: Buffer) => {
+      stdout += b.toString('utf8');
+    });
+    child.stderr.on('data', (b: Buffer) => {
+      stderr += b.toString('utf8');
+    });
+    child.on('error', (e) => resolveP({ code: 1, stdout: '', stderr: String(e) }));
+    child.on('close', (code) => resolveP({ code: code ?? 0, stdout, stderr }));
+  });
+};
+
+const listShipBranches = async (
+  ids: readonly string[],
+  cwd: string,
+  signal?: AbortSignal
+): Promise<{ branches: readonly string[]; baseGuess: string }> => {
+  const branchesRaw = await runGit(['branch', '--list', 'atlas/*'], cwd, signal);
+  const allAtlasBranches = branchesRaw.stdout
+    .split('\n')
+    .map((s) => s.replace(/^[*\s]+/, '').trim())
+    .filter(Boolean);
+  const branches = ids.flatMap((id) =>
+    allAtlasBranches.filter((b) => b.startsWith(`atlas/${id}`))
+  );
+  const baseGuess =
+    (await runGit(['symbolic-ref', '--short', 'HEAD'], cwd, signal)).stdout.trim() || 'main';
+  return { branches, baseGuess };
+};
+
 const ShipSummaryInput = z.object({});
 
 export const shipSummaryTool: Tool<z.infer<typeof ShipSummaryInput>> = {
   name: 'ship_summary',
   description:
-    'Summarize the worktree branches produced during execute, with paste-ready git/gh commands. Read-only.',
+    'List the worktree branches produced during execute and ask the user which ship mode to use (auto/review/manual). Read-only.',
   approval: 'auto',
   schema: ShipSummaryInput,
   whenToUse:
-    'Call once at the start of the ship phase. The user decides what to do with the branches — Atlas never auto-merges, auto-pushes, or opens PRs without an explicit ask.',
+    'Call exactly once at the start of the ship phase, then ask the user which mode they want: auto-merge, AI review, or manual (just show commands). Their choice drives a follow-up ship_apply call.',
   outputContract:
-    'On success, summary is "ship: <n> branches\\nbranch — last commit subject\\n  merge: git merge --no-ff <branch>\\n  pr: gh pr create --base <baseGuess> --head <branch>".',
+    'On success, summary lists each branch with last-commit subject and ends with a "pick a mode" prompt. data.branches and data.baseGuess feed ship_apply.',
   async execute(_input, ctx) {
     const t = await requireActiveTask(ctx);
     if (!t.ok) return t;
@@ -369,44 +418,167 @@ export const shipSummaryTool: Tool<z.infer<typeof ShipSummaryInput>> = {
         summary: 'ship: no worktrees recorded — nothing to ship'
       } satisfies ToolOk);
     }
-    const { spawn } = await import('node:child_process');
-    const runGit = (args: readonly string[], cwd: string): Promise<{ code: number; stdout: string }> =>
-      new Promise((resolveP) => {
-        const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] });
-        let stdout = '';
-        child.stdout.on('data', (b: Buffer) => {
-          stdout += b.toString('utf8');
-        });
-        child.on('error', () => resolveP({ code: 1, stdout: '' }));
-        child.on('close', (code) => resolveP({ code: code ?? 0, stdout }));
-      });
-    const branchesRaw = await runGit(['branch', '--list', 'atlas/*'], ctx.cwd);
-    const allAtlasBranches = branchesRaw.stdout
-      .split('\n')
-      .map((s) => s.replace(/^[*\s]+/, '').trim())
-      .filter(Boolean);
-    const matching = ids.flatMap((id) =>
-      allAtlasBranches.filter((b) => b.startsWith(`atlas/${id}`))
-    );
-    if (matching.length === 0) {
+    const { branches, baseGuess } = await listShipBranches(ids, ctx.cwd, ctx.signal);
+    if (branches.length === 0) {
       return ok({
         type: 'ok',
         summary: `ship: ${ids.length} task(s) recorded but no atlas/* branches found in repo (already merged or worktrees removed?)`
       } satisfies ToolOk);
     }
-    const baseGuess = (await runGit(['symbolic-ref', '--short', 'HEAD'], ctx.cwd)).stdout.trim() || 'main';
-    const lines: string[] = [`ship: ${matching.length} branch${matching.length === 1 ? '' : 'es'}`];
-    for (const branch of matching) {
-      const last = await runGit(['log', '-1', '--pretty=%h %s', branch], ctx.cwd);
+    const lines: string[] = [
+      `ship: ${branches.length} branch${branches.length === 1 ? '' : 'es'} ready (base: ${baseGuess})`
+    ];
+    for (const branch of branches) {
+      const last = await runGit(['log', '-1', '--pretty=%h %s', branch], ctx.cwd, ctx.signal);
       const subject = last.stdout.trim() || '(no commits)';
-      lines.push(`${branch} — ${subject}`);
-      lines.push(`  merge: git merge --no-ff ${branch}`);
-      lines.push(`  pr:    gh pr create --base ${baseGuess} --head ${branch} --fill`);
+      lines.push(`  ${branch} — ${subject}`);
     }
+    lines.push('');
+    lines.push('How do you want to ship? Pick one:');
+    lines.push('  [a] auto    — merge every branch into ' + baseGuess + ' (--no-ff). Aborts on conflict.');
+    lines.push('  [r] review  — read each diff and surface bugs/risks before you decide.');
+    lines.push('  [m] manual  — just print git/gh commands; you run them.');
     return ok({
       type: 'ok',
       summary: lines.join('\n'),
-      data: { branches: matching, baseGuess }
+      data: { branches, baseGuess }
     } satisfies ToolOk);
   }
 };
+
+/* ------------------------------------------------------------------ */
+/* ship_apply                                                         */
+/* ------------------------------------------------------------------ */
+
+const ShipApplyInput = z.object({
+  mode: z.enum(['auto', 'review', 'manual']),
+  base: z.string().optional(),
+  branches: z.array(z.string()).optional()
+});
+
+const truncateDiff = (s: string, limit = 4000): string =>
+  s.length <= limit ? s : `${s.slice(0, limit)}\n… [+${s.length - limit} bytes truncated]`;
+
+export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
+  name: 'ship_apply',
+  description:
+    'Apply a ship mode to the active task branches. mode=auto merges them into base, mode=review returns per-branch diffs for the model to analyze, mode=manual prints paste-ready commands.',
+  approval: 'ask',
+  schema: ShipApplyInput,
+  whenToUse:
+    'Call after ship_summary once the user has picked a mode. Pass mode=auto|review|manual; optionally restrict to a subset of branches.',
+  outputContract:
+    'mode=manual: same git/gh commands as ship_summary. mode=review: one diff block per branch (truncated to 4kB) for the model to summarize. mode=auto: per-branch merge result; on conflict the merge is aborted and the tool stops.',
+  blockedOps: [
+    'auto-merge while you have uncommitted changes on base (refuses)',
+    'pushing to remote (never — user does that)',
+    'opening PRs (never — user runs `gh pr create`)'
+  ],
+  async execute(input, ctx) {
+    const t = await requireActiveTask(ctx);
+    if (!t.ok) return t;
+    const ids = t.value.worktreeIds ?? [];
+    if (ids.length === 0) {
+      return ok({ type: 'ok', summary: 'ship_apply: no worktrees recorded' } satisfies ToolOk);
+    }
+    const { branches: discovered, baseGuess } = await listShipBranches(ids, ctx.cwd, ctx.signal);
+    const base = input.base ?? baseGuess;
+    const branches = input.branches && input.branches.length > 0 ? input.branches : discovered;
+    if (branches.length === 0) {
+      return ok({ type: 'ok', summary: 'ship_apply: no atlas/* branches to ship' } satisfies ToolOk);
+    }
+
+    if (input.mode === 'manual') {
+      const lines: string[] = [`ship_apply manual (base: ${base}):`];
+      for (const branch of branches) {
+        lines.push(`  git merge --no-ff ${branch}`);
+        lines.push(`  gh pr create --base ${base} --head ${branch} --fill`);
+      }
+      lines.push('');
+      lines.push(`Combined: git checkout ${base} && git merge --no-ff ${branches.join(' ')}`);
+      return ok({ type: 'ok', summary: lines.join('\n'), data: { branches, base } } satisfies ToolOk);
+    }
+
+    if (input.mode === 'review') {
+      const lines: string[] = [`ship_apply review (base: ${base}, ${branches.length} branch(es)):`];
+      for (const branch of branches) {
+        const stat = await runGit(['diff', '--stat', `${base}...${branch}`], ctx.cwd, ctx.signal);
+        const diff = await runGit(['diff', `${base}...${branch}`], ctx.cwd, ctx.signal);
+        lines.push('');
+        lines.push(`=== ${branch} ===`);
+        lines.push(stat.stdout.trim() || '(no diff)');
+        if (diff.stdout.trim().length > 0) {
+          lines.push('--- diff ---');
+          lines.push(truncateDiff(diff.stdout));
+        }
+      }
+      lines.push('');
+      lines.push(
+        'Review the diffs above and report any bugs, security risks, or concerns per branch. ' +
+          'Then ask the user whether to proceed with auto-merge, drop a branch, or switch to manual.'
+      );
+      return ok({ type: 'ok', summary: lines.join('\n'), data: { branches, base } } satisfies ToolOk);
+    }
+
+    // mode === 'auto'
+    const status = await runGit(
+      ['status', '--porcelain', '--untracked-files=no'],
+      ctx.cwd,
+      ctx.signal
+    );
+    if (status.stdout.trim().length > 0) {
+      return err(
+        atlasError(
+          'TOOL_EXECUTION_FAILED',
+          'auto-merge refused: working tree has uncommitted changes. Commit or stash, then retry.'
+        )
+      );
+    }
+    const checkout = await runGit(['checkout', base], ctx.cwd, ctx.signal);
+    if (checkout.code !== 0) {
+      return err(
+        atlasError(
+          'TOOL_EXECUTION_FAILED',
+          `auto-merge: failed to checkout ${base}: ${checkout.stderr.trim() || 'unknown'}`
+        )
+      );
+    }
+    const lines: string[] = [`ship_apply auto (base: ${base}):`];
+    const merged: string[] = [];
+    for (const branch of branches) {
+      const merge = await runGit(
+        ['merge', '--no-ff', '-m', `merge ${branch}`, branch],
+        ctx.cwd,
+        ctx.signal
+      );
+      if (merge.code === 0) {
+        merged.push(branch);
+        lines.push(`  ✓ merged ${branch}`);
+        continue;
+      }
+      // Conflict — abort and stop.
+      await runGit(['merge', '--abort'], ctx.cwd, ctx.signal);
+      lines.push(`  ✗ ${branch}: merge conflict — aborted`);
+      lines.push(`    stderr: ${merge.stderr.trim().split('\n').slice(0, 5).join(' | ')}`);
+      lines.push('');
+      lines.push(
+        `Merged ${merged.length}/${branches.length} before stopping. Resolve ${branch} manually:`
+      );
+      lines.push(`  git merge --no-ff ${branch}`);
+      lines.push('  # fix conflicts, then: git commit');
+      return ok({
+        type: 'ok',
+        summary: lines.join('\n'),
+        data: { merged, failedAt: branch, base }
+      } satisfies ToolOk);
+    }
+    lines.push('');
+    lines.push(`All ${merged.length} branch(es) merged into ${base}. Push when ready: git push`);
+    return ok({
+      type: 'ok',
+      summary: lines.join('\n'),
+      data: { merged, base }
+    } satisfies ToolOk);
+  }
+};
+

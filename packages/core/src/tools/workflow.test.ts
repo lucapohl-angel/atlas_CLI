@@ -200,3 +200,105 @@ describe('tools/workflow: plan_* end-to-end', () => {
     if (!r.ok) expect(r.error.message).toMatch(/not initialized/);
   });
 });
+
+describe('tools/workflow: ship_summary + ship_apply', () => {
+  let cwd: string;
+  let ctx: ToolContext;
+  let sh: (cmd: string, args: readonly string[], opts: { cwd: string }) => Promise<{ stdout: string; stderr: string }>;
+
+  beforeEach(async () => {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    sh = promisify(execFile) as typeof sh;
+    cwd = await mkdtemp(join(tmpdir(), 'atlas-tools-ship-'));
+    // init a real git repo with two atlas/* branches simulating a finished execute phase.
+    await sh('git', ['init', '-q', '-b', 'main'], { cwd });
+    await sh('git', ['config', 'user.email', 'a@b.c'], { cwd });
+    await sh('git', ['config', 'user.name', 'a'], { cwd });
+    await sh('git', ['commit', '--allow-empty', '-m', 'root'], { cwd });
+    await sh('git', ['checkout', '-b', 'atlas/01-first'], { cwd });
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(cwd, 'a.txt'), 'a\n', 'utf8');
+    await sh('git', ['add', '-A'], { cwd });
+    await sh('git', ['commit', '-m', 'feat(01): first'], { cwd });
+    await sh('git', ['checkout', 'main'], { cwd });
+    await sh('git', ['checkout', '-b', 'atlas/02-second'], { cwd });
+    await writeFile(join(cwd, 'b.txt'), 'b\n', 'utf8');
+    await sh('git', ['add', '-A'], { cwd });
+    await sh('git', ['commit', '-m', 'feat(02): second'], { cwd });
+    await sh('git', ['checkout', 'main'], { cwd });
+    const r = await startTask({ cwd, title: 'ship demo' });
+    if (!r.ok) throw new Error('startTask');
+    const { updateTask } = await import('../workflow/state.js');
+    await updateTask(r.value, { worktreeIds: ['01', '02'] });
+    ctx = { cwd, approve: allowAll };
+  });
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it('ship_summary lists the atlas branches and prompts for a mode', async () => {
+    const { shipSummaryTool } = await import('./workflow.js');
+    const r = await shipSummaryTool.execute({}, ctx);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).toMatch(/2 branches/);
+      expect(r.value.summary).toContain('atlas/01-first');
+      expect(r.value.summary).toContain('atlas/02-second');
+      expect(r.value.summary).toMatch(/\[a\] auto/);
+      expect(r.value.summary).toMatch(/\[r\] review/);
+      expect(r.value.summary).toMatch(/\[m\] manual/);
+    }
+  });
+
+  it('ship_apply mode=manual prints paste-ready commands without touching the repo', async () => {
+    const { shipApplyTool } = await import('./workflow.js');
+    const before = (await sh('git', ['rev-parse', 'main'], { cwd })).stdout.trim();
+    const r = await shipApplyTool.execute({ mode: 'manual' }, ctx);
+    const after = (await sh('git', ['rev-parse', 'main'], { cwd })).stdout.trim();
+    expect(after).toBe(before);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).toMatch(/manual/);
+      expect(r.value.summary).toContain('git merge --no-ff atlas/01-first');
+      expect(r.value.summary).toContain('gh pr create');
+    }
+  });
+
+  it('ship_apply mode=review returns per-branch diff stats and diffs', async () => {
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'review' }, ctx);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).toContain('=== atlas/01-first ===');
+      expect(r.value.summary).toContain('=== atlas/02-second ===');
+      expect(r.value.summary).toContain('a.txt');
+      expect(r.value.summary).toContain('b.txt');
+    }
+  });
+
+  it('ship_apply mode=auto merges all branches into base', async () => {
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'auto' }, ctx);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.summary).toMatch(/merged atlas\/01-first/);
+      expect(r.value.summary).toMatch(/merged atlas\/02-second/);
+    }
+    // both files should now be on main
+    const { access } = await import('node:fs/promises');
+    await access(join(cwd, 'a.txt'));
+    await access(join(cwd, 'b.txt'));
+  });
+
+  it('ship_apply mode=auto refuses with uncommitted changes on base', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(cwd, 'dirty.txt'), 'dirty\n', 'utf8');
+    await sh('git', ['add', 'dirty.txt'], { cwd }); // stage so status shows it
+    const { shipApplyTool } = await import('./workflow.js');
+    const r = await shipApplyTool.execute({ mode: 'auto' }, ctx);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toMatch(/uncommitted/);
+  });
+});

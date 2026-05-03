@@ -15,7 +15,7 @@ with a Greek pantheon of specialist agents doing the work.
 </div>
 
 ```bash
-npx atlas-os@latest chat
+npx atlas-os@latest
 ```
 
 **Works on Mac, Windows, and Linux. Bring any model — Claude, GPT, Gemini, local Ollama, OpenRouter.**
@@ -28,11 +28,11 @@ npx atlas-os@latest chat
 
 ```bash
 # One-shot
-npx atlas-os@latest chat
+npx atlas-os@latest
 
 # Or global
 npm install -g atlas-os
-atlas chat
+atlas
 ```
 
 Set a key for your provider of choice:
@@ -49,42 +49,32 @@ Bootstrap your project:
 ```bash
 atlas init       # install built-in agents, skills, templates, checklists
 atlas status     # the orchestrator tells you what to do next
-atlas chat       # drop into the REPL
+atlas            # open the TUI
 ```
 
 ---
 
 ## What it does
 
-Atlas runs a spec-driven delivery pipeline with a Greek pantheon of specialist
-sub-agents (Athena, Prometheus, Hestia, Hercules, Nemesis, Aphrodite, Iris,
-Apollo, Hermes, Atlas). The orchestrator picks the next agent based on what
-your project has — PRD, architecture, context pack, stories, code — and hands
-off explicitly between phases.
+ATLAS·OS is a multi-agent, spec-driven coding system for the terminal.
+You describe the goal; the orchestrator routes work across specialist agents
+for planning, architecture, implementation, QA, and release.
 
-Behind the REPL: typed Zod-validated tool contracts, blocking lifecycle hooks
-(`dangerousCommand`, `pathSafety`, `secretRedaction`, `promptInjection`,
-`progressTracker`), on-demand skill loading, MCP client, persistent sessions,
-context-window auto-compact, and a six-file Context Pack auto-injected at the
-prompt prefix (cache-friendly with Anthropic).
-
-Model-agnostic on purpose. Atlas does not assume Claude. The same crew runs
-against OpenRouter, OpenAI, Anthropic, Google, or local Ollama with one
-config line.
+Under the hood: typed tool contracts, lifecycle hook guardrails, on-demand
+skills, checklists, MCP support, and a six-file context pack shared by agents.
 
 ---
 
 ## Why it's different
 
-| | **Atlas·OS** | Single-agent CLIs |
-|---|---|---|
-| Multi-agent, role-typed | ✅ | ❌ |
-| Spec-driven pipeline (PRD→arch→stories→impl→QA→ship) | ✅ | ❌ |
-| Typed tool contracts + approval modes | ✅ | ⚠️ |
-| Blocking lifecycle hooks | ✅ | ❌ |
-| Six-file context pack auto-injected | ✅ | ❌ |
-| Model-agnostic (any provider) | ✅ | ⚠️ |
-| Atomic commits + auto-tracker hook | ✅ | ❌ |
+| Capability | **ATLAS·OS** | Claude CLI | OpenCode CLI | Gemini CLI | Cursor Agent |
+|---|---|---|---|---|---|
+| Model choice | ✅ Anthropic, OpenAI, Google, OpenRouter, Ollama | ❌ Claude-focused | ⚠️ Varies | ❌ Gemini-focused | ⚠️ Mostly Claude/GPT |
+| Multi-agent orchestration | ✅ Built in | ❌ | ❌ | ❌ | ⚠️ Limited |
+| Spec-driven pipeline (PRD→arch→stories→impl→QA) | ✅ Built in | ❌ | ❌ | ❌ | ❌ |
+| Hook guardrails (block/modify/allow) | ✅ Typed lifecycle hooks | ❌ | ❌ | ❌ | ❌ |
+| Project context pack auto-injected | ✅ Six-file pack | ❌ | ❌ | ❌ | ❌ |
+| Terminal-first default | ✅ `atlas` opens TUI | ✅ | ✅ | ✅ | ❌ Editor-first |
 
 ---
 

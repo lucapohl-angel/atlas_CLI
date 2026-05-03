@@ -573,6 +573,9 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   const [sessionId, setSessionId] = useState<string | null>(
     props.initialSession?.id ?? null
   );
+  const [sessionTitle, setSessionTitle] = useState<string | null>(
+    props.initialSession?.title ?? null
+  );
   const abortRef = useRef<AbortController | null>(null);
   const transcriptKey = useRef(0);
   const ctrlCTimer = useRef<NodeJS.Timeout | null>(null);
@@ -1463,6 +1466,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 sessionRef.current = r.value;
                 messagesRef.current = [...r.value.messages];
                 setSessionId(r.value.id);
+                setSessionTitle(r.value.title ?? null);
                 hydrateTranscriptFromMessages(
                   r.value.messages,
                   r.value.agent ?? activeAgent.name
@@ -2338,6 +2342,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           sessionRef.current = r.value;
           messagesRef.current = [...r.value.messages];
           setSessionId(r.value.id);
+          setSessionTitle(r.value.title ?? null);
           hydrateTranscriptFromMessages(
             r.value.messages,
             r.value.agent ?? activeAgent.name
@@ -4079,9 +4084,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         usage={usage}
         streaming={streaming}
         contextWindow={contextWindowFor(model, modelCatalog)}
-        sessionId={sessionId}
+        sessionLabel={sessionLabel(sessionId, sessionTitle)}
         phase={activeTask?.phase ?? 'idle'}
         gitBranch={gitBranch}
+        width={cols}
       />
       {transcript.length === 0 && overlay.kind !== 'setup' && <Splash defaultModel={model} />}
       <Box flexDirection="column" flexGrow={1}>
@@ -4484,6 +4490,15 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                         o.kind === 'session-picker' ? { ...o, mode: 'list' } : o
                       );
                       return;
+                    }
+                    // If the renamed session is the active one, reflect
+                    // the new title in the header immediately.
+                    if (sessionRef.current?.id === r.value.id) {
+                      sessionRef.current = {
+                        ...sessionRef.current,
+                        title: r.value.title ?? ''
+                      };
+                      setSessionTitle(r.value.title ?? null);
                     }
                     const list = await props.sessionStore!.list();
                     if (list.ok) {
@@ -5848,9 +5863,10 @@ const Header = ({
   usage,
   streaming,
   contextWindow,
-  sessionId,
+  sessionLabel,
   phase,
-  gitBranch
+  gitBranch,
+  width
 }: {
   agent: Agent;
   model: string;
@@ -5865,9 +5881,10 @@ const Header = ({
   } | null;
   streaming: boolean;
   contextWindow: number;
-  sessionId: string | null;
+  sessionLabel: string | null;
   phase: Phase;
   gitBranch: string | null;
+  width: number;
 }): React.JSX.Element => {
   const cost =
     usage && usage.promptTokens !== undefined && usage.completionTokens !== undefined
@@ -5875,56 +5892,94 @@ const Header = ({
       : undefined;
   void cost;
   void contextWindow;
+
+  // Responsive chip budget. Each tier strips less-essential chips so the
+  // header fits on one line in narrow terminals (VS Code split panes,
+  // small Konsole windows). The role + model + mode are always shown.
+  const showPersonaAlias = width >= 90;
+  const showThinking = width >= 70;
+  const showPhase = width >= 80 && phase !== 'idle';
+  const showStreaming = width >= 75 && streaming;
+  const showSession = width >= 95 && sessionLabel !== null;
+  const showGitBranch = width >= 105 && gitBranch !== null;
+  const showRounds = width >= 60 && usage !== null;
+
+  // In ultra-narrow terminals, also abbreviate model + mode so they
+  // don't push the row over the edge.
+  const compactModel = width < 60 && model.length > 14
+    ? model.slice(0, 12) + '…'
+    : model;
+
   return (
     <Box borderStyle="round" borderColor="gray" paddingX={1} marginBottom={0}>
-      <Box flexGrow={1}>
-        <Text color={colorForAgent(agent.name)} bold>
+      <Box flexGrow={1} overflow="hidden">
+        <Text color={colorForAgent(agent.name)} bold wrap="truncate-end">
           {agent.role}
         </Text>
-        {agent.personaAlias && <Text color="gray"> ({agent.personaAlias})</Text>}
+        {showPersonaAlias && agent.personaAlias && (
+          <Text color="gray" wrap="truncate-end"> ({agent.personaAlias})</Text>
+        )}
         <Text color="gray"> · </Text>
-        <Text color="white">{model}</Text>
+        <Text color="white" wrap="truncate-end">{compactModel}</Text>
         <Text color={providerColor(modelProvider)}> [{providerShortLabel(modelProvider)}]</Text>
-        <Text color="gray"> · mode </Text>
+        <Text color="gray"> · </Text>
         <Text color={modeColor(mode)} bold={mode === 'autopilot'}>
           {mode}
         </Text>
-        {phase !== 'idle' && (
+        {showPhase && (
           <>
-            <Text color="gray"> · phase </Text>
+            <Text color="gray"> · </Text>
             <Text color={phaseColor(phase)} bold>
               {phase}
             </Text>
           </>
         )}
-        <Text color="gray"> · think </Text>
-        <Text color={thinking === 'off' ? 'gray' : 'magenta'}>{thinking}</Text>
-        {streaming && (
+        {showThinking && (
+          <>
+            <Text color="gray"> · think </Text>
+            <Text color={thinking === 'off' ? 'gray' : 'magenta'}>{thinking}</Text>
+          </>
+        )}
+        {showStreaming && (
           <>
             <Text color="gray"> · </Text>
             <Text color="yellow">streaming</Text>
           </>
         )}
-        {sessionId && (
+        {showSession && (
           <>
-            <Text color="gray"> · session </Text>
-            <Text color="cyan">{sessionId}</Text>
+            <Text color="gray"> · </Text>
+            <Text color="cyan" wrap="truncate-end">{sessionLabel}</Text>
           </>
         )}
-        {gitBranch && (
+        {showGitBranch && (
           <>
-            <Text color="gray"> · base </Text>
-            <Text color="green">⎇ {gitBranch}</Text>
+            <Text color="gray"> · </Text>
+            <Text color="green" wrap="truncate-end">⎇ {gitBranch}</Text>
           </>
         )}
       </Box>
-      <Box>
-        {usage && (
-          <Text color="gray">{usage.rounds}rd</Text>
-        )}
-      </Box>
+      {showRounds && (
+        <Box flexShrink={0}>
+          <Text color="gray">{usage!.rounds}rd</Text>
+        </Box>
+      )}
     </Box>
   );
+};
+
+/**
+ * Resolve the human-friendly label shown for the active session in the
+ * header. Prefers the user-set title; falls back to the short random
+ * suffix of the auto-generated id (e.g. `20260503_122203_a5f5` →
+ * `#a5f5`) so the chip stays compact.
+ */
+const sessionLabel = (id: string | null, title: string | null): string | null => {
+  if (!id) return null;
+  if (title && title.trim().length > 0) return title.trim();
+  // session id format: YYYYMMDD_HHMMSS_xxxx — show the random suffix only.
+  const m = id.match(/_([a-z0-9]+)$/i);
+  return m ? `#${m[1]}` : `#${id.slice(-6)}`;
 };
 
 /** 10-cell unicode bar showing context-window fill. */

@@ -910,6 +910,17 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   // detached HEAD); we just hide the segment in that case. Polled every
   // 3s and immediately on mount — covers both `git checkout` from another
   // terminal and ship_apply switching base mid-session.
+  // Blinking caret in the composer prompt. Toggles every 530ms (the
+  // same blink rate VS Code uses) so users have a clear visual signal
+  // that the chat input is focused and accepting keystrokes — mirrors
+  // the VS Code editor cursor behavior. Suspended while streaming or
+  // when an overlay is open so we don't repaint unnecessarily.
+  const [caretOn, setCaretOn] = useState(true);
+  useEffect(() => {
+    const id = setInterval(() => setCaretOn((v) => !v), 530);
+    return () => clearInterval(id);
+  }, []);
+
   const [gitBranch, setGitBranch] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -5891,7 +5902,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             </Box>
           ) : (
             <Box width={Math.max(20, cols - 4 - (showSidebar ? 48 : 0))}>
-              <Text color="cyan">› </Text>
+              <Text color={caretOn ? 'cyan' : 'gray'} bold={caretOn} dimColor={!caretOn}>› </Text>
               <TextInput value={input} onChange={setInput} onSubmit={handleInputSubmit} />
             </Box>
           )}

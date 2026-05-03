@@ -10,6 +10,7 @@ import { runAsk } from './commands/ask.js';
 import { runInit } from './commands/init.js';
 import { runStatus } from './commands/status.js';
 import { runSearxng } from './commands/searxng.js';
+import { runVscodeSetup } from './commands/vscode-setup.js';
 import { runRepl } from './repl/repl.js';
 import { runTui } from './tui/runTui.js';
 
@@ -119,6 +120,19 @@ export const buildProgram = (): Command => {
     .argument('[subcommand]', 'status | install | start | stop | remove', 'status')
     .action(async (sub: string) => {
       const { exitCode } = await runSearxng({ sub });
+      if (exitCode !== 0) process.exitCode = exitCode;
+    });
+
+  program
+    .command('vscode-setup')
+    .description("patch VS Code's settings.json so the terminal forwards Ctrl+P / Ctrl+Shift+P / etc. to Atlas")
+    .option('--dry-run', 'print the patched JSON instead of writing')
+    .option('--path <file>', 'override settings.json location')
+    .action(async (opts: { dryRun?: boolean; path?: string }) => {
+      const setupOpts: { dryRun?: boolean; path?: string } = {};
+      if (opts.dryRun) setupOpts.dryRun = true;
+      if (opts.path) setupOpts.path = opts.path;
+      const { exitCode } = await runVscodeSetup(setupOpts);
       if (exitCode !== 0) process.exitCode = exitCode;
     });
 

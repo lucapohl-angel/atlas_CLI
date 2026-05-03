@@ -21,7 +21,7 @@
 
 ```
 @atlas/core      — engine (provider, tool, hook, skill, agent, orchestrator)
-atlas-cli        — bin entry, REPL, command parsing, TUI
+atlas-os         — bin entry, REPL, command parsing, TUI
 ```
 
 The split exists so `@atlas/core` can be embedded in non-CLI hosts (web UIs,

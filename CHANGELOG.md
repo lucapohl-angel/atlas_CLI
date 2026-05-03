@@ -298,7 +298,7 @@ semantic versioning.
   contract is now live, not just a library.
 
 ### Added — Phase 0 (Foundation)
-- pnpm monorepo: `@atlas/core`, `atlas-cli`
+- pnpm monorepo: `@atlas/core`, `atlas-os`
 - TypeScript strict mode, ESM-only, Vitest
 - Pino structured logging
 - `Result<T, E>` and `AtlasError` types in `@atlas/core`

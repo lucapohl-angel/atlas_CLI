@@ -134,7 +134,7 @@ loaded by the active agent based on context).
    story.
 5. Every shipped phase row in [README.md](../README.md) is accompanied
    by passing `pnpm --filter @atlas/core test:run` and
-   `pnpm --filter atlas-cli test:run` runs.
+   `pnpm --filter atlas-os test:run` runs.
 6. No `any`, no thrown control-flow exceptions, no missing
    `AbortSignal` on long-running async — verified by code review and
    strict TS settings.

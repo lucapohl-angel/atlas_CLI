@@ -234,7 +234,7 @@ const loadOrCreateSecret = async (configDir: string): Promise<string> => {
 const writeSettings = async (configDir: string, secret: string): Promise<string> => {
   const settingsPath = join(configDir, 'settings.yml');
   const yaml = [
-    '# Managed by atlas-cli — do not edit unless you want to fork off.',
+    '# Managed by atlas-os — do not edit unless you want to fork off.',
     "# Re-running `atlas searxng start` (or the `/tools` UI) overwrites this file",
     '# but preserves your secret in .secret next to it.',
     'use_default_settings: true',

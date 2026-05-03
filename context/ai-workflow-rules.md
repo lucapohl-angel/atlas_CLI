@@ -123,9 +123,9 @@ A task is **not done** until all of the following pass:
 ```bash
 pnpm --filter @atlas/core build
 pnpm --filter @atlas/core test:run
-pnpm --filter atlas-cli typecheck
-pnpm --filter atlas-cli test:run
-pnpm --filter atlas-cli build
+pnpm --filter atlas-os typecheck
+pnpm --filter atlas-os test:run
+pnpm --filter atlas-os build
 ```
 
 Plus:

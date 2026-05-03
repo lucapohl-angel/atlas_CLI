@@ -47,7 +47,7 @@ If you only have time for two files, read 1 and 5.
 atlas_CLI/
 ├── packages/
 │   ├── core/        @atlas/core — engine (providers, tools, hooks, skills, agents, orchestrator)
-│   └── cli/         atlas-cli — bin entry, REPL, command parsing
+│   └── cli/         atlas-os — bin entry, REPL, command parsing
 ├── tsconfig.base.json
 ├── pnpm-workspace.yaml
 └── package.json     monorepo root
@@ -59,7 +59,7 @@ atlas_CLI/
 2. Write the test(s) first when the contract is testable in isolation.
 3. Implement.
 4. Run quality gates:
-   `pnpm --filter @atlas/core build && pnpm --filter @atlas/core test:run && pnpm --filter atlas-cli typecheck && pnpm --filter atlas-cli test:run && pnpm --filter atlas-cli build`
+   `pnpm --filter @atlas/core build && pnpm --filter @atlas/core test:run && pnpm --filter atlas-os typecheck && pnpm --filter atlas-os test:run && pnpm --filter atlas-os build`
 5. Update the README phase table when a phase completes.
 6. Append a one-line entry to
    [`context/progress-tracker.md`](context/progress-tracker.md) §

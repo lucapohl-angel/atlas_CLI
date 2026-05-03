@@ -69,7 +69,7 @@ export class McpClient {
     const initRes = await this.transport.request('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'atlas-cli', version: '0.1.0' }
+      clientInfo: { name: 'atlas-os', version: '0.1.0' }
     });
     if (!initRes.ok) return err(initRes.error);
     // Per spec, send `notifications/initialized` after init.

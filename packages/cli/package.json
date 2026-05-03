@@ -1,7 +1,33 @@
 {
-  "name": "atlas-cli",
+  "name": "atlas-os",
   "version": "0.1.0",
-  "description": "Atlas CLI — Your autonomous development crew (Greek god agents + skills + hooks).",
+  "description": "Atlas·OS — Autonomous Teams · Lifecycle · Agents · Skills — Orchestration System for the terminal.",
+  "keywords": [
+    "ai",
+    "agent",
+    "agents",
+    "cli",
+    "tui",
+    "llm",
+    "openrouter",
+    "anthropic",
+    "claude",
+    "openai",
+    "sdd",
+    "spec-driven",
+    "orchestration",
+    "autonomous",
+    "developer-tools"
+  ],
+  "homepage": "https://github.com/lucapohl-angel/atlas_CLI#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lucapohl-angel/atlas_CLI.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/lucapohl-angel/atlas_CLI/issues"
+  },
   "license": "MIT",
   "author": "Luca Pohl Angel",
   "type": "module",
@@ -12,8 +38,12 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsc -p tsconfig.build.json --watch",

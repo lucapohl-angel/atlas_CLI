@@ -137,9 +137,9 @@ Before declaring any task complete, run:
 ```bash
 pnpm --filter @atlas/core build && \
 pnpm --filter @atlas/core test:run && \
-pnpm --filter atlas-cli typecheck && \
-pnpm --filter atlas-cli test:run && \
-pnpm --filter atlas-cli build
+pnpm --filter atlas-os typecheck && \
+pnpm --filter atlas-os test:run && \
+pnpm --filter atlas-os build
 ```
 
 Lint script is not currently wired at the workspace root — `pnpm lint`

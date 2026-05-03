@@ -64,7 +64,7 @@ export const webFetchTool: Tool<z.infer<typeof Input>> = {
       timeoutMs: input.timeoutMs,
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       headers: {
-        'user-agent': 'Atlas-CLI/0.1 (+https://github.com/lucapohl-angel/atlas_CLI)',
+        'user-agent': 'Atlas-OS/0.1 (+https://github.com/lucapohl-angel/atlas_CLI)',
         accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5'
       }
     });

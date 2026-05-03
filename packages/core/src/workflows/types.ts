@@ -41,6 +41,7 @@ export const ChainRequiresSchema = z.object({
   hasPRD: z.boolean().optional(),
   hasArchitecture: z.boolean().optional(),
   hasStories: z.boolean().optional(),
+  hasContextPack: z.boolean().optional(),
   minStories: z.number().int().nonnegative().optional(),
   storyStatus: WorkflowStoryStatusSchema.optional(),
   artifact: ArtifactKeySchema.optional(),

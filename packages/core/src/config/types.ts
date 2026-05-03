@@ -172,6 +172,14 @@ export const GuardrailsConfigSchema = z
      */
     discoverGuardrails: z.boolean().default(true),
     /**
+     * Auto-append a `[shortsha] subject` line to
+     * `context/progress-tracker.md` § Recent Decisions after every
+     * successful `git commit` invoked via the `terminal` tool. No-op
+     * when the tracker file doesn't exist (i.e., no Six-File Context
+     * Pack scaffolded). Set false to disable the side effect.
+     */
+    progressTracker: z.boolean().default(true),
+    /**
      * Extra absolute paths or glob fragments to deny in path-safety
      * (in addition to built-in defaults).
      */

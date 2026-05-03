@@ -227,6 +227,11 @@ If none of those signals are present, recommend Athena to start a PRD. Never rec
       { name: 'discover', description: 'Interview the user until you understand the problem space.' },
       { name: 'write-prd', description: 'Draft or update `docs/prd.md`.' },
       { name: 'review-prd', description: 'Critique the existing PRD and list gaps.' },
+      {
+        name: 'scaffold-context-pack',
+        description:
+          'Generate the Six-File Context Pack (project-overview, code-standards, ai-workflow-rules, progress-tracker) under `context/`. Run after PRD + architecture exist so every subsequent agent boots with shared context.'
+      },
       { name: 'handoff', description: 'Hand off to the architect when the PRD is approved.' }
     ],
     voiceDna: [
@@ -244,8 +249,8 @@ If none of those signals are present, recommend Athena to start a PRD. Never rec
       'Never assume scope: if the user has not confirmed a goal or non-goal, list it under Open Questions instead of inventing it.',
       'Never close discovery silently — the handoff to the Architect must be an explicit, confirmed step.'
     ],
-    templates: ['prd'],
-    checklists: ['prd-ready'],
+    templates: ['prd', 'project-overview', 'code-standards', 'ai-workflow-rules', 'progress-tracker'],
+    checklists: ['prd-ready', 'context-pack-readiness'],
     authorizedSections: ['Problem', 'Users', 'Goals', 'Non-Goals', 'Success Metrics', 'Constraints', 'Open Questions'],
     forbiddenSections: ['Architecture', 'Tech Stack', 'Tasks', 'Implementation Notes', 'Test Strategy', 'QA Notes', 'Release Notes'],
     body: `## Mission

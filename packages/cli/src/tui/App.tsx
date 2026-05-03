@@ -79,6 +79,7 @@ import {
   isFrameworkAgent,
   estimateCost,
   formatCost,
+  loadContextPack,
   saveLearnedSkill,
   setSkillDisabled,
   writeRepoMap,
@@ -1650,10 +1651,16 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       const skills = props.skills.list();
       // Per-agent override takes precedence over the global model.
       const effectiveModel = agentModels.get(activeAgent.name) ?? model;
+      // Six-File Context Pack — best-effort load on every turn (file
+      // reads only). Absence (no `context/` scaffolded yet) is normal;
+      // the orchestrator already routes to Athena `*scaffold-context-pack`
+      // when the project is ripe for it.
+      const pack = await loadContextPack({ cwd: process.cwd() });
       const baseSystem = buildSystemPrompt(activeAgent, skills, {
         model: effectiveModel,
         providerLabel: providerLongLabel(activeProviderKind),
-        atlasVersion: ATLAS_VERSION
+        atlasVersion: ATLAS_VERSION,
+        ...(pack.content ? { contextPack: pack.content } : {})
       });
       // Phase-aware addendum — pushes the model toward structured
       // discovery (slot tools + clarify-with-options for vague answers)
@@ -3741,6 +3748,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             secretRedaction: true,
             promptInjectionDetector: true,
             discoverGuardrails: true,
+            progressTracker: true,
             extraDeniedPaths: [],
             extraDeniedCommands: []
           },
@@ -3838,6 +3846,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         secretRedaction: true,
         promptInjectionDetector: true,
         discoverGuardrails: true,
+        progressTracker: true,
         extraDeniedPaths: [],
         extraDeniedCommands: []
       },

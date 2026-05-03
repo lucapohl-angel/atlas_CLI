@@ -17,7 +17,7 @@ import { loadProjectState } from '../state/index.js';
 import type { AtlasError } from '../errors.js';
 import type { Result } from '../result.js';
 import { ok } from '../result.js';
-import { loadWorkflowConfig, lookupChain, type LoadChainsOptions } from './loader.js';
+import { loadWorkflowConfig, type LoadChainsOptions } from './loader.js';
 import type { ChainRequires, ChainStep, WorkflowActivation } from './types.js';
 
 export type NextSource = 'handoff' | 'chain' | 'state' | 'state-file';
@@ -48,6 +48,7 @@ const requiresSatisfied = async (
   if (requires.hasPRD !== undefined && detected.hasPRD !== requires.hasPRD) return false;
   if (requires.hasArchitecture !== undefined && detected.hasArchitecture !== requires.hasArchitecture) return false;
   if (requires.hasStories !== undefined && detected.hasStories !== requires.hasStories) return false;
+  if (requires.hasContextPack !== undefined && detected.hasContextPack !== requires.hasContextPack) return false;
   if (requires.minStories !== undefined && detected.storyCount < requires.minStories) return false;
 
   if (requires.storyStatus || (requires.artifact && requires.status)) {
@@ -70,8 +71,17 @@ const pickEligibleChainStep = async (
   fromAgent: string,
   command?: string
 ): Promise<ChainStep | undefined> => {
-  const exact = lookupChain(chains, fromAgent, command);
-  if (exact && (await requiresSatisfied(cwd, exact.requires))) return exact;
+  // Iterate ALL exact matches in declaration order (not just the first
+  // via lookupChain) so a chain author can stack multiple entries for
+  // the same (fromAgent, command) pair where the first eligible
+  // `requires` block wins. This is what enables conditional routing
+  // like "if hasContextPack=false → scaffold first, otherwise proceed
+  // to the normal next step".
+  for (const step of chains) {
+    if (step.fromAgent !== fromAgent) continue;
+    if (step.command !== command) continue;
+    if (await requiresSatisfied(cwd, step.requires)) return step;
+  }
   const wildcards = chains.filter((c) => c.fromAgent === fromAgent && c.command === undefined);
   for (const step of wildcards) {
     if (await requiresSatisfied(cwd, step.requires)) return step;

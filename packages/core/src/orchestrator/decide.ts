@@ -18,6 +18,15 @@ export const recommendAgent = (state: ProjectState): AgentRecommendation => {
   if (!state.hasArchitecture) {
     return { agent: 'prometheus', reason: 'PRD exists, missing docs/architecture.md' };
   }
+  // Once architecture is locked the project is real enough that the
+  // context pack pays for itself: every subsequent story execution
+  // reads it, and the auto-tracker hook needs the file to exist.
+  if (!state.hasContextPack) {
+    return {
+      agent: 'athena',
+      reason: 'PRD + architecture exist, missing context/project-overview.md — scaffold the context pack'
+    };
+  }
   if (!state.hasStories) {
     return { agent: 'hestia', reason: 'architecture done, need story breakdown' };
   }

@@ -37,6 +37,26 @@ chains:
     requires:
       hasPRD: true
 
+  # Architecture exists but the Six-File Context Pack hasn't been
+  # scaffolded yet → Athena writes the pack so subsequent agents boot
+  # with shared context.
+  - fromAgent: prometheus
+    command: write-architecture
+    toAgent: athena
+    nextCommand: scaffold-context-pack
+    reason: architecture set; scaffold the Context Pack before UX/epics
+    requires:
+      hasArchitecture: true
+      hasContextPack: false
+
+  - fromAgent: athena
+    command: scaffold-context-pack
+    toAgent: aphrodite
+    nextCommand: write-ux-spec
+    reason: context pack scaffolded; UX comes next
+    requires:
+      hasContextPack: true
+
   # Architecture → UX → design system
   - fromAgent: prometheus
     command: write-architecture

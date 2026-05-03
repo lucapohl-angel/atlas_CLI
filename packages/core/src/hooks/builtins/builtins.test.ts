@@ -187,9 +187,9 @@ describe('promptInjectionHook', () => {
 });
 
 describe('builtinHookRegistry', () => {
-  it('registers all default hooks (4 base + 3 discover guardrails)', () => {
+  it('registers all default hooks (4 base + 3 discover guardrails + progress tracker)', () => {
     const reg = builtinHookRegistry({ cwd: '/tmp/x' });
-    expect(reg.list().length).toBe(7);
+    expect(reg.list().length).toBe(8);
   });
   it('registers nothing when disabled', () => {
     const reg = builtinHookRegistry({
@@ -201,6 +201,7 @@ describe('builtinHookRegistry', () => {
         secretRedaction: true,
         promptInjectionDetector: true,
         discoverGuardrails: true,
+        progressTracker: true,
         extraDeniedPaths: [],
         extraDeniedCommands: []
       }
@@ -217,6 +218,7 @@ describe('builtinHookRegistry', () => {
         secretRedaction: false,
         promptInjectionDetector: false,
         discoverGuardrails: false,
+        progressTracker: false,
         extraDeniedPaths: [],
         extraDeniedCommands: []
       }

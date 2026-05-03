@@ -15,6 +15,7 @@ import {
   vaguenessHook
 } from './discover-guardrails.js';
 import { pathSafetyHook } from './path-safety.js';
+import { progressTrackerHook } from './progress-tracker.js';
 import { promptInjectionHook } from './prompt-injection.js';
 import { secretRedactorHook } from './secret-redactor.js';
 
@@ -44,6 +45,9 @@ export const builtinHookRegistry = (opts: BuiltinHookOptions): HookRegistry => {
     reg.register(vaguenessHook(opts.cwd));
     reg.register(contradictionHook(opts.cwd));
     reg.register(multiQuestionHook(opts.cwd));
+  }
+  if (!cfg || cfg.progressTracker !== false) {
+    reg.register(progressTrackerHook(opts.cwd));
   }
   return reg;
 };

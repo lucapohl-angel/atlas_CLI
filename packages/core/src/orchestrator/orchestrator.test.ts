@@ -35,18 +35,32 @@ describe('orchestrator', () => {
     expect(recommendAgent(s).agent).toBe('prometheus');
   });
 
-  it('recommends hestia when architecture exists but no stories', async () => {
+  it('recommends athena to scaffold context pack when arch exists but pack missing', async () => {
     await mkdir(join(dir, 'docs'));
     await writeFile(join(dir, 'docs', 'prd.md'), '# PRD\n');
     await writeFile(join(dir, 'docs', 'architecture.md'), '# arch\n');
+    const s = await detectProjectState(dir);
+    const r = recommendAgent(s);
+    expect(r.agent).toBe('athena');
+    expect(r.reason).toContain('context');
+  });
+
+  it('recommends hestia when architecture exists but no stories', async () => {
+    await mkdir(join(dir, 'docs'));
+    await mkdir(join(dir, 'context'));
+    await writeFile(join(dir, 'docs', 'prd.md'), '# PRD\n');
+    await writeFile(join(dir, 'docs', 'architecture.md'), '# arch\n');
+    await writeFile(join(dir, 'context', 'project-overview.md'), '# overview\n');
     const s = await detectProjectState(dir);
     expect(recommendAgent(s).agent).toBe('hestia');
   });
 
   it('recommends hercules when stories exist', async () => {
     await mkdir(join(dir, 'docs', 'stories'), { recursive: true });
+    await mkdir(join(dir, 'context'));
     await writeFile(join(dir, 'docs', 'prd.md'), '# PRD\n');
     await writeFile(join(dir, 'docs', 'architecture.md'), '# arch\n');
+    await writeFile(join(dir, 'context', 'project-overview.md'), '# overview\n');
     await writeFile(join(dir, 'docs', 'stories', 's1.md'), '# story\n');
     const s = await detectProjectState(dir);
     const r = recommendAgent(s);

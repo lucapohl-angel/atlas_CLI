@@ -35,8 +35,10 @@ describe('runStatus', () => {
 
   it('prints hercules when stories exist', async () => {
     await mkdir(join(dir, 'docs', 'stories'), { recursive: true });
+    await mkdir(join(dir, 'context'));
     await writeFile(join(dir, 'docs', 'prd.md'), '#');
     await writeFile(join(dir, 'docs', 'architecture.md'), '#');
+    await writeFile(join(dir, 'context', 'project-overview.md'), '#');
     await writeFile(join(dir, 'docs', 'stories', 's1.md'), '#');
     const out = collect();
     await runStatus({ cwd: dir, stdout: out.stream });

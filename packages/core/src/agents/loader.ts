@@ -150,6 +150,16 @@ export interface SystemPromptContext {
   readonly providerLabel?: string;
   /** Atlas CLI version, e.g. "0.1.0". */
   readonly atlasVersion?: string;
+  /**
+   * Optional Six-File Context Pack content (project-overview +
+   * code-standards + ai-workflow-rules + progress-tracker tail), as
+   * produced by `loadContextPack`. Injected as a stable, large,
+   * cacheable block so providers with prefix caching (Anthropic
+   * `cache_control`, OpenAI / OpenRouter cached_tokens) get a hit on
+   * every turn. Hosts pass `undefined` when the pack hasn't been
+   * scaffolded yet.
+   */
+  readonly contextPack?: string;
 }
 
 export const buildSystemPrompt = (
@@ -164,6 +174,14 @@ export const buildSystemPrompt = (
   );
 
   sections.push(renderSelfKnowledge(agent, context));
+
+  // Project Context Pack — large, stable, cacheable. Placed early so
+  // it sits at the top of the prompt prefix and contributes maximally
+  // to provider prefix caches. The block is empty when the host
+  // didn't pass `contextPack` (no pack scaffolded yet).
+  if (context.contextPack && context.contextPack.trim().length > 0) {
+    sections.push(context.contextPack.trim());
+  }
 
   sections.push(agent.systemPrompt.trim());
 

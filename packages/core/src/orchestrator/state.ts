@@ -15,6 +15,13 @@ export interface ProjectState {
   readonly hasStories: boolean;
   readonly storyCount: number;
   readonly hasUncommittedChanges: boolean;
+  /**
+   * True when the Six-File Context Pack scaffolding is present under
+   * `context/`. The orchestrator routes to Athena for
+   * `*scaffold-context-pack` when a real project exists (PRD present)
+   * but the pack is missing.
+   */
+  readonly hasContextPack: boolean;
 }
 
 const exists = async (p: string): Promise<boolean> => {
@@ -44,11 +51,15 @@ const countMdFiles = async (p: string): Promise<number> => {
 };
 
 export const detectProjectState = async (cwd: string): Promise<ProjectState> => {
-  const [hasGit, hasPRD, hasArch, storyCount] = await Promise.all([
+  const [hasGit, hasPRD, hasArch, storyCount, hasContextPack] = await Promise.all([
     exists(join(cwd, '.git')),
     isFile(join(cwd, 'docs', 'prd.md')),
     isFile(join(cwd, 'docs', 'architecture.md')),
-    countMdFiles(join(cwd, 'docs', 'stories'))
+    countMdFiles(join(cwd, 'docs', 'stories')),
+    // Pack is considered present when the project-overview file exists.
+    // The other three are recommended but not strictly required (the
+    // `context-pack-readiness` checklist is the full gate).
+    isFile(join(cwd, 'context', 'project-overview.md'))
   ]);
 
   return {
@@ -61,6 +72,7 @@ export const detectProjectState = async (cwd: string): Promise<ProjectState> => 
     // Detecting uncommitted changes requires `git status` shell-out; the
     // orchestrator can supply this from a hook if needed. Keep cheap by
     // default.
-    hasUncommittedChanges: false
+    hasUncommittedChanges: false,
+    hasContextPack
   };
 };

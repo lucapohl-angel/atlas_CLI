@@ -487,5 +487,41 @@ items:
     text: Long-running operations honor AbortSignal and exit cleanly on cancellation.
     severity: warning
 `
+  ),
+  cl(
+    'context-pack-readiness',
+    `
+id: context-pack-readiness
+version: 1
+title: Context Pack Readiness
+owner: atlas
+appliesTo: context/
+whenToUse: Run before any coding agent (Hercules, Hephaestus, etc.) executes work on a fresh project. Verifies the Six-File Context Pack scaffolds the agent's first turn correctly.
+items:
+  - id: overview-present
+    text: "\`context/project-overview.md\` exists and names the project, in-scope, out-of-scope, and success criteria."
+    severity: blocker
+  - id: standards-present
+    text: "\`context/code-standards.md\` exists and names language, async model, error model, file naming, and the build-gate command."
+    severity: blocker
+  - id: workflow-rules-present
+    text: "\`context/ai-workflow-rules.md\` exists and lists read-first files, scope rules, protected files, and verification steps."
+    severity: blocker
+  - id: tracker-present
+    text: "\`context/progress-tracker.md\` exists and names the current phase + current goal."
+    severity: blocker
+  - id: tracker-fresh
+    text: "\`context/progress-tracker.md\` 'Recent Decisions' reflects the last commit (the auto-tracker hook is wired and firing)."
+    severity: warning
+  - id: open-questions-resolved
+    text: "\`context/progress-tracker.md\` 'Open Questions' is empty — every ambiguity has been resolved or explicitly deferred."
+    severity: warning
+  - id: architecture-aligned
+    text: "\`ARCHITECTURE.md\` § Invariants (or equivalent) lists the rules the codebase must always satisfy. The pack does not contradict it."
+    severity: blocker
+  - id: agent-readme-points-to-pack
+    text: "\`AGENTS.md\` / \`CLAUDE.md\` opens with an ordered 'Read these first' list pointing at the four context-pack files."
+    severity: warning
+`
   )
 ];

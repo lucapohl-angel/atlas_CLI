@@ -283,6 +283,14 @@ const ENTRIES: readonly CatalogEntry[] = [
     probe: probeAlwaysOn('built-in')
   },
   {
+    name: 'open_question',
+    title: 'open_question',
+    description: 'Append an unresolved ambiguity to context/progress-tracker.md.',
+    essential: false,
+    group: 'meta',
+    probe: probeAlwaysOn('built-in')
+  },
+  {
     name: 'delegate',
     title: 'delegate',
     description: 'Spawn child agent(s) to handle sub-goals.',

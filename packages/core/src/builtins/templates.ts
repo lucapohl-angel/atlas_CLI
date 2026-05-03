@@ -1154,5 +1154,317 @@ sections:
     body: |
       - {{item}}
 `
+  ),
+  // ─── Context Pack (Six-File Context System) ──────────────────────────
+  // The four files below are the agent-context layer Atlas itself
+  // dogfoods. They live under <cwd>/context/ and get injected into the
+  // active agent's system prompt every turn (see App.tsx +
+  // agents/loader.ts contextPack hook). They scaffold once with
+  // `*scaffold-context-pack` (Athena) and are then auto-maintained:
+  // the progress-tracker hook appends a one-liner after every
+  // successful `git commit`.
+  tpl(
+    'project-overview',
+    `
+id: project-overview
+version: 1
+title: Project Overview (Context Pack)
+description: One-page product spec for the project itself — what it is, who it's for, what's deliberately out of scope. Read first by every agent and every coding tool that opens the repo.
+owner: athena
+output: context/project-overview.md
+whenToUse: Run as the very first step after \`atlas init\` on a real project, or when scope/in-out-of-scope changes materially. The Six-File Context System depends on this being accurate.
+inputs:
+  - name: project_name
+    type: string
+    required: true
+  - name: one_paragraph
+    type: text
+    required: true
+    description: "Single paragraph; what the project is, who it's for, what makes it different."
+  - name: user_flow
+    type: text
+    required: true
+    description: The happy-path flow from "user installs / opens" to "user gets value". 5–10 numbered steps.
+  - name: in_scope
+    type: list
+    required: true
+  - name: out_of_scope
+    type: list
+    required: true
+    description: Explicit "we are NOT building this" list. Future scope creep is auditable against this.
+  - name: success_criteria
+    type: list
+    required: true
+    description: Each criterion must be observable / verifiable.
+  - name: non_goals
+    type: list
+    description: Philosophy / posture choices ("don't try to outsmart the model with prose"). Optional.
+sections:
+  - id: overview
+    title: Overview
+    elicit: true
+    body: |
+      {{one_paragraph}}
+  - id: user-flow
+    title: Core User Flow
+    elicit: true
+    body: |
+      {{user_flow}}
+  - id: in-scope
+    title: In Scope
+    elicit: true
+    repeatable: true
+    body: |
+      - {{item}}
+  - id: out-of-scope
+    title: Out of Scope (for now)
+    elicit: true
+    repeatable: true
+    body: |
+      - {{item}}
+  - id: success-criteria
+    title: Success Criteria
+    elicit: true
+    repeatable: true
+    body: |
+      - {{item}}
+  - id: non-goals
+    title: Non-goals (philosophy)
+    repeatable: true
+    body: |
+      - {{item}}
+`
+  ),
+  tpl(
+    'code-standards',
+    `
+id: code-standards
+version: 1
+title: Code Standards (Context Pack)
+description: Project-specific conventions the codebase actually enforces — language settings, async model, error handling, file naming, testing. Read by every coding agent before touching source.
+owner: prometheus
+output: context/code-standards.md
+whenToUse: Generate after architecture is locked. Update whenever a new convention starts being enforced (one-line rule per section).
+inputs:
+  - name: language
+    type: string
+    required: true
+    description: e.g. "TypeScript (strict ESM)", "Python 3.12", "Rust 1.78".
+  - name: type_safety
+    type: text
+    required: true
+    description: Strictness rules. e.g. "no any; unknown + Zod at boundaries".
+  - name: async_model
+    type: text
+    required: true
+    description: How long-running work is done + cancelled. e.g. "AbortSignal threads through every async path > 100 ms".
+  - name: error_handling
+    type: text
+    required: true
+    description: Error channel conventions. e.g. "Result<T,E> over throw; throw only for programmer errors".
+  - name: file_naming
+    type: text
+    required: true
+    description: kebab-case files, PascalCase types, etc.
+  - name: test_conventions
+    type: text
+    required: true
+    description: Framework + colocation + network policy. e.g. "Vitest, foo.ts → foo.test.ts, no network".
+  - name: build_gate_command
+    type: string
+    required: true
+    description: The exact command sequence that gates a commit.
+  - name: extras
+    type: list
+    description: Domain-specific rules that don't fit the above sections. Optional.
+sections:
+  - id: general
+    title: General
+    body: |
+      - Smallest change that advances the current phase. No speculative refactors.
+      - Fix root causes, not symptoms.
+      - One concern per module.
+  - id: language
+    title: Language & type safety
+    elicit: true
+    body: |
+      Language: {{language}}
+
+      {{type_safety}}
+  - id: async
+    title: Async & cancellation
+    elicit: true
+    body: |
+      {{async_model}}
+  - id: errors
+    title: Error handling
+    elicit: true
+    body: |
+      {{error_handling}}
+  - id: naming
+    title: File & symbol naming
+    elicit: true
+    body: |
+      {{file_naming}}
+  - id: testing
+    title: Testing
+    elicit: true
+    body: |
+      {{test_conventions}}
+  - id: gate
+    title: Build & test gate
+    elicit: true
+    body: |
+      Before declaring any task complete, run:
+
+      \\\`\\\`\\\`bash
+      {{build_gate_command}}
+      \\\`\\\`\\\`
+  - id: extras
+    title: Project-specific rules
+    repeatable: true
+    body: |
+      - {{item}}
+`
+  ),
+  tpl(
+    'ai-workflow-rules',
+    `
+id: ai-workflow-rules
+version: 1
+title: AI Workflow Rules (Context Pack)
+description: Direct instructions to any AI agent working on this repository — scoping, splitting, protected files, verification gates, doc-update rules.
+owner: hermes
+output: context/ai-workflow-rules.md
+whenToUse: Generate once per project; update when process changes. This is what an external coding agent (Claude Code, Codex, Atlas itself) reads to know how to behave.
+inputs:
+  - name: read_first_files
+    type: list
+    required: true
+    description: Ordered list of files an agent should read first. Defaults to the six-file pack.
+  - name: scope_rules
+    type: list
+    required: true
+    description: Rules for sizing one feature unit (one slice at a time, etc.).
+  - name: split_rules
+    type: list
+    required: true
+    description: When to split implementation work into multiple commits.
+  - name: protected_files
+    type: list
+    required: true
+    description: Files that must never be modified without explicit user request.
+  - name: verification_steps
+    type: list
+    required: true
+    description: Exact commands / gates a task must pass before "done".
+  - name: doc_sync_rules
+    type: list
+    required: true
+    description: Mapping of "kind of change" → "file that must be updated in the same commit".
+sections:
+  - id: read-first
+    title: Read these first
+    elicit: true
+    repeatable: true
+    body: |
+      {{item}}
+  - id: scope
+    title: Scoping rules
+    elicit: true
+    repeatable: true
+    body: |
+      - {{item}}
+  - id: split
+    title: When to split work
+    elicit: true
+    repeatable: true
+    body: |
+      - {{item}}
+  - id: protected
+    title: Protected files
+    elicit: true
+    repeatable: true
+    body: |
+      - {{item}}
+  - id: verify
+    title: Verification before "done"
+    elicit: true
+    repeatable: true
+    body: |
+      - {{item}}
+  - id: doc-sync
+    title: Keeping docs in sync
+    elicit: true
+    repeatable: true
+    body: |
+      - {{item}}
+`
+  ),
+  tpl(
+    'progress-tracker',
+    `
+id: progress-tracker
+version: 1
+title: Progress Tracker (Context Pack)
+description: Volatile state — current phase, in-progress work, open questions, recent decisions. Auto-grown by the progress-tracker hook after every commit.
+owner: atlas
+output: context/progress-tracker.md
+whenToUse: Generate as the final scaffolding step of the context pack. After that the file is maintained automatically — agents append a \`[shortsha] one-line summary\` after every commit; the \`open_question\` tool appends to "Open Questions".
+inputs:
+  - name: current_phase
+    type: string
+    required: true
+    description: One-line description of where the project is right now.
+  - name: current_goal
+    type: string
+    required: true
+    description: The next concrete deliverable.
+  - name: in_progress
+    type: list
+    description: Items currently in flight. Often empty at scaffold time.
+  - name: next_up
+    type: list
+    description: Suggested ordering of upcoming work.
+  - name: open_questions
+    type: list
+    description: Ambiguities the user still needs to resolve. Often empty at scaffold time.
+sections:
+  - id: phase
+    title: Current Phase
+    elicit: true
+    body: |
+      {{current_phase}}
+  - id: goal
+    title: Current Goal
+    elicit: true
+    body: |
+      {{current_goal}}
+  - id: in-progress
+    title: In Progress
+    repeatable: true
+    body: |
+      - {{item}}
+  - id: next-up
+    title: Next Up
+    repeatable: true
+    body: |
+      1. {{item}}
+  - id: open-questions
+    title: Open Questions
+    repeatable: true
+    body: |
+      - {{item}}
+  - id: recent-decisions
+    title: Recent Decisions
+    instruction: One line per commit, newest first. Format \`[shortsha] one-line summary\`. The progress-tracker hook appends entries here automatically; do not rewrite history.
+    body: |
+      _(auto-maintained — newest at the top)_
+  - id: notes
+    title: Session Notes
+    instruction: Scratch space for resuming work in the next session. Wipe when stale.
+    body: |
+      _(empty — fill in when something genuinely needs to survive a session boundary)_
+`
   )
 ];

@@ -23,14 +23,7 @@ npx atlas-os@latest chat
 
 <br>
 
-<!--
-  TODO: drop a real screenshot/SVG of the Atlas TUI here.
-  Suggested: a 2-3 panel image showing (1) `atlas chat` Ink REPL,
-  (2) the orchestrator routing to a Greek-god agent,
-  (3) a tool call streaming in.
-  Save it to assets/atlas-os.svg or .png and reference below.
--->
-<!-- ![Atlas·OS](assets/atlas-os.svg) -->
+![Atlas·OS terminal](assets/atlas-os-splash.png)
 
 <br>
 

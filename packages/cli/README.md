@@ -20,6 +20,8 @@ npx atlas-os@latest chat
 
 **Works on Mac, Windows, and Linux. Bring any model — Claude, GPT, Gemini, local Ollama, OpenRouter.**
 
+![Atlas·OS terminal](https://raw.githubusercontent.com/lucapohl-angel/atlas_CLI/main/assets/atlas-os-splash.png)
+
 ---
 
 ## Install

@@ -35,6 +35,41 @@ npm install -g atlas-os
 atlas
 ```
 
+### Compatibility
+
+| OS | Status |
+|---|---|
+| Linux | ✅ Tested (Arch, Ubuntu) |
+| macOS (Intel + Apple Silicon) | ✅ Supported |
+| Windows + WSL2 | ✅ Recommended for Windows users |
+| Windows native (PowerShell / cmd) | ⚠️ Partial — shell tool assumes POSIX |
+
+Requirements: **Node 20+**.
+
+### Windows (WSL2)
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+```bash
+sudo apt update && sudo apt install -y nodejs npm
+npm install -g atlas-os
+atlas
+```
+
+### VS Code
+
+The integrated terminal eats shortcuts like `Ctrl+P`. Free them in one command:
+
+```bash
+atlas vscode-setup        # patches your VS Code settings.json
+# then reload VS Code
+```
+
+Use `--dry-run` to preview. Same constraint applies to Claude Code / OpenCode
+in the VS Code terminal — Atlas just ships the one-liner.
+
 Set a key for your provider of choice:
 
 ```bash
@@ -67,14 +102,20 @@ skills, checklists, MCP support, and a six-file context pack shared by agents.
 
 ## Why it's different
 
-| Capability | **ATLAS·OS** | Claude CLI | OpenCode CLI | Gemini CLI | Cursor Agent |
+| Capability | **ATLAS·OS** | Claude Code | OpenCode | Gemini CLI | Kilo Code |
 |---|---|---|---|---|---|
-| Model choice | ✅ Anthropic, OpenAI, Google, OpenRouter, Ollama | ❌ Claude-focused | ⚠️ Varies | ❌ Gemini-focused | ⚠️ Mostly Claude/GPT |
-| Multi-agent orchestration | ✅ Built in | ❌ | ❌ | ❌ | ⚠️ Limited |
-| Spec-driven pipeline (PRD→arch→stories→impl→QA) | ✅ Built in | ❌ | ❌ | ❌ | ❌ |
-| Hook guardrails (block/modify/allow) | ✅ Typed lifecycle hooks | ❌ | ❌ | ❌ | ❌ |
-| Project context pack auto-injected | ✅ Six-file pack | ❌ | ❌ | ❌ | ❌ |
-| Terminal-first default | ✅ `atlas` opens TUI | ✅ | ✅ | ✅ | ❌ Editor-first |
+| Multi-provider models | ✅ Anthropic · OpenAI · Google · OpenRouter · Ollama | ❌ Claude only | ✅ Provider-agnostic | ❌ Gemini only | ✅ 500+ via Kilo router |
+| Multi-agent orchestration | ✅ Greek pantheon, role-routed | ✅ Agent Teams + subagents | ⚠️ Build / Plan + `@general` | ⚠️ Subagents (experimental) | ⚠️ Modes (Architect/Coder/Debug) |
+| Spec-driven pipeline (PRD→arch→stories→impl→QA) | ✅ Built into orchestrator | ❌ | ❌ | ❌ | ❌ |
+| Lifecycle hooks (block/modify/allow tool calls) | ✅ Typed TS hooks | ✅ Extensive | ❌ Plugins / MCP | ✅ | ❌ Plugins / MCP |
+| Agent Skills | ✅ | ✅ | ✅ | ✅ | ⚠️ Inherited from OpenCode |
+| Project context auto-injected | ✅ Six-file context pack | ⚠️ `CLAUDE.md` | ⚠️ `AGENTS.md` | ⚠️ `GEMINI.md` | ⚠️ `AGENTS.md` |
+| MCP servers | ⚠️ Planned | ✅ | ✅ | ✅ | ✅ |
+| Terminal-first | ✅ | ✅ | ✅ | ✅ | ⚠️ VS Code-first |
+| License | ✅ MIT | ❌ Proprietary | ✅ MIT | ✅ Apache-2.0 | ✅ MIT |
+
+> Atlas's edge isn't any single feature — it's the opinionated **SDD pipeline
+> + six-file context pack + typed TS hooks/tools** in one package.
 
 ---
 

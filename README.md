@@ -52,17 +52,22 @@ and a persistent context pack.
 
 ## How It Compares
 
-| Capability | **ATLAS·OS** | Claude CLI | OpenCode CLI | Gemini CLI | Cursor Agent |
+| Capability | **ATLAS·OS** | Claude Code | OpenCode | Gemini CLI | Kilo Code |
 |---|---|---|---|---|---|
-| Model choice | ✅ Anthropic, OpenAI, Google, OpenRouter, Ollama | ❌ Claude-focused | ⚠️ Varies | ❌ Gemini-focused | ⚠️ Mostly Claude/GPT |
-| Multi-agent orchestration | ✅ Built in | ❌ | ❌ | ❌ | ⚠️ Limited |
-| Spec-driven pipeline (PRD→arch→stories→impl→QA) | ✅ Built in | ❌ | ❌ | ❌ | ❌ |
-| Hook guardrails (block/modify/allow) | ✅ Typed lifecycle hooks | ❌ | ❌ | ❌ | ❌ |
-| Project context pack auto-injected | ✅ Six-file pack | ❌ | ❌ | ❌ | ❌ |
-| Terminal-first default | ✅ `atlas` opens TUI | ✅ | ✅ | ✅ | ❌ Editor-first |
+| Multi-provider models | ✅ Anthropic · OpenAI · Google · OpenRouter · Ollama | ❌ Claude only (Anthropic / Bedrock / Vertex) | ✅ Provider-agnostic | ❌ Gemini only | ✅ 500+ via Kilo router |
+| Multi-agent orchestration | ✅ Greek pantheon, role-routed by project state | ✅ Agent Teams + subagents | ⚠️ Build / Plan + `@general` subagent | ⚠️ Subagents (experimental) | ⚠️ Modes (Architect / Coder / Debugger) |
+| Spec-driven pipeline (PRD → arch → stories → impl → QA → release) | ✅ Built into the orchestrator | ❌ Bring your own | ❌ Bring your own | ❌ Bring your own | ❌ Bring your own |
+| Lifecycle hooks (block / modify / allow tool calls) | ✅ Typed TS hooks | ✅ Extensive — shell, HTTP, MCP, prompt, agent | ❌ Plugins / MCP instead | ✅ Hooks supported | ❌ Plugins / MCP instead |
+| Agent Skills | ✅ Built-in skill loader | ✅ | ✅ | ✅ | ⚠️ Inherited from OpenCode |
+| Project context auto-injected | ✅ Six-file context pack | ⚠️ Single `CLAUDE.md` | ⚠️ Single `AGENTS.md` | ⚠️ Single `GEMINI.md` | ⚠️ Single `AGENTS.md` |
+| MCP servers | ⚠️ Planned | ✅ | ✅ | ✅ | ✅ |
+| Terminal-first | ✅ `atlas` opens TUI | ✅ | ✅ | ✅ | ⚠️ VS Code extension first; CLI added later |
+| License | ✅ MIT | ❌ Proprietary | ✅ MIT | ✅ Apache-2.0 | ✅ MIT |
 
-ATLAS·OS is built for teams that want autonomous execution without giving up
-control, portability, or terminal-native speed.
+> Verified against each tool's public docs. Atlas's edge isn't any single
+> feature — it's the opinionated **SDD pipeline + six-file context pack +
+> typed TS hooks/tools** shipped in one package. The other tools each do parts
+> of this well; none ship the whole loop out of the box.
 
 ---
 
@@ -76,6 +81,57 @@ npx atlas-os@latest
 npm install -g atlas-os
 atlas
 ```
+
+### Compatibility
+
+| OS | Status | Notes |
+|---|---|---|
+| Linux | ✅ Tested | Arch / Garuda, Ubuntu, Fedora |
+| macOS (Intel + Apple Silicon) | ✅ Supported | Same Node 20+ POSIX runtime |
+| Windows + WSL2 | ✅ Recommended for Windows users | Identical experience to Linux |
+| Windows native (PowerShell / cmd) | ⚠️ Partial | Shell tool assumes POSIX; SearXNG (Docker) unavailable |
+
+Requirements: **Node.js 20+** and a terminal that supports the alt-screen TUI
+(Windows Terminal, iTerm2, WezTerm, Ghostty, Kitty, Alacritty all work).
+
+### Windows setup (WSL2 — recommended)
+
+```powershell
+# In an elevated PowerShell, one-time:
+wsl --install -d Ubuntu
+```
+
+Then inside the new Ubuntu shell:
+
+```bash
+sudo apt update && sudo apt install -y nodejs npm
+npm install -g atlas-os
+atlas
+```
+
+Native Windows works for the core REPL, but the built-in shell tool runs POSIX
+commands and the optional SearXNG web-search needs Docker. Use WSL2 for full
+fidelity.
+
+### VS Code setup
+
+The VS Code integrated terminal swallows shortcuts like `Ctrl+P` before the
+TUI sees them. Fix it in one command:
+
+```bash
+atlas vscode-setup        # patches your VS Code settings.json
+# then reload VS Code
+```
+
+The patcher writes:
+
+- `terminal.integrated.sendKeybindingsToShell: true`
+- `commandsToSkipShell` overrides so `Ctrl+P`, `Ctrl+Shift+P`, `Ctrl+B`,
+  `Ctrl+J`, `Ctrl+W`, ``Ctrl+` `` reach Atlas instead of VS Code
+
+Use `--dry-run` to preview, or `--path <file>` for a non-default install
+location. Same constraint applies to Claude Code and OpenCode in the VS Code
+terminal — Atlas just ships a one-liner.
 
 Set one provider key:
 

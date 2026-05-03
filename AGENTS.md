@@ -3,6 +3,25 @@
 > Guidance for AI agents (Codex CLI, Claude Code, Atlas itself, anything else)
 > working on this repository.
 
+## Read these first (in order)
+
+1. [`context/project-overview.md`](context/project-overview.md) — what
+   Atlas is, the user flow, in/out of scope, success criteria.
+2. [`ARCHITECTURE.md`](ARCHITECTURE.md) — engine layout, SDD pipeline,
+   and the **Invariants** section (rules the codebase must always
+   satisfy).
+3. [`context/code-standards.md`](context/code-standards.md) — strict TS,
+   ESM, Result, Zod, tool contract, testing conventions.
+4. [`context/ai-workflow-rules.md`](context/ai-workflow-rules.md) —
+   scoping, splitting, protected files, verification gates,
+   doc-update rules. **The hard rules below are summarized; the full
+   rules live there.**
+5. [`context/progress-tracker.md`](context/progress-tracker.md) —
+   current phase, in-progress work, open questions, recent decisions.
+6. [`README.md`](README.md) — quickstart and phase tables.
+
+If you only have time for two files, read 1 and 5.
+
 ## Hard rules
 
 - **No partial code.** Every PR/commit must compile, typecheck, lint, and pass
@@ -39,8 +58,14 @@ atlas_CLI/
 1. Pick the smallest change that advances the current phase.
 2. Write the test(s) first when the contract is testable in isolation.
 3. Implement.
-4. Run quality gates (`pnpm typecheck && pnpm test:run`).
+4. Run quality gates:
+   `pnpm --filter @atlas/core build && pnpm --filter @atlas/core test:run && pnpm --filter atlas-cli typecheck && pnpm --filter atlas-cli test:run && pnpm --filter atlas-cli build`
 5. Update the README phase table when a phase completes.
+6. Append a one-line entry to
+   [`context/progress-tracker.md`](context/progress-tracker.md) §
+   Recent Decisions after every commit on `main`
+   (`[shortsha] one-line summary`). Move stale items out of
+   "In Progress" / "Next Up" in the same edit.
 
 ## Phases
 

@@ -234,6 +234,50 @@ Phases 8–11 now cover sectioned templates, project state, workflow
 gates/activation metadata, and overlay customization without adopting
 BMAD's XML-in-markdown DSL or its multi-runtime requirement.
 
+## Invariants
+
+These are the rules the codebase must always satisfy. If you find code
+that breaks one of these, the code is wrong — not the rule. New
+invariants get appended here in the same commit that introduces them.
+
+1. **No `any`.** All boundaries narrow to typed values via Zod or
+   explicit `unknown` + guards. Strict TypeScript settings
+   (`strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`,
+   `exactOptionalPropertyTypes`) are non-negotiable.
+2. **Cancellation everywhere.** Every async path that can take more
+   than ~100 ms accepts and propagates an `AbortSignal`. Provider
+   streams, tool `execute`, hooks, MCP calls, terminal child
+   processes — all share one `AbortController` per turn.
+3. **Tool `summary` is the only field that reaches the model.** Bulk
+   content (file text, HTTP body, stdout/stderr) goes in `data.*`.
+   Summaries are head+tail truncated via
+   [truncate.ts](packages/core/src/tools/truncate.ts); the agent loop
+   enforces a 32 KB hard backstop on top.
+4. **Prompt-cache markers go on the *last* static block.** Anthropic
+   `cache_control: { type: 'ephemeral' }` is set on the system prompt
+   and on the last static tool spec — never on per-turn dynamic
+   content. Marking dynamic content invalidates the prefix and burns
+   tokens.
+5. **Token usage merges via `mergeUsage`, never spread-overwrite.**
+   Partial usage payloads (notably Anthropic `message_delta`) carry
+   only the fields they update. A naive `{ ...prev, ...next }` resets
+   `promptTokens` to zero whenever a delta omits it.
+6. **ESM only.** `"type": "module"` everywhere. Import specifiers use
+   the `.js` suffix even when the source is `.ts` —
+   `verbatimModuleSyntax` will not rewrite them.
+7. **Skill files start with YAML frontmatter.** Any agent or tool that
+   mutates a `SKILL.md` must preserve frontmatter order and the
+   trailing blank line; the loader reads frontmatter first and the
+   body second.
+8. **Result over throw for control flow.** `Result<T, AtlasError>`
+   from `@atlas/core` is the only acceptable error channel for
+   recoverable failures. Throwing is reserved for impossible-state
+   programmer errors.
+9. **Customization is layered, never replaced.** Built-in →
+   `~/.atlas/` (user) → `<cwd>/.atlas/` (project) deep-merge. Loaders
+   must apply all three layers; never short-circuit because user or
+   project is empty.
+
 ## Phase plan
 
 See README.md. Each phase ships a working CLI; phases are not allowed to

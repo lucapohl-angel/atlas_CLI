@@ -7,7 +7,11 @@
  * required.
  */
 import { render } from 'ink';
+import { stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import React from 'react';
+import { runInit } from '../commands/init.js';
 import {
   AgentRegistry,
   SkillRegistry,
@@ -139,7 +143,47 @@ const maybeSeedDefaultMcps = async (cfg: AtlasConfig): Promise<AtlasConfig> => {
   return next;
 };
 
+/**
+ * On first launch (fresh install, no `~/.atlas/agents/atlas/AGENT.md`
+ * yet), silently seed the built-in agents, skills, templates, and
+ * checklists so the user can start chatting immediately without having
+ * to remember `atlas init`. We swallow the SearXNG prompt and write
+ * the verbose file list to /dev/null — only print a one-liner to
+ * stderr so the user knows what happened.
+ */
+const maybeAutoInit = async (): Promise<void> => {
+  const sentinel = join(homedir(), '.atlas', 'agents', 'atlas', 'AGENT.md');
+  try {
+    await stat(sentinel);
+    return; // already initialized
+  } catch {
+    // fall through and init
+  }
+  try {
+    // Discard the per-file write log; users only need to know it happened.
+    const sink: NodeJS.WritableStream = {
+      write: (() => true) as NodeJS.WritableStream['write']
+    } as NodeJS.WritableStream;
+    const r = await runInit({ stdout: sink, offerSearxng: false });
+    process.stderr.write(
+      `atlas: first-run setup — installed ${r.written.length} built-in files to ~/.atlas/\n`
+    );
+  } catch (err) {
+    process.stderr.write(
+      `atlas: first-run setup failed (${(err as Error).message}). Run \`atlas init\` manually.\n`
+    );
+  }
+};
+
 export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> => {
+  // First-launch bootstrap: if ~/.atlas/ has no agents installed yet
+  // (fresh `npm install -g atlas-os` with no prior `atlas init`), seed
+  // the built-in agents/skills/templates silently so the TUI has
+  // something to work with. Idempotent — skipped on subsequent runs.
+  if (!opts.provider && !opts.config) {
+    await maybeAutoInit();
+  }
+
   let provider: Provider | null = null;
   let cfg: AtlasConfig | null = null;
   let setupError: string | null = null;

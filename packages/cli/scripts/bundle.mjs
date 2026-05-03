@@ -34,7 +34,7 @@ const versionInjector = {
     const filter = /[\\/]packages[\\/]core[\\/]dist[\\/]version\.js$/;
     b.onLoad({ filter }, () => ({
       contents: [
-        `export const ATLAS_VERSION = ${JSON.stringify(corePkg.version)};`,
+        `export const ATLAS_VERSION = ${JSON.stringify(pkg.version)};`,
         `export const ATLAS_PACKAGE_NAME = ${JSON.stringify('atlas-os')};`,
       ].join('\n'),
       loader: 'js',

@@ -188,6 +188,12 @@ export interface TuiAppProps {
   /** Initial session — created or loaded by runTui before mounting. */
   readonly initialSession?: SessionRecord;
   /**
+   * True when runTui silently restored the most recent session because
+   * the user didn't pass `--resume`. The App shows a one-line hint so
+   * users know how to start fresh (`/sessions new`).
+   */
+  readonly autoResumed?: boolean;
+  /**
    * Workflow phase state for the current cwd, loaded by runTui at
    * boot. When null, the user has no active task and the phase chip
    * shows `idle`. The App advances this state implicitly as the
@@ -933,7 +939,32 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     };
   }, []);
 
-  // Request autopilot. If the user has already consented this session, just
+  // Mount-only: hydrate transcript + show the auto-resume hint when
+  // runTui silently restored the most recent session. We do this in an
+  // effect (not at construction) so React commits the initial paint
+  // before pushing items \u2014 avoids "set state during render" warnings.
+  useEffect(() => {
+    if (props.initialSession && props.initialSession.messages.length > 0) {
+      messagesRef.current = [...props.initialSession.messages];
+      hydrateTranscriptFromMessages(
+        props.initialSession.messages,
+        props.initialSession.agent ?? activeAgent.name
+      );
+    }
+    if (props.autoResumed && props.initialSession) {
+      const label =
+        props.initialSession.title?.trim() ||
+        sessionLabel(props.initialSession.id, null) ||
+        props.initialSession.id;
+      pushItem(
+        'system',
+        `Resumed last session (${label}). Type /sessions new to start a fresh one.`
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+
   // flip the mode; otherwise show the consent overlay first.
   const requestAutopilot = useCallback((): void => {
     if (autopilotConsented) {
@@ -1456,6 +1487,23 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               return;
             }
             const target = rest[0];
+            // `/sessions new` → start a fresh session immediately. We
+            // don't actually create the record on disk yet — it will
+            // be lazily written when the user sends their first
+            // message (same path as a cold-start with no sessions).
+            if (target === 'new') {
+              sessionRef.current = null;
+              messagesRef.current = [];
+              setSessionId(null);
+              setSessionTitle(null);
+              setTranscript([]);
+              setUsage(null);
+              pushItem(
+                'system',
+                'Started a new session. It will be saved on your first message.'
+              );
+              return;
+            }
             if (target) {
               void (async () => {
                 const r = await props.sessionStore!.load(target);
@@ -1603,6 +1651,24 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         setOverlay({ kind: 'setup', stage: 'menu', draftKey: '', target: 'openrouter' });
         return;
       }
+      // Lazy session creation: the first user message is what brings a
+      // session into existence. Opening Atlas just to swap with
+      // `/sessions` no longer creates an empty record on disk.
+      if (props.sessionStore && !sessionRef.current) {
+        const created = await props.sessionStore.create({
+          cwd: process.cwd(),
+          agent: activeAgent.name,
+          model
+        });
+        if (created.ok) {
+          sessionRef.current = created.value;
+          setSessionId(created.value.id);
+          setSessionTitle(created.value.title ?? null);
+        } else {
+          pushItem('error', `failed to create session: ${created.error.message}`);
+        }
+      }
+
       const userMessage: Message = { role: 'user', content: trimmed };
       messagesRef.current = [...messagesRef.current, userMessage];
       pushItem('user', trimmed, 'user');
@@ -5614,8 +5680,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                   },
                   {
                     key: 'ship',
-                    label: `Ship: auto-merge    (default: ${cfg?.ship?.autoResolve ?? 'abort'}, prompt: ${
-                      (cfg?.ship?.promptOnConflict ?? true) ? 'on' : 'off'
+                    label: `Ship: auto-merge    (default: ${shipAutoResolveRef.current}, prompt: ${
+                      shipPromptOnConflictRef.current ? 'on' : 'off'
                     })`,
                     value: 'ship' as const
                   }
@@ -5824,7 +5890,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               </Text>
             </Box>
           ) : (
-            <Box width={cols - 4 - (showSidebar ? 48 : 0)}>
+            <Box width={Math.max(20, cols - 4 - (showSidebar ? 48 : 0))}>
               <Text color="cyan">› </Text>
               <TextInput value={input} onChange={setInput} onSubmit={handleInputSubmit} />
             </Box>
@@ -6343,6 +6409,13 @@ const TranscriptRow = ({
   item: TranscriptItem;
   live?: boolean;
 }): React.JSX.Element => {
+  // Bound bubble width to the terminal so long user / assistant lines
+  // wrap inside the rounded border instead of bleeding past it on
+  // narrow windows (which produced the "input mixing with text" effect
+  // users reported in small terminals / VS Code panels).
+  const { stdout } = useStdout();
+  const cols = stdout?.columns ?? 100;
+  const bubbleWidth = Math.max(20, cols - 2);
   switch (item.kind) {
     case 'user':
       return (
@@ -6351,11 +6424,12 @@ const TranscriptRow = ({
           borderStyle="round"
           borderColor="cyan"
           paddingX={1}
+          width={bubbleWidth}
         >
           <Text color="cyan" bold>
             user
           </Text>
-          <Text>{item.text}</Text>
+          <Text wrap="wrap">{item.text}</Text>
         </Box>
       );
     case 'assistant': {
@@ -6367,6 +6441,7 @@ const TranscriptRow = ({
           borderStyle="round"
           borderColor={color}
           paddingX={1}
+          width={bubbleWidth}
         >
           <Box>
             <Text color={color} bold>
@@ -7021,8 +7096,16 @@ const Splash = ({ defaultModel }: { defaultModel: string }): React.JSX.Element =
         ))}
       </Box>
       <Box marginTop={1}>
+        <Text color="blueBright">Autonomous Teams · Lifecycle · Agents · Skills — Orchestration System</Text>
+      </Box>
+      <Box>
         <Text color="gray">spec-driven development crew · </Text>
         <Text color="white">{defaultModel}</Text>
+      </Box>
+      <Box marginTop={1}>
+        <Text color="red" dimColor>
+          for the best experience, run Atlas in a fullscreen or reasonably-sized terminal window.
+        </Text>
       </Box>
       <Box marginTop={1}>
         <Text color="gray">

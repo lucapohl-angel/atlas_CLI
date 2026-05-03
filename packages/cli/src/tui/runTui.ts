@@ -293,11 +293,17 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
   }
 
   // Sessions: SessionStore writes JSON snapshots to ~/.atlas/sessions/.
-  // We always create one on boot so the header has a stable id; if the
-  // user passed --resume we load that record (or the latest if 'latest')
-  // and replay its messages into the App's history.
+  // Behavior:
+  //   - --resume <id|latest>  → explicit load (error surfaced if missing).
+  //   - no flag, sessions on disk → silently auto-resume the most recent
+  //     one and tell the user how to start fresh (`/sessions new`).
+  //   - no flag, no sessions yet → start blank. We do NOT create a
+  //     session record on boot anymore — the App lazily creates one on
+  //     the first user message so opening Atlas just to swap with
+  //     `/sessions` doesn't litter the store with empty entries.
   const sessionStore = new SessionStore();
   let initialSession: SessionRecord | null = null;
+  let autoResumed = false;
   if (opts.resume) {
     const loaded =
       opts.resume === 'latest'
@@ -310,14 +316,12 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
         `atlas: could not resume session '${opts.resume}'${loaded.ok ? ' (no sessions saved yet)' : `: ${loaded.error.message}`}\n`
       );
     }
-  }
-  if (!initialSession) {
-    const created = await sessionStore.create({
-      cwd: process.cwd(),
-      agent: initialAgent,
-      model: defaultModel
-    });
-    if (created.ok) initialSession = created.value;
+  } else {
+    const latest = await sessionStore.latest();
+    if (latest.ok && latest.value) {
+      initialSession = latest.value;
+      autoResumed = true;
+    }
   }
 
   // Workflow phase router — load the cwd's active task (if any) so the
@@ -429,6 +433,7 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
     modelCatalog,
     sessionStore,
     ...(initialSession ? { initialSession } : {}),
+    autoResumed,
     initialActiveTask,
     mcpStatus: {
       running: mcpStartup.running.map((r) => ({

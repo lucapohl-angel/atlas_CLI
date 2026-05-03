@@ -1,6 +1,6 @@
 {
   "name": "atlas-os",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Atlas·OS — Autonomous Teams · Lifecycle · Agents · Skills — Orchestration System for the terminal.",
   "keywords": [
     "ai",
@@ -32,7 +32,7 @@
   "author": "Luca Pohl Angel",
   "type": "module",
   "bin": {
-    "atlas": "./dist/bin/atlas.js"
+    "atlas": "dist/bin/atlas.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -45,7 +45,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "pnpm --filter @atlas/core build && rm -rf dist && tsc --noEmit -p tsconfig.build.json && node scripts/bundle.mjs",
     "dev": "tsc -p tsconfig.build.json --watch",
     "test": "vitest",
     "test:run": "vitest run",
@@ -55,18 +55,32 @@
     "prepublishOnly": "pnpm build && pnpm test:run"
   },
   "dependencies": {
-    "@atlas/core": "workspace:*",
     "commander": "^13.1.0",
+    "fs-extra": "^11.3.0",
+    "gray-matter": "^4.0.3",
+    "handlebars": "^4.7.9",
     "ink": "^7.0.1",
     "ink-select-input": "^6.2.0",
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",
+    "js-yaml": "^4.1.0",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
     "react": "^19.2.5",
-    "zod": "^3.24.2"
+    "yaml": "^2.8.3",
+    "zod": "^3.24.2",
+    "zod-to-json-schema": "^3.25.2"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.49.0"
   },
   "devDependencies": {
+    "@atlas/core": "workspace:*",
+    "@types/fs-extra": "^11.0.4",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.13.10",
     "@types/react": "^19.2.14",
+    "esbuild": "^0.24.0",
     "ink-testing-library": "^4.0.0",
     "typescript": "^5.8.2",
     "vitest": "^3.0.7"

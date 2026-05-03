@@ -44,7 +44,7 @@ describe('compactIfNeeded', () => {
     const r = await compactIfNeeded(msgs, {
       provider: fakeProvider(['THE ', 'SUMMARY']),
       summarizerModel: 'm',
-      limits: { contextTokens: 10_000 }
+      limits: { contextTokens: 10_000, recentTurns: 4 }
     });
     expect(r.ok).toBe(true);
     if (r.ok) {
@@ -77,5 +77,37 @@ describe('compactIfNeeded', () => {
       limits: { contextTokens: 10_000 }
     });
     expect(r.ok).toBe(false);
+  });
+
+  it('elides stale tool-result bodies via the cheap pre-pass', async () => {
+    const big = 'y'.repeat(50_000);
+    const msgs: Message[] = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'read file A' },
+      { role: 'assistant', content: 'reading' },
+      { role: 'tool', content: big, name: 'read_file', toolCallId: 't1' },
+      { role: 'user', content: 'now do X' },
+      { role: 'assistant', content: 'doing X' },
+      { role: 'user', content: 'now do Y' },
+      { role: 'assistant', content: 'doing Y' },
+      { role: 'user', content: 'now do Z' },
+      { role: 'assistant', content: 'doing Z' },
+      { role: 'user', content: 'q final' },
+      { role: 'assistant', content: 'a final' }
+    ];
+    const r = await compactIfNeeded(msgs, {
+      provider: fakeProvider(['SHOULD NOT RUN']),
+      summarizerModel: 'm',
+      limits: { contextTokens: 100_000, recentTurns: 8 }
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      // The pre-pass should have shrunk the stale tool message without
+      // running the LLM summarizer.
+      expect(r.value.summarized).toBe(0);
+      const toolMsg = r.value.messages.find((m) => m.role === 'tool');
+      expect(toolMsg?.content.length).toBeLessThan(1_000);
+      expect(toolMsg?.content).toMatch(/elided/);
+    }
   });
 });

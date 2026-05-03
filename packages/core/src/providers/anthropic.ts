@@ -97,25 +97,43 @@ export const createAnthropicProvider = (
       // body "Error") regardless of the user's actual quota. We send `system`
       // as an array so the identifier block stays separate from the user's
       // own system prompt.
+      // Always send `system` as a typed-block array so we can attach
+      // `cache_control: ephemeral` to the last block. This makes the
+      // (large, stable) system prompt a cached prefix on subsequent
+      // turns — typically a 30–80% reduction in input tokens billed.
       if (options.auth.kind === 'oauth') {
-        const blocks: Array<{ type: 'text'; text: string }> = [
+        const blocks: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> = [
           {
             type: 'text',
             text: "You are Claude Code, Anthropic's official CLI for Claude."
           }
         ];
         if (systemText.length > 0) blocks.push({ type: 'text', text: systemText });
+        const last = blocks[blocks.length - 1];
+        if (last) last.cache_control = { type: 'ephemeral' };
         body['system'] = blocks;
       } else if (systemText.length > 0) {
-        body['system'] = systemText;
+        body['system'] = [
+          { type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }
+        ];
       }
       if (request.temperature !== undefined) body['temperature'] = request.temperature;
       if (request.tools && request.tools.length > 0) {
-        body['tools'] = request.tools.map((t) => ({
-          name: t.name,
-          description: t.description,
-          input_schema: t.parameters
-        }));
+        // Prompt caching: tag the last tool with cache_control so the
+        // entire tool catalog is cached as a single prefix block.
+        // Saves ~90% on input tokens for the tools array on cache hits.
+        const toolsArr = request.tools.map((t, i) => {
+          const base: Record<string, unknown> = {
+            name: t.name,
+            description: t.description,
+            input_schema: t.parameters
+          };
+          if (i === request.tools!.length - 1) {
+            base['cache_control'] = { type: 'ephemeral' };
+          }
+          return base;
+        });
+        body['tools'] = toolsArr;
         if (request.toolChoice === 'required') body['tool_choice'] = { type: 'any' };
         else if (request.toolChoice === 'none') body['tool_choice'] = { type: 'none' };
         else body['tool_choice'] = { type: 'auto' };
@@ -238,7 +256,7 @@ export const createAnthropicProvider = (
             case 'message_start': {
               const msg = evt.data?.['message'] as Record<string, unknown> | undefined;
               const u = msg?.['usage'] as Record<string, unknown> | undefined;
-              if (u) usage = mapUsage(u);
+              if (u) usage = mergeUsage(usage, mapUsage(u));
               break;
             }
             case 'content_block_start': {
@@ -302,7 +320,7 @@ export const createAnthropicProvider = (
             }
             case 'message_delta': {
               const u = evt.data?.['usage'] as Record<string, unknown> | undefined;
-              if (u) usage = { ...usage, ...mapUsage(u) } as TokenUsage;
+              if (u) usage = mergeUsage(usage, mapUsage(u));
               break;
             }
             case 'message_stop':
@@ -360,13 +378,39 @@ const defaultThinkingBudget = (effort: 'low' | 'medium' | 'high'): number => {
 const numberOr = (v: unknown, fallback: number): number =>
   typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 
-const mapUsage = (u: Record<string, unknown>): TokenUsage => {
-  const inTok = numberOr(u['input_tokens'], 0);
-  const outTok = numberOr(u['output_tokens'], 0);
+const mapUsage = (u: Record<string, unknown>): Partial<TokenUsage> => {
+  const hasInput = typeof u['input_tokens'] === 'number';
+  const hasOutput = typeof u['output_tokens'] === 'number';
+  const cacheCreation = numberOr(u['cache_creation_input_tokens'], 0);
+  const cacheRead = numberOr(u['cache_read_input_tokens'], 0);
+  // Anthropic excludes cached tokens from input_tokens. Roll them in so
+  // promptTokens reflects the full prompt size we sent.
   return {
-    promptTokens: inTok,
-    completionTokens: outTok,
-    totalTokens: inTok + outTok
+    ...(hasInput
+      ? { promptTokens: numberOr(u['input_tokens'], 0) + cacheRead + cacheCreation }
+      : {}),
+    ...(hasOutput ? { completionTokens: numberOr(u['output_tokens'], 0) } : {}),
+    ...(cacheCreation > 0 ? { cacheCreationTokens: cacheCreation } : {}),
+    ...(cacheRead > 0 ? { cacheReadTokens: cacheRead } : {})
+  };
+};
+
+const mergeUsage = (
+  prev: TokenUsage | undefined,
+  next: Partial<TokenUsage>
+): TokenUsage => {
+  const merged: Partial<TokenUsage> = { ...(prev ?? {}), ...next };
+  const promptTokens = merged.promptTokens ?? 0;
+  const completionTokens = merged.completionTokens ?? 0;
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+    ...(merged.reasoningTokens !== undefined ? { reasoningTokens: merged.reasoningTokens } : {}),
+    ...(merged.cacheCreationTokens !== undefined
+      ? { cacheCreationTokens: merged.cacheCreationTokens }
+      : {}),
+    ...(merged.cacheReadTokens !== undefined ? { cacheReadTokens: merged.cacheReadTokens } : {})
   };
 };
 

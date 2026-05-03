@@ -22,7 +22,9 @@ import type { Message, Provider } from '../providers/types.js';
 import {
   applyCompaction,
   buildCompactPrompt,
+  countMessageTokens,
   planCompaction,
+  pruneStaleToolResults,
   type ModelLimits,
   type TokenCounter
 } from './window.js';
@@ -54,9 +56,21 @@ export const compactIfNeeded = async (
   messages: readonly Message[],
   opts: CompactOptions
 ): Promise<Result<CompactOutcome, AtlasError>> => {
-  const plan = planCompaction(messages, opts.limits, opts.counter);
+  // Cheap pre-pass: elide stale tool-result bodies. If that alone gets
+  // us comfortably under threshold we can skip the LLM call entirely.
+  const pruned = pruneStaleToolResults(messages, opts.limits.recentTurns ?? 8);
+  const threshold =
+    (opts.limits.compactThreshold ?? 0.8) * opts.limits.contextTokens;
+  if (
+    pruned.bytesElided > 0 &&
+    countMessageTokens(pruned.messages, opts.counter) < threshold
+  ) {
+    return ok({ messages: pruned.messages, compacted: false, summarized: 0 });
+  }
+
+  const plan = planCompaction(pruned.messages, opts.limits, opts.counter);
   if (plan.action === 'keep') {
-    return ok({ messages, compacted: false, summarized: 0 });
+    return ok({ messages: pruned.messages, compacted: pruned.bytesElided > 0, summarized: 0 });
   }
 
   const prompt = buildCompactPrompt(plan.olderToSummarize);

@@ -29,6 +29,7 @@ import type {
   TokenUsage
 } from '../providers/types.js';
 import { registryToSpecs } from '../providers/tool-spec.js';
+import { truncateForLLM } from '../tools/truncate.js';
 
 const log = childLogger('loop');
 
@@ -260,16 +261,23 @@ export const runAgentLoop = async function* (
       }
 
       if (finalResult.ok) {
+        // Hard safety cap: even if a tool forgot to truncate, never let
+        // a single tool result exceed ~32K chars (~8K tokens) in the
+        // conversation history. Per-tool truncation should already keep
+        // most outputs well under this.
+        const safeSummary = truncateForLLM(finalResult.value.summary, {
+          maxChars: 32_000
+        });
         messages.push({
           role: 'tool',
-          content: finalResult.value.summary,
+          content: safeSummary,
           toolCallId: call.id,
           name: call.name
         });
         yield {
           type: 'tool_call_done',
           call,
-          outcome: { type: 'ok', summary: finalResult.value.summary }
+          outcome: { type: 'ok', summary: safeSummary }
         };
       } else {
         const summary = `error: ${finalResult.error.message}`;

@@ -105,6 +105,19 @@ export interface TokenUsage {
   readonly totalTokens: number;
   /** Reasoning tokens consumed (when the model exposes them). */
   readonly reasoningTokens?: number;
+  /**
+   * Tokens written into the provider's prompt cache on this request
+   * (Anthropic `cache_creation_input_tokens`, billed at ~125% of normal
+   * input). Surfaces caching behaviour for diagnostics & cost UI.
+   */
+  readonly cacheCreationTokens?: number;
+  /**
+   * Tokens served from the provider's prompt cache on this request
+   * (Anthropic `cache_read_input_tokens` / OpenAI `cached_tokens`,
+   * billed at ~10% of normal input). Already counted inside
+   * `promptTokens`; surfaced separately for diagnostics & cost UI.
+   */
+  readonly cacheReadTokens?: number;
 }
 
 export interface Provider {

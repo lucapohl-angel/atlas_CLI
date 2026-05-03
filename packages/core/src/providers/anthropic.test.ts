@@ -65,10 +65,13 @@ describe('createAnthropicProvider', () => {
     const done = events.find((e) => e.type === 'done');
     expect(done).toBeDefined();
 
-    // System messages get hoisted to the top-level `system` field.
+    // System messages get hoisted to a typed-block array with cache_control
+    // set on the last block (prompt-prefix caching).
     expect(captured).not.toBeNull();
     const sentBody = JSON.parse((captured!.init.body as string) ?? '{}');
-    expect(sentBody.system).toBe('You are helpful.');
+    expect(Array.isArray(sentBody.system)).toBe(true);
+    expect(sentBody.system[0].text).toBe('You are helpful.');
+    expect(sentBody.system[0].cache_control).toEqual({ type: 'ephemeral' });
     expect(Array.isArray(sentBody.messages)).toBe(true);
     expect(sentBody.messages[0].role).toBe('user');
     const headers = captured!.init.headers as Record<string, string>;
@@ -134,5 +137,55 @@ describe('createAnthropicProvider', () => {
     );
     const errEvt = events.find((e) => e.type === 'error');
     expect(errEvt).toBeDefined();
+  });
+
+  it('marks last tool with cache_control and surfaces cache usage', async () => {
+    const body = sse([
+      {
+        event: 'message_start',
+        data: {
+          message: {
+            usage: {
+              input_tokens: 10,
+              cache_creation_input_tokens: 1200,
+              cache_read_input_tokens: 800
+            }
+          }
+        }
+      },
+      { event: 'message_delta', data: { usage: { output_tokens: 5 } } },
+      { event: 'message_stop', data: {} }
+    ]);
+    let captured: { init: RequestInit } | null = null;
+    const fakeFetch: typeof fetch = async (_url, init) => {
+      captured = { init: init ?? {} };
+      return new Response(stringStream(body), { status: 200 });
+    };
+    const provider = createAnthropicProvider({
+      auth: { kind: 'apiKey', apiKey: 'sk' },
+      fetch: fakeFetch
+    });
+    const events = await collect(
+      provider.stream({
+        model: 'claude-sonnet-4',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [
+          { name: 't1', description: 'one', parameters: { type: 'object', properties: {} } },
+          { name: 't2', description: 'two', parameters: { type: 'object', properties: {} } }
+        ]
+      })
+    );
+    const sent = JSON.parse((captured!.init.body as string) ?? '{}');
+    expect(sent.tools).toHaveLength(2);
+    expect(sent.tools[0].cache_control).toBeUndefined();
+    expect(sent.tools[1].cache_control).toEqual({ type: 'ephemeral' });
+    const done = events.find((e) => e.type === 'done');
+    expect(done?.type).toBe('done');
+    if (done?.type === 'done') {
+      expect(done.usage?.cacheCreationTokens).toBe(1200);
+      expect(done.usage?.cacheReadTokens).toBe(800);
+      // promptTokens rolls in cached tokens so cost UI sees full prefix.
+      expect(done.usage?.promptTokens).toBe(10 + 1200 + 800);
+    }
   });
 });

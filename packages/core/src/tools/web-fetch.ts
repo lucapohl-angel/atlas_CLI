@@ -14,12 +14,16 @@ import { atlasError } from '../errors.js';
 import { err, ok } from '../result.js';
 import { safeFetch } from '../security/url-safety.js';
 import { htmlToText } from './html-to-text.js';
+import { truncateForLLM } from './truncate.js';
 import type { Tool } from './types.js';
 
 const Input = z.object({
   url: z.string().url(),
   maxBytes: z.number().int().positive().max(5_000_000).default(1_000_000),
-  maxChars: z.number().int().positive().max(200_000).default(50_000),
+  // Lowered default from 50_000 → 16_000 chars (~4K tokens) to keep
+  // single-page fetches from dominating the prompt cache. Callers that
+  // need more can pass `maxChars` explicitly.
+  maxChars: z.number().int().positive().max(200_000).default(16_000),
   timeoutMs: z.number().int().positive().max(60_000).default(20_000)
 });
 
@@ -78,7 +82,7 @@ export const webFetchTool: Tool<z.infer<typeof Input>> = {
       title = r.title;
       body = r.text;
     } else if (isText) {
-      body = text.length > input.maxChars ? text.slice(0, input.maxChars) : text;
+      body = truncateForLLM(text, { maxChars: input.maxChars });
     } else {
       body = `(non-text response, ${bytes} bytes)`;
     }

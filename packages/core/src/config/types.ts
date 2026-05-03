@@ -214,6 +214,17 @@ export const AtlasConfigSchema = z
   .object({
     defaultProvider: z.enum(['openrouter', 'anthropic']).default('openrouter'),
     defaultModel: z.string().min(1).default('anthropic/claude-sonnet-4'),
+    /**
+     * Optional cheaper model used for low-stakes side tasks: tool-arg
+     * summarization in the TUI, todo extraction, slash-command parsing,
+     * compaction summaries, and skill-learning reflection. Falls back to
+     * `defaultModel` when unset. Same `provider/model` syntax as
+     * `defaultModel` (e.g. `openrouter/openai/gpt-4o-mini`,
+     * `anthropic/claude-haiku-4`). Set this to a Haiku/4o-mini-class
+     * model to slash spend on background work without affecting the main
+     * agent loop.
+     */
+    routerModel: z.string().min(1).optional(),
     /** Models to try in order if the primary fails (429 / 5xx / network). */
     fallbackModels: z.array(z.string().min(1)).default([]),
     providers: ProvidersConfigSchema,

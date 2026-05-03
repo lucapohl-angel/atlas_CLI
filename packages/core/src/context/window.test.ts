@@ -29,7 +29,7 @@ describe('context window', () => {
     for (let i = 0; i < 10; i++) {
       msgs.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: big });
     }
-    const r = planCompaction(msgs, { contextTokens: 5000 });
+    const r = planCompaction(msgs, { contextTokens: 5000, recentTurns: 4 });
     expect(r.action).toBe('compact');
     if (r.action !== 'compact') return;
     expect(r.olderToSummarize.length).toBe(6);
@@ -42,7 +42,7 @@ describe('context window', () => {
     for (let i = 0; i < 10; i++) {
       msgs.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: big });
     }
-    const r = planCompaction(msgs, { contextTokens: 5000 });
+    const r = planCompaction(msgs, { contextTokens: 5000, recentTurns: 4 });
     expect(r.action).toBe('compact');
     if (r.action !== 'compact') return;
     expect(r.recentToKeep[0]?.role).toBe('system');

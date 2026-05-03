@@ -300,11 +300,18 @@ export const createCodexProvider = (options: CodexProviderOptions): Provider => 
                 (usage['output_tokens_details'] as Record<string, unknown> | undefined)?.[
                   'reasoning_tokens'
                 ];
+              const cachedTokens =
+                (usage['input_tokens_details'] as Record<string, unknown> | undefined)?.[
+                  'cached_tokens'
+                ];
               lastUsage = {
                 promptTokens: numberOr(usage['input_tokens'], 0),
                 completionTokens: numberOr(usage['output_tokens'], 0),
                 totalTokens: numberOr(usage['total_tokens'], 0),
-                ...(typeof reasoningTokens === 'number' ? { reasoningTokens } : {})
+                ...(typeof reasoningTokens === 'number' ? { reasoningTokens } : {}),
+                ...(typeof cachedTokens === 'number' && cachedTokens > 0
+                  ? { cacheReadTokens: cachedTokens }
+                  : {})
               };
             }
             finishReason = 'stop';

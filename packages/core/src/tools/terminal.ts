@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { atlasError } from '../errors.js';
 import { err, ok } from '../result.js';
+import { truncateForLLM } from './truncate.js';
 import type { Tool } from './types.js';
 
 const Input = z.object({
@@ -18,6 +19,11 @@ const Input = z.object({
 });
 
 const MAX_OUT = 64_000;
+// Per-stream LLM-facing budget. The full output remains in `data.stdout`/
+// `data.stderr` (capped at MAX_OUT) but the `summary` we feed back to the
+// model gets head+tail truncated so a single noisy command can't dominate
+// the prompt cache.
+const MAX_OUT_LLM = 6_000;
 
 export const terminalTool: Tool<z.infer<typeof Input>> = {
   name: 'terminal',
@@ -96,6 +102,8 @@ export const terminalTool: Tool<z.infer<typeof Input>> = {
         ctx.signal?.removeEventListener('abort', onAbort);
         const trimmedOut = stdout.length > MAX_OUT ? stdout.slice(0, MAX_OUT) + '\n…(truncated)' : stdout;
         const trimmedErr = stderr.length > MAX_OUT ? stderr.slice(0, MAX_OUT) + '\n…(truncated)' : stderr;
+        const llmOut = truncateForLLM(trimmedOut, { maxChars: MAX_OUT_LLM });
+        const llmErr = truncateForLLM(trimmedErr, { maxChars: MAX_OUT_LLM });
         if (killed && ctx.signal?.aborted) {
           resolvePromise(err(atlasError('TOOL_CANCELLED', 'terminal command cancelled')));
           return;
@@ -113,8 +121,8 @@ export const terminalTool: Tool<z.infer<typeof Input>> = {
         const summary = [
           `$ ${input.command}`,
           `exit: ${code ?? 'null'}${signal ? ` (signal ${signal})` : ''}`,
-          trimmedOut.length > 0 ? `stdout:\n${trimmedOut}` : '(no stdout)',
-          trimmedErr.length > 0 ? `stderr:\n${trimmedErr}` : ''
+          llmOut.length > 0 ? `stdout:\n${llmOut}` : '(no stdout)',
+          llmErr.length > 0 ? `stderr:\n${llmErr}` : ''
         ]
           .filter((s) => s.length > 0)
           .join('\n');

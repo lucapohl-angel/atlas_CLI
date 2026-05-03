@@ -60,6 +60,13 @@ interface OpenAIStreamChunk {
     readonly completion_tokens_details?: {
       readonly reasoning_tokens?: number;
     };
+    /**
+     * OpenAI-style: `prompt_tokens_details.cached_tokens` reports the
+     * portion of `prompt_tokens` served from the prompt cache.
+     */
+    readonly prompt_tokens_details?: {
+      readonly cached_tokens?: number;
+    };
   };
 }
 
@@ -262,11 +269,15 @@ export const createOpenRouterProvider = (
           if (chunk.usage) {
             const reasoningTokens =
               chunk.usage.completion_tokens_details?.reasoning_tokens;
+            const cachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens;
             lastUsage = {
               promptTokens: chunk.usage.prompt_tokens ?? 0,
               completionTokens: chunk.usage.completion_tokens ?? 0,
               totalTokens: chunk.usage.total_tokens ?? 0,
-              ...(typeof reasoningTokens === 'number' ? { reasoningTokens } : {})
+              ...(typeof reasoningTokens === 'number' ? { reasoningTokens } : {}),
+              ...(typeof cachedTokens === 'number' && cachedTokens > 0
+                ? { cacheReadTokens: cachedTokens }
+                : {})
             };
           }
         }

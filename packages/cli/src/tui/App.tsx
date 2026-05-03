@@ -594,7 +594,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
     props.config?.compaction?.enabled ?? true
   );
   const compactModelRef = useRef<string | null>(
-    props.config?.compaction?.model ?? null
+    // Prefer the explicit compaction.model override; otherwise fall back
+    // to the global cheap-model router so background work doesn't burn
+    // expensive tokens.
+    props.config?.compaction?.model ?? props.config?.routerModel ?? null
   );
   const compactThresholdRef = useRef<number>(
     props.config?.compaction?.threshold ?? 0.8
@@ -754,7 +757,11 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       const ac = new AbortController();
       reflectAbortRef.current = ac;
       setOverlay({ kind: 'learn-confirm', stage: 'reflecting', reason });
-      const effectiveModel = agentModels.get(activeAgent.name) ?? model;
+      // Skill reflection is a low-stakes side task — prefer the cheap
+      // router model when the user has configured one. Falls back to
+      // the per-agent model and finally the active main model.
+      const effectiveModel =
+        props.config?.routerModel ?? agentModels.get(activeAgent.name) ?? model;
       const reflectionMsgs = buildReflectionMessages(messagesRef.current, reason);
       let buf = '';
       try {
@@ -813,7 +820,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         draft: parsed.draft
       });
     },
-    [provider, model, agentModels, activeAgent, pushItem]
+    [provider, model, agentModels, activeAgent, pushItem, props.config?.routerModel]
   );
 
   /**

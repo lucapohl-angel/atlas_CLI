@@ -1,5 +1,6 @@
 import { readFileTool } from './read-file.js';
 import { writeFileTool } from './write-file.js';
+import { editFileTool } from './edit-file.js';
 import { terminalTool } from './terminal.js';
 import { gitTool, ghTool } from './vcs.js';
 import {
@@ -39,6 +40,7 @@ export * from './searxng-manager.js';
 export * from './catalog.js';
 export { readFileTool } from './read-file.js';
 export { writeFileTool } from './write-file.js';
+export { editFileTool } from './edit-file.js';
 export { terminalTool } from './terminal.js';
 export { gitTool, ghTool } from './vcs.js';
 export {
@@ -77,6 +79,7 @@ export const builtinToolRegistry = (): ToolRegistry => {
   const r = new ToolRegistry();
   r.register(readFileTool);
   r.register(writeFileTool);
+  r.register(editFileTool);
   r.register(terminalTool);
   r.register(gitTool);
   r.register(ghTool);

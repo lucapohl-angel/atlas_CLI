@@ -16,6 +16,8 @@ export interface ModelLimits {
   readonly contextTokens: number;
   /** Compact threshold (default 0.8). */
   readonly compactThreshold?: number;
+  /** Number of most-recent non-system turns kept verbatim. Default 8. */
+  readonly recentTurns?: number;
 }
 
 export type TokenCounter = (text: string) => number;
@@ -57,11 +59,12 @@ export const planCompaction = (
   const threshold = (limits.compactThreshold ?? 0.8) * limits.contextTokens;
   if (used < threshold || messages.length < 6) return { action: 'keep' };
 
-  // Keep the system prompt (if any) + the last 4 messages verbatim.
+  // Keep the system prompt (if any) + the last `recentTurns` messages.
   const systemPrefix = messages.filter((m) => m.role === 'system');
   const nonSystem = messages.filter((m) => m.role !== 'system');
-  const recent = nonSystem.slice(-4);
-  const older = nonSystem.slice(0, -4);
+  const keep = Math.max(2, limits.recentTurns ?? 8);
+  const recent = nonSystem.slice(-keep);
+  const older = nonSystem.slice(0, -keep);
   if (older.length === 0) return { action: 'keep' };
 
   return {
@@ -69,6 +72,44 @@ export const planCompaction = (
     olderToSummarize: older,
     recentToKeep: [...systemPrefix, ...recent]
   };
+};
+
+/**
+ * Cheap pre-pass that elides the *content* of stale tool-result
+ * messages (anything outside the last `keepRecent` non-system turns and
+ * over `maxKeptBytes`). Preserves message count and roles so tool-call
+ * pairing stays intact, but slashes token usage on long sessions where
+ * the same file gets read many times.
+ *
+ * Returns the (possibly identical) messages plus the number of bytes
+ * elided so callers can decide whether the savings are big enough to
+ * skip a full LLM-based compaction.
+ */
+export const pruneStaleToolResults = (
+  messages: readonly Message[],
+  keepRecent = 8,
+  maxKeptBytes = 1_500
+): { readonly messages: readonly Message[]; readonly bytesElided: number } => {
+  const nonSystemIdxs: number[] = [];
+  for (let i = 0; i < messages.length; i += 1) {
+    if (messages[i]!.role !== 'system') nonSystemIdxs.push(i);
+  }
+  const cutoff =
+    nonSystemIdxs[Math.max(0, nonSystemIdxs.length - keepRecent)] ?? messages.length;
+
+  let bytesElided = 0;
+  const out: Message[] = messages.map((m, i) => {
+    if (i >= cutoff) return m;
+    if (m.role !== 'tool') return m;
+    if (m.content.length <= maxKeptBytes) return m;
+    bytesElided += m.content.length;
+    return {
+      ...m,
+      content: `${m.content.slice(0, 200)}\n…[stale tool result elided, ${m.content.length} chars]…`
+    };
+  });
+  if (bytesElided === 0) return { messages, bytesElided: 0 };
+  return { messages: out, bytesElided };
 };
 
 /** Build the prompt the host sends to a cheap model to produce the summary. */

@@ -63,6 +63,8 @@ token-optimization** track on top of it.
 
 > Append newest at the top. One line each: `[shortsha] one-line summary`.
 
+- `[e02d9b7]` workspace installs OpenTUI native optional deps for all release
+  targets and package metadata points at `ATLAS_OS`.
 - `[371ef5b]` terminal tool now kills POSIX process groups on timeout/abort,
   fixing CI shell-child hangs.
 - `[9f4d19c]` workflows now let `pnpm/action-setup` use the pinned

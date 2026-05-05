@@ -22,9 +22,8 @@ token-optimization** track on top of it.
 
 ## Current Goal
 
-- Adopt the Six-File context methodology internally so every Atlas
-  session (and every external coding agent that opens this repo)
-  starts from the same documented state without re-summarizing.
+- Maintain the internal project context docs so every Atlas session starts
+  from the same documented state without re-summarizing.
 
 ## In Progress
 
@@ -64,6 +63,8 @@ token-optimization** track on top of it.
 
 > Append newest at the top. One line each: `[shortsha] one-line summary`.
 
+- `[2d76cf9]` v0.1.6 final cleanup: fresh startup splash by default,
+  public README refresh, and local/private artifact ignores.
 - `[975523f]` v0.1.6 release prep: OpenTUI polish, inherited subagent approvals,
   lint/pnpm gates, and release workflow quality checks.
 - `[30e657d]` perf: 6 token/perf optimizations — Anthropic
@@ -107,11 +108,10 @@ token-optimization** track on top of it.
 
 > Scratch space for resuming work in the next session. Wipe when stale.
 
-- The Six-File context system (`context/*.md`) was adopted on
-  2026-05-03. Source: a senior-dev playbook ("Six-File Context
-  Methodology"). Atlas already ships the *industrialized* version of
-  this (templates / checklists / workflows / stories / handoffs); the
-  context files exist so Atlas itself dogfoods the discipline.
+- The internal project context system (`context/*.md`) was adopted on
+  2026-05-03. Atlas already ships the industrialized version of this
+  discipline (templates / checklists / workflows / stories / handoffs);
+  the context files exist so Atlas itself dogfoods it.
 - The `routerModel` config knob exists but is only wired into
   compaction and skill reflection so far — see "Next Up" #5.
 - Lint is wired at the workspace root; `pnpm lint` is part of the release

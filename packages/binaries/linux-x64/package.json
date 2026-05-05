@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lucapohl-angel/atlas_CLI.git",
+    "url": "git+https://github.com/lucapohl-angel/ATLAS_OS.git",
     "directory": "packages/binaries/linux-x64"
   },
   "os": ["linux"],

@@ -9,7 +9,7 @@ Hand it a vague idea. Get back a planned, built, tested, committed feature —
 with a Greek pantheon of specialist agents doing the work.
 
 [![npm version](https://img.shields.io/npm/v/atlas-os?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/atlas-os)
-[![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](https://github.com/lucapohl-angel/atlas_CLI/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](https://github.com/lucapohl-angel/ATLAS_OS/blob/main/LICENSE)
 
 </div>
 
@@ -19,7 +19,7 @@ npx atlas-os@latest
 
 **Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, or OpenRouter.**
 
-![Atlas·OS terminal](https://raw.githubusercontent.com/lucapohl-angel/atlas_CLI/main/assets/atlas-os-splash.png)
+![Atlas·OS terminal](https://raw.githubusercontent.com/lucapohl-angel/ATLAS_OS/main/assets/atlas-os-splash.png)
 
 ---
 
@@ -119,12 +119,12 @@ integration, and release workflow shipped as one terminal system.
 
 ## Docs
 
-- [Full README, walkthrough, architecture](https://github.com/lucapohl-angel/atlas_CLI)
-- [End-to-end SDD walkthrough](https://github.com/lucapohl-angel/atlas_CLI/blob/main/examples/sdd-walkthrough.md)
-- [Architecture & invariants](https://github.com/lucapohl-angel/atlas_CLI/blob/main/ARCHITECTURE.md)
+- [Full README, walkthrough, architecture](https://github.com/lucapohl-angel/ATLAS_OS)
+- [End-to-end SDD walkthrough](https://github.com/lucapohl-angel/ATLAS_OS/blob/main/examples/sdd-walkthrough.md)
+- [Architecture & invariants](https://github.com/lucapohl-angel/ATLAS_OS/blob/main/ARCHITECTURE.md)
 
 ---
 
 ## License
 
-[MIT](https://github.com/lucapohl-angel/atlas_CLI/blob/main/LICENSE)
+[MIT](https://github.com/lucapohl-angel/ATLAS_OS/blob/main/LICENSE)

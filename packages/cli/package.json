@@ -19,14 +19,14 @@
     "autonomous",
     "developer-tools"
   ],
-  "homepage": "https://github.com/lucapohl-angel/atlas_CLI#readme",
+  "homepage": "https://github.com/lucapohl-angel/ATLAS_OS#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lucapohl-angel/atlas_CLI.git",
+    "url": "git+https://github.com/lucapohl-angel/ATLAS_OS.git",
     "directory": "packages/cli"
   },
   "bugs": {
-    "url": "https://github.com/lucapohl-angel/atlas_CLI/issues"
+    "url": "https://github.com/lucapohl-angel/ATLAS_OS/issues"
   },
   "license": "MIT",
   "author": "Luca Pohl Angel",

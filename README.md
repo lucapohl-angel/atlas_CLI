@@ -9,7 +9,7 @@ Hand it a vague idea. Get back a planned, built, tested, committed feature —
 with a Greek pantheon of specialist agents doing the work.
 
 [![npm version](https://img.shields.io/npm/v/atlas-os?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/atlas-os)
-[![GitHub stars](https://img.shields.io/github/stars/lucapohl-angel/atlas_CLI?style=for-the-badge&logo=github&color=181717)](https://github.com/lucapohl-angel/atlas_CLI)
+[![GitHub stars](https://img.shields.io/github/stars/lucapohl-angel/ATLAS_OS?style=for-the-badge&logo=github&color=181717)](https://github.com/lucapohl-angel/ATLAS_OS)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 
 <br>
@@ -229,8 +229,8 @@ Requirements:
 Local build:
 
 ```bash
-git clone https://github.com/lucapohl-angel/atlas_CLI.git
-cd atlas_CLI
+git clone https://github.com/lucapohl-angel/ATLAS_OS.git
+cd ATLAS_OS
 pnpm install
 pnpm --filter @atlas/core build
 pnpm --filter atlas-os build

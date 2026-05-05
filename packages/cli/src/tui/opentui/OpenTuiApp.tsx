@@ -1047,16 +1047,21 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     // splash. Tool/reasoning rounds are not replayed (we never
     // persisted those) — only the user/assistant turns survive.
     const seed = props.initialSession?.messages ?? [];
-    return seed.map((m, i) => ({
-      kind:
-        m.role === 'user'
-          ? ('user' as const)
-          : m.role === 'assistant'
-            ? ('assistant' as const)
-            : ('system' as const),
-      text: typeof m.content === 'string' ? m.content : '',
-      key: `seed_${i}`
-    }));
+    return seed.map((m, i) => {
+      const raw = typeof m.content === 'string' ? m.content : '';
+      const text =
+        m.role === 'assistant' ? renderVisibleAssistant(raw) : raw;
+      return {
+        kind:
+          m.role === 'user'
+            ? ('user' as const)
+            : m.role === 'assistant'
+              ? ('assistant' as const)
+              : ('system' as const),
+        text,
+        key: `seed_${i}`
+      };
+    });
   });
   const [streaming, setStreaming] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(props.setupError ?? null);
@@ -2069,7 +2074,10 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                       : m.role === 'assistant'
                         ? ('assistant' as const)
                         : ('system' as const),
-                  text: m.content,
+                  text:
+                    m.role === 'assistant'
+                      ? renderVisibleAssistant(m.content)
+                      : m.content,
                   key: `r${transcriptKey.current}_${i}`
                 }));
                 setTranscript(items);
@@ -5108,7 +5116,10 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                           : m.role === 'assistant'
                             ? ('assistant' as const)
                             : ('system' as const),
-                      text: m.content,
+                      text:
+                        m.role === 'assistant'
+                          ? renderVisibleAssistant(m.content)
+                          : m.content,
                       key: `r${transcriptKey.current}_${i}`
                     }));
                     setTranscript(items);

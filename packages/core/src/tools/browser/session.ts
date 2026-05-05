@@ -75,9 +75,18 @@ const loadPlaywright = async (): Promise<{ chromium: { launch: (o: unknown) => P
   try {
     // eslint-disable-next-line @typescript-eslint/consistent-type-imports
     const mod = (await import('playwright')) as unknown as {
-      chromium: { launch: (o: unknown) => Promise<Browser> };
+      chromium?: { launch?: (o: unknown) => Promise<Browser> };
+      default?: { chromium?: { launch?: (o: unknown) => Promise<Browser> } };
     };
-    return mod;
+    // When this file is bundled by `bun build --compile` and the
+    // host process doesn't actually have `playwright` resolvable,
+    // the dynamic import can succeed with an empty module shim that
+    // lacks `chromium` — in which case calling `.chromium.launch`
+    // throws the cryptic `undefined is not an object (evaluating
+    // 'A.chromium.launch')`. Guard explicitly.
+    const chromium = mod.chromium ?? mod.default?.chromium;
+    if (!chromium || typeof chromium.launch !== 'function') return null;
+    return { chromium: chromium as { launch: (o: unknown) => Promise<Browser> } };
   } catch {
     return null;
   }

@@ -3150,6 +3150,17 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     };
   }, []);
 
+  // Always pull focus back to the composer when no overlay is open.
+  // Without this, a fresh terminal launch leaves the renderable
+  // unfocused until the user clicks — typing immediately just dropped
+  // characters. Mirrors the Ink TUI where the chat input is the
+  // implicit focus target on every redraw.
+  useEffect(() => {
+    if (overlay === null) {
+      composerRef.current?.focus();
+    }
+  }, [overlay]);
+
   const showSidebar = width >= SIDEBAR_MIN_COLS;
   const composerFocused = overlay === null;
 

@@ -60,6 +60,7 @@ export const terminalTool: Tool<z.infer<typeof Input>> = {
         shell: true,
         cwd: input.cwd ?? ctx.cwd,
         env: process.env,
+        detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe']
       });
 
@@ -67,14 +68,27 @@ export const terminalTool: Tool<z.infer<typeof Input>> = {
       let stderr = '';
       let killed = false;
 
+      const killChild = (signal: NodeJS.Signals): void => {
+        if (child.pid === undefined) return;
+        try {
+          if (process.platform === 'win32') {
+            child.kill(signal);
+          } else {
+            process.kill(-child.pid, signal);
+          }
+        } catch {
+          child.kill(signal);
+        }
+      };
+
       const timer = setTimeout(() => {
         killed = true;
-        child.kill('SIGKILL');
+        killChild('SIGKILL');
       }, input.timeoutMs);
 
       const onAbort = (): void => {
         killed = true;
-        child.kill('SIGTERM');
+        killChild('SIGTERM');
       };
       ctx.signal?.addEventListener('abort', onAbort, { once: true });
 

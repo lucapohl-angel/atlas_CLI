@@ -3043,6 +3043,11 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     const turnBoundary = { current: false };
 
     const flushAssistant = (): void => {
+      // Strip any complete `<atlas:question>` blocks and hide an
+      // in-progress (still-streaming) opener so the raw protocol
+      // never flashes into the live transcript. Mirrors Ink's
+      // flushDelta at App.tsx:1935.
+      const visible = renderVisibleAssistant(assistantBuffer);
       setTranscript((prev) => {
         const last = prev[prev.length - 1];
         if (
@@ -3051,10 +3056,10 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           last.author === author &&
           !turnBoundary.current
         ) {
-          if (last.text === assistantBuffer) return prev;
-          return [...prev.slice(0, -1), { ...last, text: assistantBuffer }];
+          if (last.text === visible) return prev;
+          return [...prev.slice(0, -1), { ...last, text: visible }];
         }
-        if (assistantBuffer.length === 0) return prev;
+        if (visible.length === 0) return prev;
         // Crossing a turn boundary clears the flag — subsequent
         // deltas in the *same* round will keep updating this new
         // entry until the next `turn_end`.
@@ -3065,7 +3070,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           {
             key: `t${transcriptKey.current}`,
             kind: 'assistant',
-            text: assistantBuffer,
+            text: visible,
             author
           }
         ];

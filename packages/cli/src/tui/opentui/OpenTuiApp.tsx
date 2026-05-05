@@ -535,8 +535,7 @@ const renderStepRow = (
         <text fg={labelColor} attributes={BOLD_ATTR}>{step.label}</text>
         {step.filePath ? (
           <text fg={palette.warning} attributes={BOLD_ATTR}>
-            {' '}
-            <link href={filePathToUrl(step.filePath)}>{step.filePath}</link>
+            <link href={filePathToUrl(step.filePath)}>{` ${step.filePath}`}</link>
           </text>
         ) : null}
         {step.command ? (

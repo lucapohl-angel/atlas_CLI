@@ -139,12 +139,14 @@ pnpm --filter @atlas/core build && \
 pnpm --filter @atlas/core test:run && \
 pnpm --filter atlas-os typecheck && \
 pnpm --filter atlas-os test:run && \
-pnpm --filter atlas-os build
+pnpm --filter atlas-os build && \
+pnpm lint
 ```
 
-Lint script is not currently wired at the workspace root — `pnpm lint`
-is a no-op until per-package lint scripts are added. Do not paper over
-this with `--no-verify` or skipped tests.
+`pnpm lint` runs a dependency-free repository text hygiene check
+(trailing whitespace + merge conflict markers) and each package's
+TypeScript lint/typecheck script. Do not paper over failures with
+`--no-verify` or skipped tests.
 
 ## Performance posture
 

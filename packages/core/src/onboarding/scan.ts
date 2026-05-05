@@ -97,6 +97,105 @@ const languageForExt = (ext: string): string | undefined => {
   return map[ext];
 };
 
+export interface OnboardingDocCandidate {
+  /** Absolute filesystem path. */
+  readonly path: string;
+  /** Path relative to cwd, with forward slashes (display label). */
+  readonly relPath: string;
+  /** File size in bytes. */
+  readonly bytes: number;
+  /** Last modified time in ms (Date.now() epoch). */
+  readonly mtimeMs: number;
+  /** Why we picked it: 'canonical' for the three exact onboarding docs, 'heuristic' for fuzzy matches. */
+  readonly kind: 'canonical' | 'heuristic';
+}
+
+const ONBOARDING_DOC_NAME_PATTERNS: readonly RegExp[] = [
+  // Repo-root entrypoints (case-insensitive, optional version suffixes).
+  /^README(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i,
+  /^ARCHITECTURE(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i,
+  /^ONBOARDING(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i,
+  /^GETTING[._-]?STARTED(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i,
+  /^SETUP(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i,
+  /^DEVELOPMENT(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i,
+  /^DEVELOPER(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i,
+  /^CONTRIBUTING(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i,
+  /^OVERVIEW(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i,
+  /^DESIGN(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i,
+  /^STRUCTURE(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i,
+  /^repo[._-]map(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i,
+  /^brownfield[._-]?architecture(?:[._-].+)?\.(?:md|mdx|rst|txt)$/i
+];
+
+const isCanonicalOnboardingDoc = (relPath: string): boolean =>
+  relPath === 'docs/repo-map.md' ||
+  relPath === 'docs/brownfield-architecture.md' ||
+  relPath === 'docs/onboarding.md';
+
+/**
+ * Walk the repo (cwd + descendants only — never parents) and surface
+ * documents that *might* describe the project's architecture or
+ * onboarding flow. The wizard offers these to the user for
+ * inclusion in the onboarding prompt so they can be reused instead
+ * of regenerated, saving output tokens.
+ *
+ * Heuristic match is intentionally permissive — false positives are
+ * cheap (the user just deselects them) but a missed CONTRIBUTING.md
+ * means the agent regenerates docs that already cover the same
+ * ground. Restricted to top-level + `docs/`, `doc/`, `.github/` to
+ * keep the candidate list short.
+ */
+export const findOnboardingDocs = async (
+  opts: { readonly cwd?: string; readonly maxFiles?: number } = {}
+): Promise<Result<readonly OnboardingDocCandidate[], AtlasError>> => {
+  const cwd = opts.cwd ?? process.cwd();
+  const maxFiles = opts.maxFiles ?? 4000;
+  let files: string[];
+  try {
+    files = await walkFiles(cwd, maxFiles);
+  } catch (e) {
+    return err(atlasError('ONBOARDING_SCAN_FAILED', `failed to scan ${cwd}`, { cause: e }));
+  }
+  const out: OnboardingDocCandidate[] = [];
+  for (const abs of files) {
+    const rel = relative(cwd, abs).replace(/\\/g, '/');
+    if (rel.length === 0 || rel.startsWith('..')) continue;
+    const segments = rel.split('/');
+    const base = segments[segments.length - 1] ?? '';
+    // Limit search depth: top-level + docs/, doc/, .github/. A repo
+    // with a sprawling /packages/*/docs tree should NOT explode the
+    // candidate list — those are rarely the canonical onboarding doc.
+    const dirAllowed =
+      segments.length === 1 ||
+      (segments.length === 2 &&
+        (segments[0] === 'docs' || segments[0] === 'doc' || segments[0] === '.github'));
+    if (!dirAllowed) continue;
+    if (!ONBOARDING_DOC_NAME_PATTERNS.some((re) => re.test(base))) continue;
+    let s;
+    try {
+      s = await stat(abs);
+    } catch {
+      continue;
+    }
+    if (!s.isFile()) continue;
+    out.push({
+      path: abs,
+      relPath: rel,
+      bytes: s.size,
+      mtimeMs: s.mtimeMs,
+      kind: isCanonicalOnboardingDoc(rel) ? 'canonical' : 'heuristic'
+    });
+  }
+  // Canonical docs first (the three the wizard would otherwise
+  // generate), then heuristic matches alphabetically. Stable order
+  // so the multi-select cursor lands on the same row across runs.
+  out.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === 'canonical' ? -1 : 1;
+    return a.relPath.localeCompare(b.relPath);
+  });
+  return ok(out);
+};
+
 export const estimateOnboardCost = async (
   opts: EstimateOnboardCostOptions = {}
 ): Promise<Result<OnboardPreflight, AtlasError>> => {

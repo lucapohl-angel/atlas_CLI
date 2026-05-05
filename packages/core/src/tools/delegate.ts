@@ -64,12 +64,12 @@ export const delegateTool: Tool<z.infer<typeof Input>> = {
   approval: 'auto',
   schema: Input,
   whenToUse:
-    'Use when (1) a goal has independent sub-goals that can run in parallel, (2) a sub-goal needs a different specialist agent, or (3) you want to isolate exploration from your main thread. Children cannot delegate further (depth cap, default 2). Children cannot ask the user — phrase goals self-contained. Prefer one well-scoped delegation over many tiny ones.',
+    'Use when (1) a goal has independent sub-goals that can run in parallel, (2) a sub-goal needs a different specialist agent, or (3) you want to isolate exploration from your main thread. Children cannot delegate further (depth cap, default 2) and cannot use clarify, so phrase goals self-contained. Side-effect tools follow the current approval policy. Prefer one well-scoped delegation over many tiny ones.',
   outputContract:
     'Returns a JSON object `{results: [{idx, ok, agent, summary, error?, rounds}]}` ordered by input index. `summary` is the child\'s last assistant message (truncated at ~4 KB). On total failure (no runner wired) returns `TOOL_EXECUTION_FAILED`.',
   blockedOps: [
     'recursive delegation past `delegation.maxDepth`',
-    'children invoking ask-approval tools (terminal write/exec) — auto-denied',
+    'children invoking ask-approval tools without the parent turn approving or auto-approving them',
     'children calling `clarify` or `delegate` — those tools are stripped from the child registry'
   ],
   examples: [
@@ -127,7 +127,8 @@ export const delegateTool: Tool<z.infer<typeof Input>> = {
             goal: t.goal,
             ...(t.context !== undefined ? { context: t.context } : {}),
             ...(t.agent !== undefined ? { agent: t.agent } : {}),
-            ...(ctx.signal ? { signal: ctx.signal } : {})
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+            approve: ctx.approve
           });
         } catch (e) {
           const msg = (e as Error).message;

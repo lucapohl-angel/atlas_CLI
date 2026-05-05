@@ -120,6 +120,13 @@ export interface DelegateChildRequest {
   readonly context?: string;
   readonly agent?: string;
   readonly signal?: AbortSignal;
+  /**
+   * Approval policy the child loop should use for ask-mode tools.
+   * Hosts usually pass the parent turn's policy so plan/build/autopilot
+   * semantics remain consistent inside delegated work. When omitted,
+   * the delegate runner keeps its conservative deny-by-default fallback.
+   */
+  readonly approve?: ApprovalPolicy;
 }
 
 export interface DelegateChildResult {

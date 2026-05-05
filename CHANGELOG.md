@@ -6,6 +6,41 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-05-05
+
+### Added — OpenTUI, delegation, and release-readiness polish
+- OpenTUI becomes the default full-screen runtime, with clearer fallback
+  messaging for the classic Ink UI and provider-connection warnings in
+  the header/splash when no key is configured.
+- OpenTUI now mirrors more of the Ink workflow: build-mode tool approval
+  prompts, live sidebar todos, session/context token accounting,
+  manual/forced learned-skill drafting with review/change/save flows,
+  smarter `/compact`, and existing-doc reuse in `/onboard`.
+- Startup model selection now prefers explicit `--model`, resumed-session
+  model, connected configured defaults, then connected catalog fallbacks.
+- Delegated subagents now inherit the parent approval policy, so plan,
+  build, and autopilot semantics remain consistent in child loops.
+- Atlas coding agents now receive an explicit verification habit: discover
+  project-specific lint/typecheck/test/build gates from local repo docs and
+  scripts, run the relevant gates, and avoid treating lint as a universal
+  hardcoded Atlas command.
+
+### Changed
+- Root `pnpm lint` is now wired and quiet on Linux/Garuda: it runs repo
+  text hygiene checks plus `tsc --noEmit` for `@atlas/core` and `atlas-os`.
+- Development docs now state the pnpm requirement and include `pnpm lint`
+  in the documented release quality gate.
+- CI and release tag builds now run the lint gate as part of quality
+  verification before publishable artifacts are produced.
+
+### Fixed
+- Anthropic message translation now drops empty assistant turns instead of
+  sending invalid empty text blocks after interaction-only turns.
+- OpenTUI resumed sessions no longer render empty assistant rows for stripped
+  interaction requests.
+- Root `npm install` at the private workspace now stops early with pnpm setup
+  instructions instead of creating broken workspace state.
+
 ### Added — Post-1.0 Phase 11 (Customization overlays)
 - Loader precedence is now consistent across core config artifacts:
   built-in defaults → `~/.atlas` user overrides → `<cwd>/.atlas` project

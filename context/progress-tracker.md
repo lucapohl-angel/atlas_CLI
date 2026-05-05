@@ -56,8 +56,9 @@ token-optimization** track on top of it.
 - DESIGN.md `@google/design.md` upstream is at v0.1.0 — when 0.2 ships,
   what's our policy on breaking changes? (See AGENTS.md "Protected
   files".)
-- Lint: workspace `pnpm lint` is currently a no-op. Do we add ESLint
-  per-package, or rely on `tsc --noEmit` + Vitest as the only gate?
+- Lint is wired through `pnpm lint`: repo text hygiene plus per-package
+  TypeScript checks. A future ESLint adoption remains optional if we want
+  semantic style rules beyond strict TS.
 
 ## Recent Decisions
 
@@ -111,4 +112,5 @@ token-optimization** track on top of it.
   context files exist so Atlas itself dogfoods the discipline.
 - The `routerModel` config knob exists but is only wired into
   compaction and skill reflection so far — see "Next Up" #5.
-- Lint is unwired at the workspace root — see Open Questions.
+- Lint is wired at the workspace root; `pnpm lint` is part of the release
+  quality gate.

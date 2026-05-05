@@ -456,7 +456,15 @@ const translateMessages = (
         }
         blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: parsed });
       }
-      if (blocks.length === 0) blocks.push({ type: 'text', text: '' });
+      // Anthropic rejects assistant turns containing an empty text
+      // block ("text content blocks must be non-empty", HTTP 400).
+      // This happens when an assistant turn was *only* an
+      // `<atlas:question>` interaction request that we strip from the
+      // session record post-turn — the persisted message has empty
+      // content and no tool calls. Drop the whole turn rather than
+      // emit a bad payload; the conversation reads fine without it
+      // (the turn produced nothing observable for the user).
+      if (blocks.length === 0) continue;
       out.push({ role: 'assistant', content: blocks });
       continue;
     }

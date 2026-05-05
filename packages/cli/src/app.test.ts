@@ -23,4 +23,11 @@ describe('atlas CLI program', () => {
     const names = program.commands.map((c) => c.name());
     expect(names).toContain('ask');
   });
+
+  it('defaults chat to the full-screen OpenTUI runtime', () => {
+    const program = buildProgram();
+    const chat = program.commands.find((c) => c.name() === 'chat');
+    const ui = chat?.options.find((o) => o.long === '--ui');
+    expect(ui?.defaultValue).toBe('opentui');
+  });
 });

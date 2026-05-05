@@ -4,7 +4,8 @@
  *
  * The flow is:
  *
- *   1. After each turn, App.tsx runs `shouldOfferLearn(rounds, errors, user)`.
+ *   1. If auto-learn is enabled, App.tsx runs
+ *      `shouldOfferLearn(rounds, errors, user)` after each turn.
  *   2. If true, App.tsx calls a small reflection sub-call against the
  *      active provider with `buildReflectionMessages(...)`. The model is
  *      asked to either output a draft `LearnedSkillDraft` JSON or `null`.
@@ -17,6 +18,17 @@
  * non-tool round-trip.
  */
 import type { Message } from '@atlas/core';
+
+/**
+ * Auto-learn starts on, but the heuristic below is deliberately stingy:
+ * normal multi-tool chores should not become learned skills.
+ */
+export const DEFAULT_AUTO_LEARN_ENABLED = true;
+
+const LONG_TURN_ROUNDS = 8;
+const RECOVERY_ROUNDS = 5;
+const SUCCESS_AFTER_STRUGGLE_ROUNDS = 3;
+const REPEATED_TOOL_ERRORS = 2;
 
 /** Phrases that suggest the user just unblocked something hard. */
 const SUCCESS_PHRASES: readonly string[] = [
@@ -34,8 +46,9 @@ const SUCCESS_PHRASES: readonly string[] = [
 /**
  * Heuristic gate: was this turn "hard enough" to be worth distilling?
  *
- *  - rounds ≥ 5  → multi-step debugging / refactor
+ *  - rounds ≥ 8  → genuinely long debugging / refactor turn
  *  - tool errors ≥ 2 → the agent stumbled and recovered
+ *  - rounds ≥ 5 plus a tool error → non-trivial recovery
  *  - the user message contains a success phrase after a struggle (≥ 3 rounds)
  */
 export const shouldOfferLearn = (
@@ -43,12 +56,24 @@ export const shouldOfferLearn = (
   toolErrors: number,
   lastUserMessage: string
 ): boolean => {
-  if (rounds >= 5) return true;
-  if (toolErrors >= 2) return true;
-  const lower = lastUserMessage.toLowerCase();
-  if (rounds >= 3 && SUCCESS_PHRASES.some((p) => lower.includes(p))) return true;
+  const hasSuccessSignal = SUCCESS_PHRASES.some((p) =>
+    lastUserMessage.toLowerCase().includes(p)
+  );
+  if (toolErrors >= REPEATED_TOOL_ERRORS) return true;
+  if (rounds >= LONG_TURN_ROUNDS) return true;
+  if (rounds >= RECOVERY_ROUNDS && toolErrors > 0) return true;
+  if (rounds >= SUCCESS_AFTER_STRUGGLE_ROUNDS && hasSuccessSignal) return true;
   return false;
 };
+
+const shouldMentionRounds = (
+  rounds: number,
+  toolErrors: number,
+  hasSuccessSignal: boolean
+): boolean =>
+  rounds >= LONG_TURN_ROUNDS ||
+  (rounds >= RECOVERY_ROUNDS && toolErrors > 0) ||
+  (rounds >= SUCCESS_AFTER_STRUGGLE_ROUNDS && hasSuccessSignal);
 
 /** One-line "why" string shown to the user on the confirmation overlay. */
 export const describeLearnReason = (
@@ -57,10 +82,17 @@ export const describeLearnReason = (
   lastUserMessage: string
 ): string => {
   const reasons: string[] = [];
-  if (rounds >= 5) reasons.push(`turn took ${rounds} rounds`);
-  if (toolErrors >= 2) reasons.push(`${toolErrors} tool errors`);
   const lower = lastUserMessage.toLowerCase();
-  if (SUCCESS_PHRASES.some((p) => lower.includes(p))) reasons.push('user signalled success');
+  const hasSuccessSignal = SUCCESS_PHRASES.some((p) => lower.includes(p));
+
+  if (shouldMentionRounds(rounds, toolErrors, hasSuccessSignal)) {
+    reasons.push(`turn took ${rounds} rounds`);
+  }
+  if (toolErrors >= REPEATED_TOOL_ERRORS) reasons.push(`${toolErrors} tool errors`);
+  else if (toolErrors === 1 && rounds >= RECOVERY_ROUNDS) reasons.push('1 tool recovery');
+  if (rounds >= SUCCESS_AFTER_STRUGGLE_ROUNDS && hasSuccessSignal) {
+    reasons.push('user signalled success');
+  }
   return reasons.length > 0 ? reasons.join(', ') : 'manual /learn';
 };
 
@@ -98,22 +130,45 @@ export const buildReflectionMessages = (
   options: {
     readonly recentTurnsCap?: number;
     readonly perMessageCharCap?: number;
+    /**
+     * When true, the reflection sub-call is told to ALWAYS emit a JSON
+     * draft — even for trivial turns. Surfaces via `/learn force`. The
+     * model is instructed to capture *something* reusable from the
+     * transcript instead of returning the `null` decline token.
+     */
+     readonly force?: boolean;
   } = {}
 ): Message[] => {
   const capN = options.recentTurnsCap ?? 16;
   const capChars = options.perMessageCharCap ?? 1500;
+  const trim = (content: string): string =>
+    content.length > capChars
+      ? `${content.slice(0, capChars)}\n…[truncated]`
+      : content;
   const recent = history
     .filter((m) => m.role !== 'system')
     .slice(-capN)
-    .map<Message>((m) => ({
-      role: m.role,
-      content: m.content.length > capChars
-        ? `${m.content.slice(0, capChars)}\n…[truncated]`
-        : m.content
-    }));
+    .flatMap<Message>((m) => {
+      if (m.role === 'tool') {
+        const label = m.name ? `[tool result: ${m.name}]` : '[tool result]';
+        return [{ role: 'user', content: trim(`${label}\n${m.content}`) }];
+      }
+      if (m.role === 'assistant') {
+        const parts: string[] = [];
+        if (m.content.trim().length > 0) parts.push(m.content);
+        for (const tc of m.toolCalls ?? []) {
+          parts.push(`[tool call: ${tc.name}]\n${tc.arguments}`);
+        }
+        const content = parts.join('\n\n').trim();
+        return content.length > 0 ? [{ role: 'assistant', content: trim(content) }] : [];
+      }
+      return [{ role: 'user', content: trim(m.content) }];
+    });
   const summary: Message = {
     role: 'user',
-    content: `[meta] Reflect on the conversation above. Trigger reason: ${reason}.\n\nNow output the JSON skill draft, or the literal token \`null\`.`
+    content: options.force
+      ? `[meta] The user invoked \`/learn force\`. Reflect on the conversation above and produce a SKILL.md JSON draft NO MATTER WHAT — the user has decided this turn is worth distilling, even if it was short. Trigger reason: ${reason}.\n\nDo NOT return \`null\`. Capture whatever recipe / pattern / verification steps appeared in the transcript, even if minimal. Output ONLY the JSON object.`
+      : `[meta] Reflect on the conversation above. Trigger reason: ${reason}.\n\nNow output the JSON skill draft, or the literal token \`null\`.`
   };
   return [
     { role: 'system', content: REFLECTION_SYSTEM },
@@ -128,6 +183,27 @@ export interface LearnedSkillDraft {
   readonly triggers: readonly string[];
   readonly body: string;
 }
+
+/**
+ * Build a revision prompt for an already-proposed skill. Used when the
+ * user likes the direction but wants the draft changed before saving.
+ */
+export const buildSkillRevisionMessages = (
+  draft: LearnedSkillDraft,
+  changeRequest: string,
+  reason: string
+): Message[] => [
+  { role: 'system', content: REFLECTION_SYSTEM },
+  {
+    role: 'user',
+    content:
+      `[meta] Revise this learned-skill draft. Keep what is good, apply the user's requested change, and return the full revised JSON object.\n\n` +
+      `Original trigger reason: ${reason}\n\n` +
+      `Current draft JSON:\n${JSON.stringify(draft)}\n\n` +
+      `User requested change:\n${changeRequest}\n\n` +
+      'Output ONLY the revised JSON object. Do not return null unless the requested change explicitly says to discard the skill.'
+  }
+];
 
 /**
  * Parse the reflection response. Returns the draft, `null` if the model

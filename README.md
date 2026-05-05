@@ -201,6 +201,11 @@ See [examples/sdd-walkthrough.md](./examples/sdd-walkthrough.md) for a full run.
 
 ## Dev
 
+Requirements:
+
+- Node.js 20+
+- pnpm 10.33.2 (`npm install -g pnpm@10.33.2`, or Corepack if your Node install provides it)
+
 Local build:
 
 ```bash
@@ -219,7 +224,8 @@ pnpm --filter @atlas/core build && \
 pnpm --filter @atlas/core test:run && \
 pnpm --filter atlas-os typecheck && \
 pnpm --filter atlas-os test:run && \
-pnpm --filter atlas-os build
+pnpm --filter atlas-os build && \
+pnpm lint
 ```
 
 More detail: [ARCHITECTURE.md](./ARCHITECTURE.md), [AGENTS.md](./AGENTS.md), [context/](./context/)

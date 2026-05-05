@@ -49,6 +49,26 @@ describe('delegateTool', () => {
     }
   });
 
+  it('passes the parent approval policy to child requests', async () => {
+    const approvals: string[] = [];
+    const run: DelegateRunFn = async (req) => {
+      const decision = await req.approve?.decide('write_file', { path: 'x' });
+      if (decision?.action === 'allow') approvals.push('allowed');
+      return { ok: true, summary: 'done', rounds: 1 };
+    };
+    const ctx: ToolContext = {
+      cwd: process.cwd(),
+      approve: { decide: () => ({ action: 'allow' }) },
+      delegateDepth: 0,
+      delegateRun: run
+    };
+
+    const r = await delegateTool.execute({ goal: 'write x', maxConcurrent: 3 }, ctx);
+
+    expect(r.ok).toBe(true);
+    expect(approvals).toEqual(['allowed']);
+  });
+
   it('runs batch tasks with bounded concurrency in input order', async () => {
     let inFlight = 0;
     let peakInFlight = 0;

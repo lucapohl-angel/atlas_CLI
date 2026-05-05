@@ -38,6 +38,8 @@ import {
   denyAllPolicy,
   estimateCost,
   estimateOnboardCost,
+  findOnboardingDocs,
+  type OnboardingDocCandidate,
   fetchAnthropicModels,
   fetchCodexModels,
   fetchOpenRouterModels,
@@ -62,6 +64,8 @@ import {
   writeRepoMap,
   type Agent,
   type AgentRegistry,
+  type ApprovalDecision,
+  type ApprovalPolicy,
   type AtlasConfig,
   type HookRegistry,
   type InteractionRequest,
@@ -88,6 +92,8 @@ import { createTextAttributes } from '@opentui/core';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import {
   buildReflectionMessages,
+  buildSkillRevisionMessages,
+  DEFAULT_AUTO_LEARN_ENABLED,
   describeLearnReason,
   parseLearnedSkillDraft,
   shouldOfferLearn,
@@ -101,15 +107,18 @@ import { Splash } from './Splash.js';
 import { renderMarkdownBlock } from './markdown.js';
 import { styleForTool } from './tool-style.js';
 import { Header, type Mode, type ThinkingEffort } from './Header.js';
-import { Sidebar, type SidebarToolEvent } from './Sidebar.js';
+import { Sidebar, type SidebarToolEvent, type SidebarTodo } from './Sidebar.js';
 import {
   ColoredGroupedPicker,
   Confirm,
   InfoOverlay,
   KeyEntry,
+  LoadingOverlay,
+  MultiSelect,
   Picker,
   SlashAutocomplete,
   type GroupedPickerEntry,
+  type MultiSelectAction,
   type PickerOption,
   type SlashSuggestion
 } from './Picker.js';
@@ -605,6 +614,7 @@ type OverlayKind =
   | 'thinking'
   | 'mode'
   | 'autopilot-confirm'
+  | 'tool-approval'
   | 'config'
   | 'config-key-openrouter'
   | 'config-key-anthropic'
@@ -624,6 +634,7 @@ type OverlayKind =
   | 'tools-list'
   | 'tools-actions'
   | 'onboard-loading'
+  | 'onboard-existing-docs'
   | 'onboard-mode'
   | 'onboard-strategy'
   | 'onboard-pick-model'
@@ -645,16 +656,237 @@ type OverlayKind =
  * other overlay is a plain string and we want to keep it that way.
  */
 interface LearnConfirmState {
-  readonly stage: 'reflecting' | 'review' | 'saving';
+  readonly stage: 'reflecting' | 'review' | 'saving' | 'change';
   readonly reason: string;
   readonly draft?: LearnedSkillDraft;
   readonly error?: string;
 }
 
+interface ToolApprovalState {
+  readonly tool: string;
+  readonly inputPreview: string;
+}
+
 const STATUSBAR =
   'Tab agent · Ctrl-O model · Ctrl-T think · Ctrl-P mode · Ctrl-X copy · ↵ send · Ctrl-J newline · Ctrl-D ×2 exit';
 
+const formatSkillDraftPreview = (draft: LearnedSkillDraft): string =>
+  [
+    '---',
+    `name: ${draft.name}`,
+    `description: ${draft.description}`,
+    `triggers: ${JSON.stringify([...draft.triggers])}`,
+    'kind: learned',
+    '---',
+    draft.body.trim()
+  ].join('\n');
+
+const wrapOverlayLine = (line: string, width: number): readonly string[] => {
+  if (line.length === 0) return [''];
+  const out: string[] = [];
+  for (let i = 0; i < line.length; i += width) {
+    out.push(line.slice(i, i + width));
+  }
+  return out;
+};
+
+const estimateContextTokens = (messages: readonly Message[]): number => {
+  const chars = messages.reduce((sum, m) => {
+    const toolCallChars = (m.toolCalls ?? []).reduce(
+      (inner, tc) => inner + tc.name.length + tc.arguments.length,
+      0
+    );
+    return (
+      sum +
+      m.content.length +
+      toolCallChars +
+      (m.name?.length ?? 0) +
+      (m.toolCallId?.length ?? 0)
+    );
+  }, 0);
+  return Math.ceil(chars / 4);
+};
+
+const formatApprovalInputPreview = (input: unknown): string => {
+  let raw: string;
+  try {
+    raw = JSON.stringify(input, null, 2);
+  } catch {
+    raw = String(input);
+  }
+  return raw.length > 1200 ? `${raw.slice(0, 1200)}\n...[truncated]` : raw;
+};
+
+interface LearnReflectingOverlayProps {
+  readonly reason: string;
+  readonly revising: boolean;
+}
+
+const LearnReflectingOverlay = (props: LearnReflectingOverlayProps) => {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  useEffect(() => {
+    setElapsedSeconds(0);
+    const id = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [props.reason, props.revising]);
+  const action = props.revising ? 'Reworking the draft' : 'Reflecting on the last turn';
+  const elapsed = elapsedSeconds > 0 ? ` (${elapsedSeconds}s)` : '';
+  return (
+    <LoadingOverlay
+      title="atlas is drafting a learned skill"
+      body={`${action}...${elapsed}\nTrigger: ${props.reason}`}
+      hint="Esc / Ctrl-C cancel"
+    />
+  );
+};
+
+interface LearnDraftReviewOverlayProps {
+  readonly draft: LearnedSkillDraft;
+  readonly reason: string;
+  readonly error?: string;
+  readonly onSave: () => void;
+  readonly onReject: () => void;
+  readonly onChange: () => void;
+}
+
+const LearnDraftReviewOverlay = (props: LearnDraftReviewOverlayProps) => {
+  const { width: cols, height: rows } = useTerminalDimensions();
+  const overlayWidth = Math.min(104, Math.max(62, cols - 4));
+  const overlayHeight = Math.min(34, Math.max(20, rows - 4));
+  const left = Math.max(2, Math.floor((cols - overlayWidth) / 2));
+  const top = Math.max(2, Math.floor((rows - overlayHeight) / 2));
+  const bodyWidth = Math.max(24, overlayWidth - 4);
+  const bodyHeight = Math.max(6, overlayHeight - (props.error ? 13 : 12));
+  const actions = ['save', 'change', 'reject'] as const;
+  const [actionIdx, setActionIdx] = useState<number>(0);
+  // The body is a native `<scrollbox>` rather than a manual offset
+  // slice — the prior version relied on `useKeyboard` firing on this
+  // child component, which failed in some terminals (arrow keys never
+  // updated `scrollOffset`). With `<scrollbox>` OpenTUI handles up /
+  // down / pageup / pagedown and even mouse-wheel internally as long
+  // as the box is focused.
+  const lines = useMemo(
+    () =>
+      formatSkillDraftPreview(props.draft)
+        .split('\n')
+        .flatMap((line) => wrapOverlayLine(line, bodyWidth)),
+    [props.draft, bodyWidth]
+  );
+
+  const runAction = useCallback(
+    (action: (typeof actions)[number]): void => {
+      if (action === 'save') props.onSave();
+      else if (action === 'change') props.onChange();
+      else props.onReject();
+    },
+    [props]
+  );
+
+  useKeyboard((key) => {
+    if (key.name === 'return') {
+      runAction(actions[actionIdx] ?? 'save');
+      return;
+    }
+    if (key.name === 'tab' || key.name === 'right') {
+      setActionIdx((i) => (i + 1) % actions.length);
+      return;
+    }
+    if (key.name === 'left') {
+      setActionIdx((i) => (i - 1 + actions.length) % actions.length);
+      return;
+    }
+    if (key.sequence === 's') runAction('save');
+    else if (key.sequence === 'c') runAction('change');
+    else if (key.sequence === 'r') runAction('reject');
+  });
+
+  return (
+    <box
+      style={{
+        position: 'absolute',
+        top,
+        left,
+        width: overlayWidth,
+        height: overlayHeight,
+        flexDirection: 'column',
+        borderStyle: 'single',
+        borderColor: props.error ? palette.error : palette.primary,
+        backgroundColor: palette.backgroundElement,
+        paddingLeft: 1,
+        paddingRight: 1
+      }}
+    >
+      <text fg={palette.primaryBright}>{`✦ learned skill draft · ${props.draft.name}`}</text>
+      <text fg={palette.textMuted}>{props.draft.description}</text>
+      <text fg={palette.textDim}>
+        {`triggers: ${props.draft.triggers.join(', ') || '(none)'}`}
+      </text>
+      <text fg={palette.textDim}>{`reason: ${props.reason} · ${lines.length} lines`}</text>
+      {props.error ? <text fg={palette.error}>{`save failed: ${props.error}`}</text> : null}
+      <scrollbox
+        focused
+        style={{
+          height: bodyHeight,
+          marginTop: 1,
+          marginBottom: 1,
+          backgroundColor: palette.backgroundPanel,
+          paddingLeft: 1,
+          paddingRight: 1
+        }}
+        rootOptions={{ backgroundColor: palette.backgroundPanel }}
+        wrapperOptions={{ backgroundColor: palette.backgroundPanel }}
+        viewportOptions={{ backgroundColor: palette.backgroundPanel }}
+        contentOptions={{ backgroundColor: palette.backgroundPanel }}
+        stickyScroll={false}
+      >
+        {lines.map((line, i) => (
+          <text key={`skill-line-${i}`} fg={palette.text}>
+            {line.length === 0 ? ' ' : line}
+          </text>
+        ))}
+      </scrollbox>
+      <box
+        style={{
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundElement,
+          marginTop: 1
+        }}
+      >
+        {actions.map((action, i) => (
+          <box
+            key={`learn-action-${action}`}
+            style={{
+              flexDirection: 'row',
+              backgroundColor: i === actionIdx ? palette.primary : palette.backgroundElement,
+              marginRight: 1
+            }}
+          >
+            <text fg={i === actionIdx ? palette.background : palette.text}>
+              {` ${action === 'save' ? 'Save' : action === 'change' ? 'Request change' : 'Reject'} `}
+            </text>
+          </box>
+        ))}
+      </box>
+      <text fg={palette.textMuted}>
+        ↑/↓ scroll body · Tab/←/→ action · s/c/r shortcuts · ↵ choose · Esc close
+      </text>
+    </box>
+  );
+};
+
 type ProviderKindLabel = 'openrouter' | 'anthropic' | 'openai-codex' | 'unknown';
+
+const withSelectedDefaultModel = (
+  cfg: AtlasConfig,
+  modelId: string,
+  kind: ProviderKindLabel
+): AtlasConfig => ({
+  ...cfg,
+  defaultModel: modelId,
+  ...(kind === 'openrouter' || kind === 'anthropic'
+    ? { defaultProvider: kind }
+    : {})
+});
 
 /**
  * Resolve the provider that should run a given model id. Mirrors
@@ -766,11 +998,11 @@ const THINKING_OPTIONS_ALL: readonly PickerOption[] = [
 
 const MODE_OPTIONS: readonly PickerOption[] = [
   { value: 'plan', label: 'plan', description: 'read-only — no tool side effects' },
-  { value: 'build', label: 'build', description: 'tool calls require approval' },
+  { value: 'build', label: 'build', description: 'ask before side-effect tools' },
   {
     value: 'autopilot',
     label: 'autopilot',
-    description: 'unattended — tools auto-approved'
+    description: 'unattended — side-effect tools auto-approved'
   }
 ];
 
@@ -874,7 +1106,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'sessions', summary: 'list saved sessions (use /resume <id> to restore)' },
   { name: 'resume', summary: 'resume a session by id' },
   { name: 'compact', summary: 'auto-compaction status' },
-  { name: 'learn', summary: 'self-improvement loop: distill the current turn into a learned skill' },
+  { name: 'learn', summary: 'distill current turn into a skill (use `/learn force` to override the heuristic)' },
   { name: 'skills', summary: 'list / enable / disable skills' },
   { name: 'next', summary: 'ask Atlas which command to run next' },
   { name: 'onboard', summary: 'brownfield onboarding wizard' },
@@ -1046,26 +1278,33 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     // user lands inside their previous conversation, not a blank
     // splash. Tool/reasoning rounds are not replayed (we never
     // persisted those) — only the user/assistant turns survive.
+    // Skip system + tool roles (they have no place in the visible
+    // transcript) and drop assistant turns that strip down to empty
+    // — those were turns whose entire body was an `<atlas:question>`
+    // block, and rendering them as a bare "ATLAS" header with no
+    // text is the empty-ghost-row bug users see at the bottom of
+    // resumed sessions.
     const seed = props.initialSession?.messages ?? [];
-    return seed.map((m, i) => {
+    return seed.flatMap<TranscriptItem>((m, i) => {
+      if (m.role !== 'user' && m.role !== 'assistant') return [];
       const raw = typeof m.content === 'string' ? m.content : '';
       const text =
         m.role === 'assistant' ? renderVisibleAssistant(raw) : raw;
-      return {
-        kind:
-          m.role === 'user'
-            ? ('user' as const)
-            : m.role === 'assistant'
-              ? ('assistant' as const)
-              : ('system' as const),
-        text,
-        key: `seed_${i}`
-      };
+      if (text.length === 0) return [];
+      return [
+        {
+          kind: m.role === 'user' ? ('user' as const) : ('assistant' as const),
+          text,
+          key: `seed_${i}`
+        }
+      ];
     });
   });
   const [streaming, setStreaming] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(props.setupError ?? null);
-  const [tokensUsed, setTokensUsed] = useState<number>(0);
+  const [tokensUsed, setTokensUsed] = useState<number>(() =>
+    estimateContextTokens(props.initialSession?.messages ?? [])
+  );
   const [mode, setMode] = useState<Mode>('build');
   const [thinking, setThinking] = useState<ThinkingEffort>('medium');
   const [overlay, setOverlay] = useState<OverlayKind | null>(null);
@@ -1124,8 +1363,18 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       readonly architecture?: string;
       readonly onboarding?: string;
     };
+    /**
+     * User-confirmed list of existing docs to feed into the
+     * onboarding prompt as "READ FIRST, update in place" inputs.
+     * Empty when the user opted to start fresh (or when no docs
+     * were found in the repo).
+     */
+    readonly reuseDocs?: readonly OnboardingDocCandidate[];
   }
   const [onboardDraft, setOnboardDraft] = useState<OnboardDraft | null>(null);
+  const [onboardDocCandidates, setOnboardDocCandidates] = useState<
+    readonly OnboardingDocCandidate[]
+  >([]);
   const [onboardTarget, setOnboardTarget] = useState<
     'same' | 'cheap' | 'fallback' | 'map' | 'arch' | 'onboard' | null
   >(null);
@@ -1168,6 +1417,22 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     props.initialSession?.messages ? [...props.initialSession.messages] : []
   );
   const [recentTools, setRecentTools] = useState<readonly SidebarToolEvent[]>([]);
+  // Live mirror of `props.toolContext.todoStore`. The store itself is
+  // mutated by the agent through the `todo` tool; we copy its state
+  // into React state on mount + after each `todo` tool_call_done so
+  // the sidebar can render a checklist instead of a tool-name tail.
+  const [todos, setTodos] = useState<readonly SidebarTodo[]>(() => {
+    const store = props.toolContext.todoStore;
+    if (!store) return [];
+    return store.read().map((t) => ({ id: t.id, content: t.content, status: t.status }));
+  });
+  const refreshTodos = useCallback((): void => {
+    const store = props.toolContext.todoStore;
+    if (!store) return;
+    setTodos(
+      store.read().map((t) => ({ id: t.id, content: t.content, status: t.status }))
+    );
+  }, [props.toolContext.todoStore]);
   const [thinkingLine, setThinkingLine] = useState<string | null>(null);
   const [toolCount, setToolCount] = useState<number>(0);
   /**
@@ -1284,6 +1549,10 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // Cumulative spend for this session (USD). Computed from the
   // model catalog's pricing data after each `done` event.
   const [costUsd, setCostUsd] = useState<number>(0);
+  // Cumulative provider token usage for this session. Separate from
+  // `tokensUsed`, which is the live context-window estimate and drops
+  // after compaction.
+  const [sessionTokensUsed, setSessionTokensUsed] = useState<number>(0);
   // Ship-conflict config — fed straight into toolContext.shipDefaults
   // so `ship_apply` doesn't crash with an unhandled prompt and the
   // user-configured strategy actually applies. The OpenTUI variant
@@ -1312,10 +1581,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   const shipResolveResolverRef = useRef<
     ((v: { strategy: 'abort' | 'ours' | 'theirs' | 'ai'; persist: boolean } | null) => void) | null
   >(null);
-  // Auto-learn toggle (just a flag for now — the actual reflection
-  // pipeline lives in @atlas/core and is wired in the Ink TUI; the
-  // OpenTUI variant exposes the toggle so the surface matches).
-  const learnEnabledRef = useRef<boolean>(true);
+  // Auto-learn starts on; `/learn off` disables post-turn reflection.
+  const learnEnabledRef = useRef<boolean>(DEFAULT_AUTO_LEARN_ENABLED);
   // Per-turn telemetry that the auto-learn heuristic reads after
   // each `done` event. Reset on submit, mutated by tool_call_done +
   // done. Mirrors App.tsx { turnRoundsRef, turnToolErrorsRef,
@@ -1327,6 +1594,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // overlay aborts the in-flight stream.
   const reflectAbortRef = useRef<AbortController | null>(null);
   const [learnConfirm, setLearnConfirm] = useState<LearnConfirmState | null>(null);
+  const [toolApproval, setToolApproval] = useState<ToolApprovalState | null>(null);
+  const toolApprovalResolverRef = useRef<((decision: ApprovalDecision) => void) | null>(null);
   // Auto-compaction settings (loaded from config, mutated by /compact).
   const compactEnabledRef = useRef<boolean>(
     props.config?.compaction?.enabled ?? true
@@ -1440,6 +1709,14 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     return THINKING_OPTIONS_ALL.filter((o) => allowed.has(o.value as ThinkingLevel));
   }, [activeModel, props.modelCatalog]);
 
+  useEffect(() => {
+    setThinking((prev) =>
+      thinkingOptions.some((o) => o.value === prev)
+        ? prev
+        : ((thinkingOptions[0]?.value ?? 'off') as ThinkingEffort)
+    );
+  }, [thinkingOptions]);
+
   // Grouped model entries \u2014 mirrors the Ink TUI's `(() => { … })()`
   // grouped picker (App.tsx, model overlay). Sections in fixed order:
   // Anthropic, OpenAI (ChatGPT/Codex), then OpenRouter \u2014 with a
@@ -1521,7 +1798,12 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       ) {
         continue;
       }
-      out.push({ kind: 'header', key: `hdr_${grp}`, label: groupLabel(grp) });
+      // Tag the section header so the user can see at a glance that
+      // picking from this group will 401 — there's no key configured.
+      const headerLabel = hasRuntime
+        ? groupLabel(grp)
+        : `${groupLabel(grp)}  (no key — /config to add)`;
+      out.push({ kind: 'header', key: `hdr_${grp}`, label: headerLabel });
       const groupSeen = new Set<string>();
       const addItem = (
         id: string,
@@ -1748,7 +2030,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
    * only Anthropic configured would otherwise 404 on the next turn.
    */
   const switchToModel = useCallback(
-    (id: string): boolean => {
+    (id: string, options?: { readonly persist?: boolean }): boolean => {
       const trimmed = id.trim();
       if (trimmed.length === 0) return false;
       const kind = providerKindFor(trimmed, props.modelCatalog);
@@ -1768,9 +2050,34 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       setActiveProvider(next);
       setActiveProviderKind(kind);
       setActiveModel(trimmed);
+      if (options?.persist !== false && props.config) {
+        const nextCfg = withSelectedDefaultModel(props.config, trimmed, kind);
+        void saveConfig(nextCfg).then((r) => {
+          if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+        });
+      }
       return true;
     },
-    [props.providers, props.modelCatalog, pushItem]
+    [props.providers, props.modelCatalog, props.config, pushItem]
+  );
+
+  const buildApprovalPolicy = useCallback(
+    (currentMode: Mode): ApprovalPolicy => {
+      if (currentMode === 'plan') return denyAllPolicy;
+      if (currentMode === 'autopilot') return allowAllPolicy;
+      return {
+        decide: (tool, input) =>
+          new Promise<ApprovalDecision>((resolve) => {
+            toolApprovalResolverRef.current = resolve;
+            setToolApproval({
+              tool,
+              inputPreview: formatApprovalInputPreview(input)
+            });
+            setOverlay('tool-approval');
+          })
+      };
+    },
+    []
   );
 
   const handleSlash = useCallback(
@@ -1799,6 +2106,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           // /clear would only wipe the visible scrollback while the
           // model still saw every prior turn.
           messagesRef.current = [];
+          setTokensUsed(0);
+          setSessionTokensUsed(0);
+          setCostUsd(0);
           return true;
         case 'history': {
           const lines = transcript.map((t) => `[${t.kind}] ${t.text}`).join('\n');
@@ -1902,25 +2212,23 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               const baseCfg = props.config;
               if (baseCfg) {
                 const customs = baseCfg.providers.openrouter.customModels ?? [];
-                if (!customs.includes(newId)) {
-                  const next: AtlasConfig = {
-                    ...baseCfg,
-                    providers: {
-                      ...baseCfg.providers,
-                      openrouter: {
-                        ...baseCfg.providers.openrouter,
-                        customModels: [...customs, newId]
-                      }
+                const next: AtlasConfig = {
+                  ...withSelectedDefaultModel(baseCfg, newId, 'openrouter'),
+                  providers: {
+                    ...baseCfg.providers,
+                    openrouter: {
+                      ...baseCfg.providers.openrouter,
+                      customModels: customs.includes(newId) ? customs : [...customs, newId]
                     }
-                  };
-                  void saveConfig(next).then((r) => {
-                    if (!r.ok) {
-                      pushItem('error', `save failed: ${r.error.message}`);
-                    }
-                  });
-                }
+                  }
+                };
+                void saveConfig(next).then((r) => {
+                  if (!r.ok) {
+                    pushItem('error', `save failed: ${r.error.message}`);
+                  }
+                });
               }
-              if (switchToModel(newId)) {
+              if (switchToModel(newId, { persist: false })) {
                 pushItem(
                   'system',
                   `→ model: ${newId}  (added to custom catalog — persists across launches)`
@@ -2049,6 +2357,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           if (arg.toLowerCase() === 'new' && cmd === 'sessions') {
             setTranscript([]);
             messagesRef.current = [];
+            setTokensUsed(0);
+            setSessionTokensUsed(0);
+            setCostUsd(0);
             sessionRef.current = null;
             setSessionId(null);
             setSessionTitle(null);
@@ -2083,6 +2394,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                 setTranscript(items);
                 transcriptKey.current += 1;
                 messagesRef.current = [...r.value.messages];
+                setTokensUsed(estimateContextTokens(messagesRef.current));
+                setSessionTokensUsed(0);
+                setCostUsd(0);
                 sessionRef.current = r.value;
                 setSessionId(r.value.id);
                 setSessionTitle(r.value.title ?? null);
@@ -2197,7 +2511,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             `agent      ${activeAgent?.name ?? '(none)'}`,
             `mode       ${mode}`,
             `thinking   ${thinking}`,
-            `tokens     ${tokensUsed}`,
+            `context    ${tokensUsed} / ${contextWindowFor(activeModel, props.modelCatalog)}`,
+            `used       ${sessionTokensUsed}`,
             `tools used ${toolCount}`,
             `streaming  ${streaming ? 'yes' : 'no'}`
           ];
@@ -2365,19 +2680,26 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             );
             return true;
           }
-          if (sub === '') {
+          if (sub === '' || sub === 'force') {
             // No subcommand → manually trigger reflection on the
             // current transcript (useful when the heuristic didn't
             // fire but the user knows something reusable just
             // happened).
+            // `/learn force` → tell the reflection model NOT to decline
+            // even when the turn looks trivial. Useful when the model
+            // is being too conservative.
             if (messagesRef.current.length === 0) {
               pushItem('error', 'nothing to learn from yet.');
               return true;
             }
-            void launchLearnReflection('manual /learn');
+            const force = sub === 'force';
+            void launchLearnReflection(
+              force ? 'manual /learn force' : 'manual /learn',
+              force
+            );
             return true;
           }
-          pushItem('error', 'usage: /learn [on|off|status]');
+          pushItem('error', 'usage: /learn [on|off|status|force]');
           return true;
         }
         case 'compact': {
@@ -2395,20 +2717,19 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             const summarizerModel = compactModelRef.current ?? activeModel;
             pushItem('system', `compacting with ${summarizerModel}…`);
             void (async (): Promise<void> => {
-              // The OpenTUI variant doesn't keep a separate `messagesRef`
-              // (the transcript drives both display and the loop's
-              // history). Reconstruct a minimal Message[] from the
-              // transcript so compactIfNeeded has something to plan on.
-              const msgs = transcript
-                .filter((t) => t.kind === 'user' || t.kind === 'assistant')
-                .map((t) => ({
-                  role: (t.kind === 'user' ? 'user' : 'assistant') as
-                    | 'user'
-                    | 'assistant',
-                  content: t.text
-                }));
-              const r = await compactIfNeeded(msgs, {
-                provider: props.provider!,
+              if (!activeProvider) {
+                pushItem('error', 'no provider configured');
+                return;
+              }
+              // Compact the live message history (what the agent
+              // loop actually sends to the model) — NOT a derived
+              // copy. Earlier code rebuilt a minimal Message[] from
+              // the transcript and threw the result away, so /compact
+              // appeared to do nothing. Now we replace messagesRef
+              // and re-base tokensUsed to match the new context size.
+              const beforeTokens = estimateContextTokens(messagesRef.current);
+              const r = await compactIfNeeded(messagesRef.current, {
+                provider: activeProvider,
                 summarizerModel,
                 limits: {
                   contextTokens: compactContextTokensRef.current,
@@ -2419,10 +2740,17 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                 pushItem('error', `compaction failed: ${r.error.message}`);
                 return;
               }
-              if (r.value.compacted) {
+              messagesRef.current = [...r.value.messages];
+              const afterTokens = estimateContextTokens(messagesRef.current);
+              setTokensUsed(afterTokens);
+              if (r.value.compacted || afterTokens < beforeTokens) {
                 pushItem(
                   'system',
-                  `compacted ${r.value.summarized} turn${r.value.summarized === 1 ? '' : 's'} (transcript view unchanged in OpenTUI variant).`
+                  r.value.summarized > 0
+                    ? `compacted ${r.value.summarized} older turn${
+                        r.value.summarized === 1 ? '' : 's'
+                      } — context is now about ${afterTokens.toLocaleString()} tokens.`
+                    : `compacted stale tool output — context is now about ${afterTokens.toLocaleString()} tokens.`
                 );
               } else {
                 pushItem('system', 'nothing eligible to compact.');
@@ -2562,7 +2890,19 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                 onboarding: activeModel
               }
             });
-            setOverlay('onboard-mode');
+            // Scan for any pre-existing onboarding-shaped docs the
+            // user may want the agent to read instead of regenerate.
+            // When the repo has none we skip straight to mode pick;
+            // otherwise the user gets the multi-select.
+            setOnboardStatus('scanning for existing docs…');
+            const docs = await findOnboardingDocs({ cwd: props.toolContext.cwd });
+            if (docs.ok && docs.value.length > 0) {
+              setOnboardDocCandidates(docs.value);
+              setOverlay('onboard-existing-docs');
+            } else {
+              setOnboardDocCandidates([]);
+              setOverlay('onboard-mode');
+            }
           })();
           return true;
         }
@@ -2654,7 +2994,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           if (NOT_YET_PORTED.has(cmd)) {
             pushItem(
               'system',
-              `/${cmd} is not yet ported in the OpenTUI variant — use --ui=ink for now`
+              `/${cmd} is not available in this interface yet.`
             );
             return true;
           }
@@ -2673,6 +3013,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       activeAgent,
       thinking,
       tokensUsed,
+      sessionTokensUsed,
       toolCount,
       streaming,
       modelOptions,
@@ -2716,6 +3057,139 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     [activeAgent, props.skills, sessionId, pushItem]
   );
 
+  const streamLearnDraft = useCallback(
+    async (
+      messages: readonly Message[],
+      reason: string,
+      onCancelDraft?: LearnedSkillDraft
+    ): Promise<void> => {
+      if (!activeProvider) {
+        pushItem('error', 'cannot reflect: no provider configured');
+        return;
+      }
+      reflectAbortRef.current?.abort();
+      const ac = new AbortController();
+      reflectAbortRef.current = ac;
+      setLearnConfirm({
+        stage: 'reflecting',
+        reason,
+        ...(onCancelDraft ? { draft: onCancelDraft } : {})
+      });
+      setOverlay('learn-confirm');
+      const effectiveModel =
+        props.config?.routerModel ??
+        (activeAgent ? agentModels.get(activeAgent.name) : undefined) ??
+        activeModel;
+      let buf = '';
+      try {
+        const stream = activeProvider.stream({
+          model: effectiveModel,
+          messages,
+          tools: [],
+          signal: ac.signal
+        });
+        for await (const ev of stream) {
+          if (ev.type === 'delta') buf += ev.text;
+          else if (ev.type === 'error') {
+            if (ac.signal.aborted) return;
+            if (onCancelDraft) {
+              setLearnConfirm({
+                stage: 'review',
+                reason,
+                draft: onCancelDraft,
+                error: `revision failed: ${ev.error.message}`
+              });
+              setOverlay('learn-confirm');
+              return;
+            }
+            setLearnConfirm(null);
+            setOverlay(null);
+            pushItem('error', `reflection failed: ${ev.error.message}`);
+            return;
+          }
+        }
+      } catch (e) {
+        if (ac.signal.aborted) {
+          if (reflectAbortRef.current === ac) {
+            setLearnConfirm(null);
+            setOverlay(null);
+          }
+          return;
+        }
+        if (onCancelDraft) {
+          setLearnConfirm({
+            stage: 'review',
+            reason,
+            draft: onCancelDraft,
+            error: `revision failed: ${(e as Error).message}`
+          });
+          setOverlay('learn-confirm');
+          return;
+        }
+        setLearnConfirm(null);
+        setOverlay(null);
+        pushItem('error', `reflection failed: ${(e as Error).message}`);
+        return;
+      }
+      if (reflectAbortRef.current !== ac) return;
+      const parsed = parseLearnedSkillDraft(buf);
+      if (!parsed.ok) {
+        if (onCancelDraft) {
+          setLearnConfirm({
+            stage: 'review',
+            reason,
+            draft: onCancelDraft,
+            error: `revision parse failed: ${parsed.error}`
+          });
+          setOverlay('learn-confirm');
+          return;
+        }
+        setLearnConfirm(null);
+        setOverlay(null);
+        pushItem('error', `reflection parse failed: ${parsed.error}`);
+        return;
+      }
+      if (parsed.draft === null) {
+        if (onCancelDraft) {
+          setLearnConfirm({
+            stage: 'review',
+            reason,
+            draft: onCancelDraft,
+            error: 'revision returned no draft'
+          });
+          setOverlay('learn-confirm');
+          return;
+        }
+        setLearnConfirm(null);
+        setOverlay(null);
+        // Tell the user why the overlay closed without a review screen.
+        // Without this the "drafting…" panel just disappears and looks
+        // like a bug. Reflection deliberately returns `null` when the
+        // turn was banter / a trivial fix that nobody would reuse.
+        // Note: when the user already passed `force`, the model still
+        // ignored the override — surface that explicitly so they don't
+        // assume nothing happened.
+        const tail = reason.includes('force')
+          ? 'The model still declined under force. Likely the transcript is too short — keep working then retry.'
+          : 'If you still want to capture it, run `/learn force` to override the heuristic.';
+        pushItem(
+          'system',
+          `✦ atlas reflected — nothing reusable to learn here (${reason}). ${tail}`
+        );
+        return;
+      }
+      setLearnConfirm({ stage: 'review', reason, draft: parsed.draft });
+    },
+    [
+      activeProvider,
+      activeModel,
+      activeAgent,
+      agentModels,
+      props.config?.routerModel,
+      pushItem
+    ]
+  );
+
   /**
    * Run the meta-LLM reflection sub-call against the active provider
    * and surface the draft (or "nothing to learn") in the
@@ -2725,73 +3199,28 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
    * `routerModel` when configured.
    */
   const launchLearnReflection = useCallback(
-    async (reason: string): Promise<void> => {
-      if (!activeProvider) {
-        pushItem('error', 'cannot reflect: no provider configured');
-        return;
-      }
-      // Cancel any prior reflection still streaming.
-      reflectAbortRef.current?.abort();
-      const ac = new AbortController();
-      reflectAbortRef.current = ac;
-      setLearnConfirm({ stage: 'reflecting', reason });
-      setOverlay('learn-confirm');
-      const effectiveModel =
-        props.config?.routerModel ??
-        (activeAgent ? agentModels.get(activeAgent.name) : undefined) ??
-        activeModel;
-      const reflectionMsgs = buildReflectionMessages(
-        messagesRef.current,
+    async (reason: string, force: boolean = false): Promise<void> => {
+      await streamLearnDraft(
+        buildReflectionMessages(messagesRef.current, reason, { force }),
         reason
       );
-      let buf = '';
-      try {
-        const stream = activeProvider.stream({
-          model: effectiveModel,
-          messages: reflectionMsgs,
-          tools: [],
-          signal: ac.signal
-        });
-        for await (const ev of stream) {
-          if (ev.type === 'delta') buf += ev.text;
-          else if (ev.type === 'error') {
-            // Reflection failed mid-stream — close the popup and surface
-            // the error as a regular system message. There is no draft
-            // to accept/reject so opening the modal would just trap the
-            // user with a meaningless OK button.
-            setLearnConfirm(null);
-            setOverlay(null);
-            pushItem('error', `reflection failed: ${ev.error.message}`);
-            return;
-          }
-        }
-      } catch (e) {
-        if (ac.signal.aborted) {
-          setLearnConfirm(null);
-          setOverlay(null);
-          return;
-        }
-        setLearnConfirm(null);
-        setOverlay(null);
-        pushItem('error', `reflection failed: ${(e as Error).message}`);
-        return;
-      }
-      const parsed = parseLearnedSkillDraft(buf);
-      if (!parsed.ok) {
-        setLearnConfirm(null);
-        setOverlay(null);
-        pushItem('error', `reflection parse failed: ${parsed.error}`);
-        return;
-      }
-      if (parsed.draft === null) {
-        // Model decided there's nothing reusable. Close silently.
-        setLearnConfirm(null);
-        setOverlay(null);
-        return;
-      }
-      setLearnConfirm({ stage: 'review', reason, draft: parsed.draft });
     },
-    [activeProvider, activeModel, activeAgent, agentModels, props.config?.routerModel, pushItem]
+    [streamLearnDraft]
+  );
+
+  const launchLearnRevision = useCallback(
+    async (
+      draft: LearnedSkillDraft,
+      reason: string,
+      changeRequest: string
+    ): Promise<void> => {
+      await streamLearnDraft(
+        buildSkillRevisionMessages(draft, changeRequest, reason),
+        reason,
+        draft
+      );
+    },
+    [streamLearnDraft]
   );
 
   const submit = useCallback(async (): Promise<void> => {
@@ -2941,7 +3370,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       // inconsistently across terminals (some skip width, some
       // double-render, some show tofu). Sticking to plain ASCII
       // keeps the chrome scannable for everyone.
-      '\n\n## Output style\n\n- Do NOT use emoji or pictographic Unicode in your replies. Use plain ASCII (e.g. `[ok]`, `->`, `*`, `-`) and Markdown (**bold**, `code`) only. The renderer will style them.';
+      '\n\n## Output style\n\n- Do NOT use emoji or pictographic Unicode in your replies. Use plain ASCII (e.g. `[ok]`, `->`, `*`, `-`) and Markdown (**bold**, `code`) only. The renderer will style them.\n- Do not mention Atlas internal UI framework, renderer, or runtime names unless the user explicitly asks about implementation details.';
 
     // Append the user turn to the persistent history. The model
     // sees every prior turn so the conversation has continuity.
@@ -2949,6 +3378,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       ...messagesRef.current,
       { role: 'user', content: text }
     ];
+    setTokensUsed(estimateContextTokens(messagesRef.current));
 
     // Lazy session creation: the first user message is what brings a
     // session into existence. Opening Atlas just to swap with
@@ -2986,10 +3416,47 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     transcriptKey.current += 1;
     const timelineKey = `t${transcriptKey.current}`;
     liveTimelineKey.current = timelineKey;
+    // Pre-seed a "Waiting for response…" step so there's immediate
+    // feedback between Enter and the provider's first byte. Without
+    // this the timeline card sits blank for the network round-trip
+    // and the user can't tell anything is happening. The step is
+    // closed by `finishWaiting()` on the first delta / thinking /
+    // tool_call_start event.
+    const waitingStepId = `step-wait-${Date.now()}`;
     setTranscript((prev) => [
       ...prev,
-      { key: timelineKey, kind: 'timeline', text: '', steps: [] }
+      {
+        key: timelineKey,
+        kind: 'timeline',
+        text: '',
+        steps: [
+          {
+            id: waitingStepId,
+            kind: 'thinking',
+            label: 'Waiting for response',
+            status: 'running',
+            startedAt: Date.now()
+          }
+        ]
+      }
     ]);
+    setCurrentTurnSteps([
+      {
+        id: waitingStepId,
+        kind: 'thinking',
+        label: 'Waiting for response',
+        status: 'running',
+        startedAt: Date.now()
+      }
+    ]);
+    let waitingFinished = false;
+    const finishWaiting = (): void => {
+      if (waitingFinished) return;
+      waitingFinished = true;
+      setCurrentTurnSteps((prev) =>
+        prev.filter((s) => s.id !== waitingStepId)
+      );
+    };
     let assistantBuffer = '';
     const author = activeAgent.name;
     // Per-tool-call start timestamps so we can show elapsed time on
@@ -3012,6 +3479,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     ) {
       const summarizerModel = compactModelRef.current ?? effectiveModel;
       try {
+        const beforeTokens = estimateContextTokens(messagesRef.current);
         const compRes = await compactIfNeeded(messagesRef.current, {
           provider: activeProvider,
           summarizerModel,
@@ -3021,14 +3489,20 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           },
           signal: ac.signal
         });
-        if (compRes.ok && compRes.value.compacted) {
+        if (compRes.ok) {
           messagesRef.current = [...compRes.value.messages];
-          pushItem(
-            'system',
-            `(auto-compacted ${compRes.value.summarized} older turn${
-              compRes.value.summarized === 1 ? '' : 's'
-            } using ${summarizerModel})`
-          );
+          const afterTokens = estimateContextTokens(messagesRef.current);
+          setTokensUsed(afterTokens);
+          if (compRes.value.compacted || afterTokens < beforeTokens) {
+            pushItem(
+              'system',
+              compRes.value.summarized > 0
+                ? `(auto-compacted ${compRes.value.summarized} older turn${
+                    compRes.value.summarized === 1 ? '' : 's'
+                  }; context is now about ${afterTokens.toLocaleString()} tokens)`
+                : `(auto-compacted stale tool output; context is now about ${afterTokens.toLocaleString()} tokens)`
+            );
+          }
         }
       } catch {
         // Best-effort — never let a flaky summariser break the chat turn.
@@ -3057,6 +3531,12 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           !turnBoundary.current
         ) {
           if (last.text === visible) return prev;
+          // Never overwrite a previously-rendered assistant body
+          // with empty text — that was producing a bare "ATLAS"
+          // header with no content at the bottom of multi-round
+          // turns whose final round was just an `<atlas:question>`
+          // block (visible strips down to "" after extraction).
+          if (visible.length === 0) return prev;
           return [...prev.slice(0, -1), { ...last, text: visible }];
         }
         if (visible.length === 0) return prev;
@@ -3113,10 +3593,10 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         toolContext: {
           ...props.toolContext,
           // Mode-driven approval policy: plan = read-only, build /
-          // autopilot = let tools run. Without the per-mode swap, /mode
-          // plan was a no-op (writes still happened) and users lost the
-          // "safe to read" guardrail they expected.
-          approve: mode === 'plan' ? denyAllPolicy : allowAllPolicy,
+          // autopilot = let tools run. Build asks for side-effect
+          // tools, autopilot allows them unattended, and plan denies
+          // them so users get a real read-only mode.
+          approve: buildApprovalPolicy(mode),
           shipDefaults: {
             autoResolve: shipAutoResolveRef.current,
             promptOnConflict: shipPromptOnConflictRef.current
@@ -3167,6 +3647,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     } catch (e) {
       pushItem('error', `loop crashed: ${(e as Error).message}`);
     } finally {
+      finishWaiting();
       flushAssistant();
       abortRef.current = null;
       setStreaming(false);
@@ -3203,6 +3684,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           // First visible text means the model is replying — close
           // any open thinking step so the strip flips from `.. Thinking…`
           // to the next phase (or the frozen card is consistent).
+          finishWaiting();
           finishThinking();
           assistantBuffer += ev.text;
           flushAssistant();
@@ -3324,7 +3806,13 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             const u = ev.usage;
             const prompt = u.promptTokens ?? 0;
             const completion = u.completionTokens ?? 0;
-            setTokensUsed((prev) => prev + prompt + completion);
+            const liveContextTokens = prompt + completion;
+            setSessionTokensUsed((prev) => prev + liveContextTokens);
+            setTokensUsed(
+              liveContextTokens > 0
+                ? liveContextTokens
+                : estimateContextTokens(messagesRef.current)
+            );
             // Update spend — best effort: returns undefined when the
             // model isn't in our pricing table (custom OR ids etc.).
             const spent = estimateCost(effectiveModel, prompt, completion);
@@ -3355,6 +3843,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           }
           break;
         case 'tool_call_start': {
+          finishWaiting();
           finishThinking();
           const id = ev.call.id ?? `tc-${Date.now()}-${currentTurnSteps.length}`;
           setToolCount((n) => n + 1);
@@ -3393,6 +3882,10 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           if (ev.outcome.type === 'error') {
             turnToolErrorsRef.current += 1;
           }
+          // Pick up todo-list mutations as soon as the tool returns,
+          // so the sidebar checklist updates live in lockstep with
+          // the agent's state changes.
+          if (ev.call.name === 'todo') refreshTodos();
           const id = ev.call.id ?? '';
           const startedAt = toolStartedAt.get(id);
           const elapsedMs =
@@ -3448,6 +3941,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           break;
         }
         case 'thinking': {
+          finishWaiting();
           // Accumulate the model's reasoning. `thinkingLine` holds
           // the full buffer for the typewriter ticker; `thinkingAccum`
           // is the per-step copy so the frozen card still has the
@@ -3502,6 +3996,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     thinking,
     pushItem,
     handleSlash,
+    buildApprovalPolicy,
     slashSuggestions,
     slashCursor,
     launchLearnReflection
@@ -3576,18 +4071,66 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         return;
       }
       if (key.name === 'escape') {
+        if (overlay === 'learn-confirm' && learnConfirm?.stage === 'change' && learnConfirm.draft) {
+          setLearnConfirm({
+            stage: 'review',
+            reason: learnConfirm.reason,
+            draft: learnConfirm.draft
+          });
+          return;
+        }
         // Cancel an in-flight reflection sub-call so closing the
         // overlay also stops the streaming LLM call.
         if (overlay === 'learn-confirm' && learnConfirm?.stage === 'reflecting') {
           reflectAbortRef.current?.abort();
+          if (learnConfirm.draft) {
+            setLearnConfirm({
+              stage: 'review',
+              reason: learnConfirm.reason,
+              draft: learnConfirm.draft
+            });
+            return;
+          }
+        }
+        if (overlay === 'tool-approval') {
+          toolApprovalResolverRef.current?.({
+            action: 'deny',
+            reason: 'user dismissed approval prompt'
+          });
+          toolApprovalResolverRef.current = null;
+          setToolApproval(null);
         }
         setOverlay(null);
         if (overlay === 'learn-confirm') setLearnConfirm(null);
         return;
       }
       if (key.ctrl && key.name === 'c') {
+        if (overlay === 'learn-confirm' && learnConfirm?.stage === 'change' && learnConfirm.draft) {
+          setLearnConfirm({
+            stage: 'review',
+            reason: learnConfirm.reason,
+            draft: learnConfirm.draft
+          });
+          return;
+        }
         if (overlay === 'learn-confirm' && learnConfirm?.stage === 'reflecting') {
           reflectAbortRef.current?.abort();
+          if (learnConfirm.draft) {
+            setLearnConfirm({
+              stage: 'review',
+              reason: learnConfirm.reason,
+              draft: learnConfirm.draft
+            });
+            return;
+          }
+        }
+        if (overlay === 'tool-approval') {
+          toolApprovalResolverRef.current?.({
+            action: 'deny',
+            reason: 'user dismissed approval prompt'
+          });
+          toolApprovalResolverRef.current = null;
+          setToolApproval(null);
         }
         setOverlay(null);
         if (overlay === 'learn-confirm') setLearnConfirm(null);
@@ -3624,6 +4167,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     if (key.ctrl && key.name === 'l') {
       setTranscript([]);
       messagesRef.current = [];
+      setTokensUsed(0);
+      setSessionTokensUsed(0);
+      setCostUsd(0);
       return;
     }
     if (key.ctrl && key.name === 'x') {
@@ -3771,6 +4317,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         thinking={thinking}
         streaming={streaming}
         sessionTitle={sessionTitle ?? (sessionId ? sessionId.slice(0, 8) : null)}
+        notConnected={!activeProvider}
       />
 
       {/* Body: chat column + optional right sidebar */}
@@ -3807,7 +4354,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             stickyStart="bottom"
           >
             {transcript.length === 0 ? (
-              <Splash defaultModel={activeModel} />
+              <Splash defaultModel={activeModel} notConnected={!activeProvider} />
             ) : (
               transcript.map((item) => {
                 const color =
@@ -4043,6 +4590,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         {showSidebar ? (
           <Sidebar
             tokensUsed={tokensUsed}
+            sessionTokensUsed={sessionTokensUsed}
             contextWindow={contextWindowFor(activeModel, props.modelCatalog)}
             streaming={streaming}
             toolCount={toolCount}
@@ -4050,6 +4598,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             thinkingLine={thinkingLine}
             costUsd={costUsd}
             phaseLine={activeTask ? formatPhaseLine(activeTask) : null}
+            todos={todos}
           />
         ) : null}
 
@@ -4149,6 +4698,30 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               setOverlay(null);
             }}
             onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'tool-approval' && toolApproval ? (
+          <Confirm
+            title={`approve tool · ${toolApproval.tool}`}
+            message={`This tool can change files, run commands, or modify project state.\n\n${toolApproval.inputPreview}`}
+            confirmLabel="Approve"
+            cancelLabel="Deny"
+            tone="warn"
+            onConfirm={() => {
+              toolApprovalResolverRef.current?.({ action: 'allow' });
+              toolApprovalResolverRef.current = null;
+              setToolApproval(null);
+              setOverlay(null);
+            }}
+            onCancel={() => {
+              toolApprovalResolverRef.current?.({
+                action: 'deny',
+                reason: 'user denied approval'
+              });
+              toolApprovalResolverRef.current = null;
+              setToolApproval(null);
+              setOverlay(null);
+            }}
           />
         ) : null}
         {/* Structured-question option picker — pops when the model
@@ -4303,7 +4876,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               if (v === 'chatgpt') {
                 setInfoOverlay({
                   title: 'Sign in with ChatGPT',
-                  body: 'Browser-based PKCE login is not yet ported in the\nOpenTUI variant.\n\nFor now: launch with --ui=ink and use /config from\nthere to complete the ChatGPT OAuth flow. The saved\ntokens at ~/.atlas/config.yaml will work in either UI.',
+                  body: 'Browser-based sign-in is available from the classic interface for now.\n\nRun `atlas chat --ui=ink`, open /config, and complete ChatGPT sign-in there. The saved tokens in ~/.atlas/config.yaml will work here after restart.',
                   tone: 'warn'
                 });
                 setOverlay('config-info');
@@ -4584,9 +5157,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                     lines.push(
                       '',
                       'Tip: this server supports OAuth via the `gh` CLI.',
-                      'The OAuth flow is currently Ink-only — launch with',
-                      '--ui=ink and use /config to use it. Otherwise paste a',
-                      'PAT below.'
+                      'For the guided OAuth flow, run `atlas chat --ui=ink`',
+                      'and open /config. Otherwise paste a PAT below.'
                     );
                   }
                   setInfoOverlay({
@@ -4614,11 +5186,11 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           <InfoOverlay
             title="Add a custom MCP server"
             body={[
-              'The interactive AI-assisted custom-server wizard is Ink-only.',
-              'Launch with --ui=ink and use /config → MCP server → custom for',
-              'the guided flow.',
+              'The guided custom-server wizard is available from the',
+              'classic interface for now: `atlas chat --ui=ink`, then',
+              '/config -> MCP server -> custom.',
               '',
-              'Manual setup (works in either UI):',
+              'Manual setup:',
               '',
               '  1. Open ~/.atlas/config.yaml',
               '  2. Under `mcp.servers:` add an entry like:',
@@ -5130,6 +5702,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                     setTranscript(items);
                     transcriptKey.current += 1;
                     messagesRef.current = [...r.value.messages];
+                    setTokensUsed(estimateContextTokens(messagesRef.current));
+                    setSessionTokensUsed(0);
+                    setCostUsd(0);
                     sessionRef.current = r.value;
                     setSessionId(r.value.id);
                     setSessionTitle(r.value.title ?? null);
@@ -5305,13 +5880,94 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           />
         ) : null}
         {overlay === 'onboard-loading' ? (
-          <InfoOverlay
+          <LoadingOverlay
             title="onboarding · scanning repo"
             body={onboardStatus || 'estimating cost…'}
-            tone="info"
-            onClose={() => setOverlay(null)}
+            hint="Esc cancel"
           />
         ) : null}
+        {overlay === 'onboard-existing-docs' && onboardDraft ? (() => {
+          // Show the user every doc that the heuristic flagged as
+          // potentially-onboarding-relevant. The default selection
+          // is *all canonical docs* (the three Atlas would otherwise
+          // generate) plus any heuristic match — the user can tick
+          // off ones they don't want included. The footer line
+          // surfaces the running token estimate so a "fresh start"
+          // decision is informed.
+          const fmtBytes = (n: number): string =>
+            n >= 1024 ? `${Math.round(n / 1024)} kb` : `${n} b`;
+          const fmtAge = (ms: number): string => {
+            const d = Math.floor(ms / (24 * 60 * 60 * 1000));
+            if (d > 0) return `${d}d old`;
+            const h = Math.floor(ms / (60 * 60 * 1000));
+            if (h > 0) return `${h}h old`;
+            const mi = Math.floor(ms / (60 * 1000));
+            return mi > 0 ? `${mi}m old` : 'just now';
+          };
+          const now = Date.now();
+          const items = onboardDocCandidates.map((d) => ({
+            value: d.relPath,
+            label: `${d.kind === 'canonical' ? '★ ' : '  '}${d.relPath}`,
+            description: `${fmtBytes(d.bytes)} · ${fmtAge(now - d.mtimeMs)}`
+          }));
+          // Pre-select every doc — the user opts OUT of ones they
+          // think are stale, rather than opting in. Keeps the happy
+          // path one-keystroke (Tab → Enter on Continue).
+          const initial = new Set(onboardDocCandidates.map((d) => d.relPath));
+          const pf = onboardDraft.preflight;
+          const footer =
+            `fresh onboard would write ~${pf.estimatedOutputTokensMin}-${pf.estimatedOutputTokensMax} output tokens` +
+            ` (band: ${pf.costBand.toUpperCase()}, input ~${pf.estimatedInputTokens})`;
+          const actions: MultiSelectAction[] = [
+            {
+              value: 'continue',
+              label: 'Continue with selected',
+              hint: 'agent will read these docs and update them in place — saves tokens'
+            },
+            {
+              value: 'fresh',
+              label: 'Start fresh',
+              hint: 'ignore existing docs and regenerate from scratch'
+            },
+            { value: 'cancel', label: 'Cancel', hint: 'abort onboarding' }
+          ];
+          return (
+            <MultiSelect
+              title={`Found ${onboardDocCandidates.length} doc${onboardDocCandidates.length === 1 ? '' : 's'} that may already cover onboarding`}
+              subtitle="Select which to reuse (★ = canonical onboarding doc):"
+              items={items}
+              initiallySelected={initial}
+              actions={actions}
+              footer={footer}
+              onSubmit={(selected, action) => {
+                if (action === 'cancel') {
+                  setOverlay(null);
+                  setOnboardDraft(null);
+                  setOnboardDocCandidates([]);
+                  return;
+                }
+                if (action === 'fresh') {
+                  setOnboardDraft((d) =>
+                    d ? { ...d, reuseDocs: [] } : d
+                  );
+                  setOverlay('onboard-mode');
+                  return;
+                }
+                // continue
+                const picked = onboardDocCandidates.filter((d) =>
+                  selected.includes(d.relPath)
+                );
+                setOnboardDraft((d) => (d ? { ...d, reuseDocs: picked } : d));
+                setOverlay('onboard-mode');
+              }}
+              onCancel={() => {
+                setOverlay(null);
+                setOnboardDraft(null);
+                setOnboardDocCandidates([]);
+              }}
+            />
+          );
+        })() : null}
         {overlay === 'onboard-mode' && onboardDraft ? (
           <Picker
             title="onboarding mode"
@@ -5512,17 +6168,43 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               }
               // start → run onboard pipeline
               const draft = onboardDraft;
-              setOnboardStatus('writing repo map…');
+              setOnboardStatus('preparing onboard pipeline…');
               setOverlay('onboard-running');
               void (async () => {
-                const mapR = await writeRepoMap({ cwd: props.toolContext.cwd });
-                if (!mapR.ok) {
-                  pushItem('error', `onboard failed: ${mapR.error.message}`);
-                  setOverlay(null);
-                  setOnboardDraft(null);
-                  return;
+                const cwd = props.toolContext.cwd;
+                const fmtAge = (ms: number): string => {
+                  const days = Math.floor(ms / (24 * 60 * 60 * 1000));
+                  if (days > 0) return `${days}d old`;
+                  const hours = Math.floor(ms / (60 * 60 * 1000));
+                  if (hours > 0) return `${hours}h old`;
+                  const mins = Math.floor(ms / (60 * 1000));
+                  return mins > 0 ? `${mins}m old` : 'just now';
+                };
+                const reuse = draft.reuseDocs ?? [];
+                const reusedRepoMap = reuse.find(
+                  (d) => d.relPath === 'docs/repo-map.md'
+                );
+
+                // Skip writeRepoMap when the user opted to reuse
+                // docs/repo-map.md. Otherwise (or if they started
+                // fresh) regenerate it from scratch.
+                if (!reusedRepoMap) {
+                  setOnboardStatus('writing repo map…');
+                  const mapR = await writeRepoMap({ cwd });
+                  if (!mapR.ok) {
+                    pushItem('error', `onboard failed: ${mapR.error.message}`);
+                    setOverlay(null);
+                    setOnboardDraft(null);
+                    return;
+                  }
+                  pushItem('system', `repo map written → ${mapR.value.path}`);
+                } else {
+                  pushItem(
+                    'system',
+                    `repo map already exists (${fmtAge(Date.now() - reusedRepoMap.mtimeMs)}) — reusing docs/repo-map.md`
+                  );
                 }
-                pushItem('system', `repo map written → ${mapR.value.path}`);
+
                 if (draft.mode === 'map-only') {
                   pushItem('system', 'map-only complete. Use /next to continue orchestration.');
                   setOverlay(null);
@@ -5547,17 +6229,62 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                     : draft.strategy === 'cheap-fallback'
                       ? `cheap+fallback: ${draft.cheapModel ?? activeModel} -> ${draft.fallbackModel ?? activeModel}`
                       : `manual per-stage: map=${draft.stageModels?.map ?? activeModel}, architecture=${draft.stageModels?.architecture ?? activeModel}, onboarding=${draft.stageModels?.onboarding ?? activeModel}`;
-                const prompt = [
+
+                // Existing docs the user told us to read first.
+                // We exclude docs/repo-map.md from this list — it's
+                // already covered by the "Use as source-of-truth"
+                // line below. The rest go in as canonical-shape +
+                // heuristic-match docs the agent should not
+                // regenerate.
+                const reuseForPrompt = reuse.filter(
+                  (d) => d.relPath !== 'docs/repo-map.md'
+                );
+                const now = Date.now();
+                const existingDocs = reuseForPrompt.map(
+                  (d) => `- ${d.relPath}  (${fmtAge(now - d.mtimeMs)})`
+                );
+                // Always (re)produce these unless the user picked
+                // them as reuse targets — that's how Atlas tracks
+                // brownfield onboarding state.
+                const reusePaths = new Set(reuse.map((d) => d.relPath));
+                const toProduce: string[] = [];
+                if (!reusePaths.has('docs/brownfield-architecture.md')) {
+                  toProduce.push('- docs/brownfield-architecture.md');
+                }
+                if (!reusePaths.has('docs/onboarding.md')) {
+                  toProduce.push('- docs/onboarding.md');
+                }
+
+                const promptParts: string[] = [
                   '*onboard',
                   `Mode: ${draft.mode}`,
                   `Strategy: ${planLine}`,
                   `Estimated tokens: input~${draft.preflight.estimatedInputTokens}, output~${draft.preflight.estimatedOutputTokensMin}-${draft.preflight.estimatedOutputTokensMax}, band=${draft.preflight.costBand}`,
-                  'Use docs/repo-map.md as source-of-truth and produce:',
-                  '- docs/brownfield-architecture.md',
-                  '- docs/onboarding.md',
+                  'Use docs/repo-map.md as source-of-truth.'
+                ];
+                if (existingDocs.length > 0) {
+                  promptParts.push(
+                    '',
+                    'Existing docs (READ FIRST, then update IN PLACE — do NOT regenerate whole-cloth; only patch sections that are stale or missing relative to docs/repo-map.md):',
+                    ...existingDocs
+                  );
+                }
+                if (toProduce.length > 0) {
+                  promptParts.push('', 'Produce (these do NOT exist yet):', ...toProduce);
+                }
+                promptParts.push(
+                  '',
                   'Also seed .atlas/state.yaml artifacts when confidently inferable.',
                   'If confidence is low in any section, explicitly mark assumptions.'
-                ].join('\n');
+                );
+                const prompt = promptParts.join('\n');
+
+                if (existingDocs.length > 0) {
+                  pushItem(
+                    'system',
+                    `onboarding will read ${existingDocs.length} existing doc${existingDocs.length === 1 ? '' : 's'} (saves output tokens vs. regenerating)`
+                  );
+                }
                 setOverlay(null);
                 setOnboardDraft(null);
                 // Inject prompt into composer and submit. Same
@@ -5577,11 +6304,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           />
         ) : null}
         {overlay === 'onboard-running' ? (
-          <InfoOverlay
+          <LoadingOverlay
             title="onboarding · running"
             body={onboardStatus || 'working…'}
-            tone="info"
-            onClose={() => {}}
           />
         ) : null}
         {overlay === 'copy-picker' ? (() => {
@@ -5641,25 +6366,43 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         {overlay === 'learn-confirm' && learnConfirm ? (() => {
           if (learnConfirm.stage === 'reflecting') {
             return (
-              <InfoOverlay
-                title="✦ atlas wants to save a learned skill"
-                body={`Reflecting on the last turn…\nTrigger: ${learnConfirm.reason}\n\nEsc to cancel.`}
-                tone="info"
-                onClose={() => {
-                  reflectAbortRef.current?.abort();
-                  setLearnConfirm(null);
-                  setOverlay(null);
-                }}
+              <LearnReflectingOverlay
+                reason={learnConfirm.reason}
+                revising={Boolean(learnConfirm.draft)}
               />
             );
           }
           if (learnConfirm.stage === 'saving') {
             return (
-              <InfoOverlay
-                title="✦ atlas wants to save a learned skill"
-                body="Saving skill…"
-                tone="info"
-                onClose={() => {}}
+              <LoadingOverlay
+                title="atlas is saving the learned skill"
+                body="Writing skill to ~/.atlas/skills/…"
+              />
+            );
+          }
+          if (learnConfirm.stage === 'change' && learnConfirm.draft) {
+            const draft = learnConfirm.draft;
+            return (
+              <KeyEntry
+                title={`Change learned skill · ${draft.name}`}
+                help={'Describe what to change. Atlas will revise the draft and show it again before saving.'}
+                placeholder="e.g. add exact verification commands and shorten the trigger list"
+                errorMessage={learnConfirm.error}
+                onSubmit={(value) => {
+                  setLearnConfirm({
+                    stage: 'reflecting',
+                    reason: learnConfirm.reason,
+                    draft
+                  });
+                  void launchLearnRevision(draft, learnConfirm.reason, value);
+                }}
+                onCancel={() =>
+                  setLearnConfirm({
+                    stage: 'review',
+                    reason: learnConfirm.reason,
+                    draft
+                  })
+                }
               />
             );
           }
@@ -5678,42 +6421,23 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             );
           }
           const draft = learnConfirm.draft;
-          const bodyPreview =
-            draft.body.split('\n').slice(0, 6).join(' · ').slice(0, 140) +
-            (draft.body.split('\n').length > 6 ? ' …' : '');
           return (
-            <Picker
-              title={`✦ learned skill draft · ${draft.name}`}
-              descriptionColor={palette.textMuted}
-              options={[
-                {
-                  value: 'save',
-                  label: `Save  →  ~/.atlas/skills/${draft.name}/SKILL.md`,
-                  description: `${draft.description.slice(0, 80)}`
-                },
-                {
-                  value: 'discard',
-                  label: 'Discard',
-                  description: `triggers: ${draft.triggers.join(', ') || '(none)'} · body: ${bodyPreview}`
-                }
-              ]}
-              hint={
-                learnConfirm.error
-                  ? `save failed: ${learnConfirm.error} · ↵ retry · Esc cancel`
-                  : `reason: ${learnConfirm.reason} · ↵ pick · Esc cancel`
-              }
-              onChoose={(v) => {
-                if (v === 'save') {
-                  void saveLearnedSkillDraft(draft, learnConfirm.reason);
-                } else {
-                  setLearnConfirm(null);
-                  setOverlay(null);
-                }
-              }}
-              onCancel={() => {
+            <LearnDraftReviewOverlay
+              draft={draft}
+              reason={learnConfirm.reason}
+              error={learnConfirm.error}
+              onSave={() => void saveLearnedSkillDraft(draft, learnConfirm.reason)}
+              onReject={() => {
                 setLearnConfirm(null);
                 setOverlay(null);
               }}
+              onChange={() =>
+                setLearnConfirm({
+                  stage: 'change',
+                  reason: learnConfirm.reason,
+                  draft
+                })
+              }
             />
           );
         })() : null}

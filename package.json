@@ -12,12 +12,13 @@
     "pnpm": ">=10.0.0"
   },
   "scripts": {
+    "preinstall": "node scripts/require-pnpm.mjs",
     "build": "pnpm -r build",
     "dev": "pnpm -r --parallel dev",
     "test": "pnpm -r test",
     "test:run": "pnpm -r test:run",
     "typecheck": "pnpm -r typecheck",
-    "lint": "pnpm -r lint",
+    "lint": "node scripts/lint.mjs",
     "clean": "pnpm -r clean && rm -rf node_modules"
   },
   "devDependencies": {

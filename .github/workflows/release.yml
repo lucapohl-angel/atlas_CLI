@@ -41,8 +41,36 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    name: quality gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install workspace deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Run release quality gate
+        run: |
+          pnpm --filter @atlas/core build
+          pnpm --filter @atlas/core test:run
+          pnpm --filter atlas-os typecheck
+          pnpm --filter atlas-os test:run
+          pnpm --filter atlas-os build
+          pnpm lint
+
   build:
     name: build (${{ matrix.slug }})
+    needs: quality
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true

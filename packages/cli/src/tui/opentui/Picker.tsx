@@ -548,6 +548,339 @@ export const InfoOverlay = (props: InfoOverlayProps) => {
   );
 };
 
+export interface MultiSelectItem {
+  readonly value: string;
+  readonly label: string;
+  readonly description?: string;
+}
+
+export interface MultiSelectAction {
+  readonly value: string;
+  readonly label: string;
+  /** Description rendered under the action when it's the active one. */
+  readonly hint?: string;
+}
+
+export interface MultiSelectProps {
+  readonly title: string;
+  readonly subtitle?: string;
+  readonly items: readonly MultiSelectItem[];
+  /** Set of item values that should start checked. Defaults to all checked. */
+  readonly initiallySelected?: ReadonlySet<string>;
+  readonly actions: readonly MultiSelectAction[];
+  /**
+   * Called when the user picks an action. `selected` contains the
+   * currently-checked item values, `action` is the picked action's
+   * `value`. Caller decides what each action means.
+   */
+  readonly onSubmit: (selected: readonly string[], action: string) => void;
+  readonly onCancel?: () => void;
+  /** Optional footer line — usually a token estimate or context hint. */
+  readonly footer?: string;
+}
+
+/**
+ * MultiSelect — checkbox list + action row in a single overlay.
+ *
+ * Two-mode keyboard handling: when the cursor is on the items list,
+ * `Space` toggles, `↑/↓` navigate, `a` selects all, `n` clears all.
+ * `Tab` (or `↓` from the last item) drops focus into the action row;
+ * `Tab`/`←/→` rotate actions, `Enter` invokes the active one. This
+ * is a light reimplementation of the multi-select pattern Atlas's
+ * Ink TUI does *not* expose — OpenTUI's native `<select>` only
+ * does single-select.
+ */
+export const MultiSelect = (props: MultiSelectProps) => {
+  const { width: cols, height: rows } = useTerminalDimensions();
+  const overlayWidth = Math.min(96, Math.max(60, cols - 4));
+  const overlayHeight = Math.min(28, Math.max(16, rows - 4));
+  const left = Math.max(2, Math.floor((cols - overlayWidth) / 2));
+  const top = Math.max(2, Math.floor((rows - overlayHeight) / 2));
+  const itemRows = Math.max(4, overlayHeight - (props.subtitle ? 9 : 8) - (props.footer ? 1 : 0));
+  const [cursor, setCursor] = useState(0);
+  const [scroll, setScroll] = useState(0);
+  const [actionIdx, setActionIdx] = useState(0);
+  const [focus, setFocus] = useState<'items' | 'actions'>('items');
+  const [selected, setSelected] = useState<ReadonlySet<string>>(
+    () =>
+      props.initiallySelected ??
+      new Set(props.items.map((i) => i.value))
+  );
+
+  // Keep cursor in view when it moves.
+  useEffect(() => {
+    if (cursor < scroll) setScroll(cursor);
+    else if (cursor >= scroll + itemRows) setScroll(cursor - itemRows + 1);
+  }, [cursor, scroll, itemRows]);
+
+  useKeyboard((key) => {
+    if (key.name === 'escape') {
+      props.onCancel?.();
+      return;
+    }
+    if (focus === 'items') {
+      if (key.name === 'up') {
+        setCursor((c) => (c - 1 + props.items.length) % props.items.length);
+        return;
+      }
+      if (key.name === 'down') {
+        if (cursor === props.items.length - 1) {
+          setFocus('actions');
+          return;
+        }
+        setCursor((c) => Math.min(props.items.length - 1, c + 1));
+        return;
+      }
+      if (key.name === 'pageup') {
+        setCursor((c) => Math.max(0, c - itemRows));
+        return;
+      }
+      if (key.name === 'pagedown') {
+        setCursor((c) => Math.min(props.items.length - 1, c + itemRows));
+        return;
+      }
+      if (key.name === 'home') {
+        setCursor(0);
+        return;
+      }
+      if (key.name === 'end') {
+        setCursor(props.items.length - 1);
+        return;
+      }
+      if (key.sequence === ' ' || key.name === 'space') {
+        const v = props.items[cursor]?.value;
+        if (!v) return;
+        setSelected((prev) => {
+          const next = new Set(prev);
+          if (next.has(v)) next.delete(v);
+          else next.add(v);
+          return next;
+        });
+        return;
+      }
+      if (key.sequence === 'a') {
+        setSelected(new Set(props.items.map((i) => i.value)));
+        return;
+      }
+      if (key.sequence === 'n') {
+        setSelected(new Set());
+        return;
+      }
+      if (key.name === 'tab') {
+        setFocus('actions');
+        return;
+      }
+      if (key.name === 'return') {
+        // Enter on an item is treated as "submit with the primary action".
+        setFocus('actions');
+        return;
+      }
+      return;
+    }
+    // focus === 'actions'
+    if (key.name === 'tab' || key.name === 'right' || key.name === 'down') {
+      setActionIdx((i) => (i + 1) % props.actions.length);
+      return;
+    }
+    if (key.name === 'left') {
+      setActionIdx((i) => (i - 1 + props.actions.length) % props.actions.length);
+      return;
+    }
+    if (key.name === 'up') {
+      setFocus('items');
+      return;
+    }
+    if (key.name === 'return') {
+      const a = props.actions[actionIdx];
+      if (a) props.onSubmit([...selected], a.value);
+      return;
+    }
+  });
+
+  const visible = props.items.slice(scroll, scroll + itemRows);
+  const activeAction = props.actions[actionIdx];
+  return (
+    <box
+      style={{
+        position: 'absolute',
+        top,
+        left,
+        width: overlayWidth,
+        height: overlayHeight,
+        flexDirection: 'column',
+        borderStyle: 'single',
+        borderColor: palette.primary,
+        backgroundColor: palette.backgroundElement,
+        paddingLeft: 1,
+        paddingRight: 1
+      }}
+    >
+      <text fg={palette.primaryBright}>{props.title}</text>
+      {props.subtitle ? (
+        <text fg={palette.textMuted}>{props.subtitle}</text>
+      ) : null}
+      <box
+        style={{
+          flexDirection: 'column',
+          height: itemRows,
+          marginTop: 1,
+          marginBottom: 1,
+          backgroundColor: palette.backgroundPanel,
+          paddingLeft: 1,
+          paddingRight: 1
+        }}
+      >
+        {visible.map((it, i) => {
+          const absIdx = scroll + i;
+          const isCursor = focus === 'items' && absIdx === cursor;
+          const isChecked = selected.has(it.value);
+          const glyph = isChecked ? '[x]' : '[ ]';
+          const glyphColor = isChecked ? palette.success : palette.textMuted;
+          const labelColor = isCursor ? palette.background : palette.text;
+          const descColor = isCursor ? palette.background : palette.textDim;
+          return (
+            <box
+              key={`ms-${it.value}-${absIdx}`}
+              style={{
+                flexDirection: 'row',
+                backgroundColor: isCursor ? palette.primary : palette.backgroundPanel
+              }}
+            >
+              <text fg={isCursor ? palette.background : glyphColor}>
+                {`${glyph} `}
+              </text>
+              <text fg={labelColor}>{it.label}</text>
+              {it.description ? (
+                <text fg={descColor}>{`  ${it.description}`}</text>
+              ) : null}
+            </box>
+          );
+        })}
+      </box>
+      <box
+        style={{
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundElement
+        }}
+      >
+        <text fg={palette.textMuted}>
+          {`${selected.size}/${props.items.length} selected · ${cursor + 1}/${props.items.length}`}
+        </text>
+      </box>
+      <box
+        style={{
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundElement,
+          marginTop: 1
+        }}
+      >
+        {props.actions.map((a, i) => {
+          const isActive = focus === 'actions' && i === actionIdx;
+          return (
+            <box
+              key={`ms-action-${a.value}`}
+              style={{
+                flexDirection: 'row',
+                backgroundColor: isActive ? palette.primary : palette.backgroundElement,
+                marginRight: 1
+              }}
+            >
+              <text fg={isActive ? palette.background : palette.text}>
+                {` ${a.label} `}
+              </text>
+            </box>
+          );
+        })}
+      </box>
+      {focus === 'actions' && activeAction?.hint ? (
+        <text fg={palette.textMuted}>{activeAction.hint}</text>
+      ) : null}
+      {props.footer ? (
+        <text fg={palette.textDim}>{props.footer}</text>
+      ) : null}
+      <text fg={palette.textMuted}>
+        {focus === 'items'
+          ? '↑/↓ move · Space toggle · a/n all/none · Tab → actions · Esc cancel'
+          : 'Tab/←/→ action · ↑ back to list · ↵ confirm · Esc cancel'}
+      </text>
+    </box>
+  );
+};
+
+export interface LoadingOverlayProps {
+  readonly title: string;
+  /** Static body text. Updated dynamically by the parent on each render. */
+  readonly body: string;
+  /** Optional second-line hint, e.g. "Esc / Ctrl-C cancel". */
+  readonly hint?: string;
+  /** Tone affects border + spinner color. Defaults to 'info' (primary). */
+  readonly tone?: 'info' | 'warn' | 'error';
+}
+
+const LOADING_SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const;
+
+/**
+ * LoadingOverlay — non-dismissable modal for in-progress async work.
+ * Differs from `InfoOverlay` by not rendering a select / OK button —
+ * the user can't "close" something that's still running. Includes a
+ * braille spinner that ticks every 80 ms so the panel reads as live
+ * even when the body text is static.
+ */
+export const LoadingOverlay = (props: LoadingOverlayProps) => {
+  const { width: cols } = useTerminalDimensions();
+  const pos = centeredOverlayStyle(cols, { maxWidth: 64 });
+  const [spinIdx, setSpinIdx] = useState(0);
+  useEffect(() => {
+    const id = setInterval(
+      () => setSpinIdx((i) => (i + 1) % LOADING_SPIN_FRAMES.length),
+      80
+    );
+    return () => clearInterval(id);
+  }, []);
+  const accent =
+    props.tone === 'warn'
+      ? palette.warning
+      : props.tone === 'error'
+        ? palette.error
+        : palette.primary;
+  const lines = props.body.split('\n');
+  return (
+    <box
+      style={{
+        position: 'absolute',
+        top: pos.top,
+        left: pos.left,
+        width: pos.width,
+        flexDirection: 'column',
+        borderStyle: 'single',
+        borderColor: accent,
+        backgroundColor: palette.backgroundElement,
+        paddingLeft: 1,
+        paddingRight: 1
+      }}
+    >
+      <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}>
+        <text fg={accent}>{`${LOADING_SPIN_FRAMES[spinIdx]} ${props.title}`}</text>
+      </box>
+      <box
+        style={{
+          flexDirection: 'column',
+          marginTop: 1,
+          marginBottom: 1,
+          backgroundColor: palette.backgroundElement
+        }}
+      >
+        {lines.map((ln, i) => (
+          <text key={`l${i}`} fg={palette.text}>{ln}</text>
+        ))}
+      </box>
+      {props.hint ? (
+        <text fg={palette.textMuted}>{props.hint}</text>
+      ) : null}
+    </box>
+  );
+};
+
 export interface SlashSuggestion {
   readonly name: string;
   readonly summary: string;

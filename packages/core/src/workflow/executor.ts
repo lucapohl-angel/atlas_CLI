@@ -25,6 +25,7 @@ import { updateTask } from './state.js';
 import type { TaskState } from './types.js';
 import { groupIntoWaves } from './waves.js';
 import { commitWorktree, createWorktree, removeWorktree, type WorktreeHandle } from './worktree.js';
+import type { ApprovalPolicy } from '../tools/types.js';
 
 const log = childLogger('executor');
 
@@ -32,6 +33,8 @@ export interface RunTaskRequest {
   readonly task: PlanTask;
   readonly worktree: WorktreeHandle;
   readonly signal?: AbortSignal;
+  /** Approval policy inherited from the plan_execute tool call. */
+  readonly approve?: ApprovalPolicy;
 }
 
 export interface RunTaskOutcome {
@@ -59,6 +62,8 @@ export interface ExecutorOpts {
    * output. Each retry runs verify again. Default 0 (no retry).
    */
   readonly maxVerifyRetries?: number;
+  /** Approval policy inherited from the plan_execute tool call. */
+  readonly approve?: ApprovalPolicy;
 }
 
 export interface TaskOutcome {
@@ -219,12 +224,14 @@ const runOneTask = async (
         ? await opts.run({
             task,
             worktree,
-            ...(opts.signal ? { signal: opts.signal } : {})
+            ...(opts.signal ? { signal: opts.signal } : {}),
+            ...(opts.approve ? { approve: opts.approve } : {})
           })
         : await opts.run({
             task: { ...task, action: debuggerGoal(task, attempt, lastVerifyStdout, lastVerifyStderr) },
             worktree,
-            ...(opts.signal ? { signal: opts.signal } : {})
+            ...(opts.signal ? { signal: opts.signal } : {}),
+            ...(opts.approve ? { approve: opts.approve } : {})
           });
 
     if (!agentResult.ok) {

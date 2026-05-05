@@ -69,11 +69,11 @@ export const buildProgram = (): Command => {
     .description('start the interactive Atlas TUI (default when no command given)')
     .option('-m, --model <id>', 'override the default model')
     .option('-a, --agent <name>', 'start in this agent (otherwise the first installed)')
-    .option('--no-tui', 'use the plain readline REPL instead of the Ink TUI')
+    .option('--no-tui', 'use the plain readline REPL instead of the full-screen TUI')
     .option(
       '--ui <runtime>',
-      'TUI runtime: "ink" (default, Node + Bun) or "opentui" (new, Bun-only, Phase 1: chat only)',
-      'ink'
+      'TUI runtime: "opentui" (default) or "ink" (classic fallback)',
+      'opentui'
     )
     .option('--resume [id]', "resume a saved session (omit id for the latest)")
     .action(

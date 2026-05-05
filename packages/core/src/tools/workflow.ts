@@ -510,7 +510,8 @@ export const planExecuteTool: Tool<z.infer<typeof PlanExecuteInput>> = {
       ...(input.maxVerifyRetries !== undefined
         ? { maxVerifyRetries: input.maxVerifyRetries }
         : { maxVerifyRetries: 2 }),
-      ...(ctx.signal ? { signal: ctx.signal } : {})
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
+      approve: ctx.approve
     });
     if (!r.ok) return r;
     const lines = r.value.outcomes.map((o) => {
@@ -921,7 +922,8 @@ export const shipApplyTool: Tool<z.infer<typeof ShipApplyInput>> = {
           `Do NOT run \`git merge --abort\` under any circumstances.`;
         const child = await ctx.delegateRun({
           goal,
-          ...(ctx.signal ? { signal: ctx.signal } : {})
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
+          approve: ctx.approve
         });
         // Verify the agent actually fixed the conflicts.
         const recheck = await runGit(

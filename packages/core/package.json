@@ -45,6 +45,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
     "prepublishOnly": "pnpm build && pnpm test:run"
   },

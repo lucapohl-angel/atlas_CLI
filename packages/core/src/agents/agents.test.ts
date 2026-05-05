@@ -152,4 +152,46 @@ describe('agents', () => {
     expect(prompt).not.toContain('## Reference outputs');
     expect(prompt).not.toContain('## Story authoring');
   });
+
+  it('buildSystemPrompt gives coding agents a project-specific verification habit', () => {
+    const prompt = buildSystemPrompt(
+      {
+        name: 'dev',
+        role: 'Dev',
+        description: 'd',
+        mode: 'build',
+        thinkingEffort: 'off',
+        skills: [],
+        handoffs: [],
+        commands: [],
+        path: '/x',
+        systemPrompt: 'body'
+      },
+      []
+    );
+    expect(prompt).toContain('## Coding-agent verification habit');
+    expect(prompt).toContain('Discover the project-specific verification commands');
+    expect(prompt).toContain('Treat `lint` as the current project\'s own quality gate');
+    expect(prompt).toContain('npx -y pnpm@<version> <script>');
+  });
+
+  it('buildSystemPrompt keeps plan mode read-only without verification commands', () => {
+    const prompt = buildSystemPrompt(
+      {
+        name: 'planner',
+        role: 'Architect',
+        description: 'd',
+        mode: 'plan',
+        thinkingEffort: 'off',
+        skills: [],
+        handoffs: [],
+        commands: [],
+        path: '/x',
+        systemPrompt: 'body'
+      },
+      []
+    );
+    expect(prompt).toContain('Mode: plan');
+    expect(prompt).not.toContain('## Coding-agent verification habit');
+  });
 });

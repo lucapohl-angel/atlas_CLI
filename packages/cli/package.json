@@ -1,6 +1,6 @@
 {
   "name": "atlas-os",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Atlas·OS — Autonomous Teams · Lifecycle · Agents · Skills — Orchestration System for the terminal.",
   "keywords": [
     "ai",
@@ -59,6 +59,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
     "start": "node dist/bin/atlas.js",
     "postinstall": "node scripts/postinstall.mjs",

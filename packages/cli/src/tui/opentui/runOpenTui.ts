@@ -35,14 +35,13 @@ export const runOpenTui = async (
     const msg = (err as Error).message ?? String(err);
     if (/node:ffi|node-ffi|UNKNOWN_BUILTIN_MODULE/i.test(msg)) {
       process.stderr.write(
-        'atlas: --ui=opentui requires the Bun runtime. Reinstall via the\n' +
-          '       precompiled binary (`npm i -g atlas-os`) or run with\n' +
-          '       `bun run`. Falling back to the Ink UI is available via\n' +
-          '       omitting --ui or passing --ui=ink.\n'
+        'atlas: the full-screen renderer requires the bundled native binary.\n' +
+          '       Reinstall with `npm i -g atlas-os`, run with `bun run`,\n' +
+          '       or use the classic fallback with `--ui=ink`.\n'
       );
       return { exitCode: 1 };
     }
-    process.stderr.write(`atlas: failed to load OpenTUI: ${msg}\n`);
+    process.stderr.write(`atlas: failed to load the full-screen renderer: ${msg}\n`);
     return { exitCode: 1 };
   }
 
@@ -102,7 +101,7 @@ export const runOpenTui = async (
     process.off('exit', restoreBg);
     restoreBg();
     process.stderr.write(
-      `atlas: failed to start OpenTUI renderer: ${(err as Error).message}\n`
+      `atlas: failed to start the full-screen renderer: ${(err as Error).message}\n`
     );
     return { exitCode: 1 };
   }

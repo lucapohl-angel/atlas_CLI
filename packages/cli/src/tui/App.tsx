@@ -35,6 +35,7 @@ import { runAiAddMcp, type AiAddMcpEvent } from './mcp-ai-add.js';
 import { runGithubDeviceFlow } from './github-oauth.js';
 import {
   buildReflectionMessages,
+  DEFAULT_AUTO_LEARN_ENABLED,
   describeLearnReason,
   parseLearnedSkillDraft,
   shouldOfferLearn
@@ -631,8 +632,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   const lastUserMessageRef = useRef('');
   /** Inflight reflection abort controller (Esc cancels it). */
   const reflectAbortRef = useRef<AbortController | null>(null);
-  /** Soft toggle: user can disable auto-learn via `/learn off`. Defaults on. */
-  const learnEnabledRef = useRef<boolean>(true);
+  /** Soft toggle: user can disable auto-learn via `/learn off`. */
+  const learnEnabledRef = useRef<boolean>(DEFAULT_AUTO_LEARN_ENABLED);
 
   // Auto-compaction live overrides. Defaults come from `props.config.compaction`
   // (loaded from ~/.atlas/config.yaml). `/compact` slash commands mutate
@@ -1804,7 +1805,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         pendingWarnings.length > 0
           ? `\n\n## Discover-phase reminders\n\n${pendingWarnings.map((w) => `- ${w}`).join('\n')}`
           : '';
-      const systemContent = (addendum ? `${baseSystem}\n\n${addendum}` : baseSystem) + warningsBlock;
+      const systemContent =
+        (addendum ? `${baseSystem}\n\n${addendum}` : baseSystem) +
+        warningsBlock +
+        '\n\n## Output style\n\n- Do not mention Atlas internal UI framework, renderer, or runtime names unless the user explicitly asks about implementation details.';
       const seeded: Message[] = [
         { role: 'system', content: systemContent },
         ...messagesRef.current

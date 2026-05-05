@@ -257,6 +257,8 @@ export const buildSystemPrompt = (
   }
 
   sections.push(modeSection(agent.mode));
+  const verification = codingVerificationSection(agent.mode);
+  if (verification) sections.push(verification);
 
   if (skills.length > 0) {
     // Learned skills are scoped to framework agents: they are auto-generated
@@ -318,4 +320,21 @@ const modeSection = (mode: 'plan' | 'build' | 'autopilot'): string => {
     case 'autopilot':
       return `## Mode: autopilot\n\nThe user has granted blanket approval for this session. You may use any tool without asking — including writes and terminal commands — but you remain accountable for safety. Avoid destructive irreversible operations (rm -rf, force pushes, dropping data) unless the user explicitly asked for them. Always run the project's test/typecheck command after non-trivial changes and report what you did.`;
   }
+};
+
+const codingVerificationSection = (
+  mode: 'plan' | 'build' | 'autopilot'
+): string | null => {
+  if (mode === 'plan') return null;
+  return [
+    '## Coding-agent verification habit',
+    '',
+    'When you modify code, tests, build scripts, package metadata, or docs that affect developer workflow:',
+    '',
+    '- Discover the project-specific verification commands from local guidance first: AGENTS.md, README, context docs, package manifests, lockfiles, and existing scripts. Prefer those commands over generic guesses.',
+    '- Run the narrowest relevant checks while iterating, then run the repo/package lint, typecheck, tests, and build gates that match the touched surface before handing off.',
+    '- Treat `lint` as the current project\'s own quality gate, not a universal Atlas command. For JavaScript/TypeScript repos, this usually means package-manager scripts such as `pnpm lint`, `npm run lint`, or `bun run lint`; other ecosystems use their own tools.',
+    '- If the package manager is missing, look for pinned metadata such as `packageManager` and use the safest equivalent available (for example `npx -y pnpm@<version> <script>` for a pnpm workspace) or clearly report the blocker.',
+    '- Do not claim the task is done until required verification has passed, or until you have explicitly reported the exact failing command and why it remains unresolved.'
+  ].join('\n');
 };

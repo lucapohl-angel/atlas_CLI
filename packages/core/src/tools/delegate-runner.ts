@@ -11,9 +11,10 @@
  *      are stripped from the child registry — children can't recurse
  *      indefinitely, can't ask the user questions, and can't escape
  *      the parent's safety rails.
- *   2. Approval policy is **deny-by-default** for `ask`-mode tools.
- *      Children run unattended; if they hit `terminal` etc. the call
- *      is refused with a clear message instead of hanging.
+ *   2. Approval policy is inherited from the parent request when the
+ *      host supplies one, so plan/build/autopilot mean the same thing
+ *      inside child loops. If no policy is supplied, ask-mode tools are
+ *      denied by default with a clear message.
  *   3. `delegateDepth` is incremented before invocation. The tool
  *      checks this against `maxDepth` and refuses past the cap.
  */
@@ -70,7 +71,7 @@ const denyAskApproval = {
     return {
       action: 'deny',
       reason:
-        'subagents run unattended; ask-approval tools (terminal write/exec, etc.) are blocked. Surface the request to the parent agent instead.'
+        'subagents need an inherited approval policy before ask-approval tools (terminal write/exec, etc.) can run. Surface the request to the parent agent instead.'
     };
   }
 };
@@ -102,7 +103,7 @@ export const createDelegateRunner = (
 
     const childCtx: ToolContext = {
       cwd: opts.baseToolContext.cwd,
-      approve: denyAskApproval,
+      approve: req.approve ?? denyAskApproval,
       ...(req.signal ? { signal: req.signal } : {}),
       callingAgent: { name: agent.name },
       delegateDepth: (opts.currentDepth ?? 0) + 1

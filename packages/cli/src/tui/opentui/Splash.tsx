@@ -27,7 +27,13 @@ const GRADIENT = [
   palette.secondary
 ] as const;
 
-export const Splash = ({ defaultModel }: { defaultModel: string }) => {
+export const Splash = ({
+  defaultModel,
+  notConnected = false
+}: {
+  defaultModel: string;
+  notConnected?: boolean;
+}) => {
   return (
     <box
       style={{
@@ -61,6 +67,20 @@ export const Splash = ({ defaultModel }: { defaultModel: string }) => {
         <text fg={palette.textMuted}>spec-driven development crew · </text>
         <text fg={palette.text}>{defaultModel}</text>
       </box>
+
+      {notConnected ? (
+        <box
+          style={{
+            marginTop: 1,
+            flexDirection: 'row',
+            backgroundColor: palette.backgroundPanel
+          }}
+        >
+          <text fg={palette.warning}>! No provider configured · type </text>
+          <text fg={palette.primaryBright}>/config</text>
+          <text fg={palette.warning}> to add an API key</text>
+        </box>
+      ) : null}
 
       <box style={{ marginTop: 1, backgroundColor: palette.backgroundPanel }}>
         <text fg={palette.warning}>

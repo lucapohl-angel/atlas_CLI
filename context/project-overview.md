@@ -42,7 +42,7 @@ loaded by the active agent based on context).
    `atlas claude-code login` for OAuth).
 3. `atlas init` — installs Greek-pantheon agents + starter skills under
    `~/.atlas/`.
-4. `atlas chat` — opens the Ink TUI. The orchestrator picks the active
+4. `atlas chat` — opens the full-screen TUI. The orchestrator picks the active
    agent based on detected project state (PRD present? stories?
    uncommitted? active story status?).
 5. User issues a slash command (`/agent`, `/model`, `/skills`,

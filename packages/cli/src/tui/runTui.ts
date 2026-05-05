@@ -98,6 +98,88 @@ const ANTHROPIC_NATIVE_MODELS = [
   'claude-3-5-haiku-latest'
 ];
 
+type RuntimeProviderKind = ModelInfo['provider'];
+type RuntimeProviders = Partial<Record<RuntimeProviderKind, Provider>>;
+
+export interface StartupModelSelectionInput {
+  readonly explicitModel?: string;
+  readonly resumedModel?: string;
+  readonly configuredModel: string;
+  readonly modelCatalog?: readonly ModelInfo[];
+  readonly providers: RuntimeProviders;
+  readonly fallbackPool: readonly string[];
+}
+
+const trimmedOrUndefined = (value: string | undefined): string | undefined => {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+};
+
+export const providerKindForStartupModel = (
+  modelId: string,
+  catalog: readonly ModelInfo[] | undefined
+): RuntimeProviderKind | null => {
+  const hit = catalog?.find((m) => m.id === modelId);
+  if (hit) return hit.provider;
+  if (modelId.includes('/')) return 'openrouter';
+  const m = modelId.toLowerCase();
+  if (/^claude/.test(m)) return 'anthropic';
+  if (/^(gpt-|codex-|o[1-9])/.test(m)) return 'openai-codex';
+  return null;
+};
+
+const hasRuntimeForModel = (
+  modelId: string,
+  catalog: readonly ModelInfo[] | undefined,
+  providers: RuntimeProviders
+): boolean => {
+  const kind = providerKindForStartupModel(modelId, catalog);
+  return kind === null || Boolean(providers[kind]);
+};
+
+const firstConnectedCatalogModel = (
+  catalog: readonly ModelInfo[] | undefined,
+  providers: RuntimeProviders
+): string | undefined => {
+  for (const m of catalog ?? []) {
+    if (providers[m.provider]) return m.id;
+  }
+  if (providers.openrouter) return OPENROUTER_FALLBACK_MODELS[0];
+  if (providers.anthropic) return ANTHROPIC_NATIVE_MODELS[0];
+  if (providers['openai-codex']) return 'gpt-5';
+  return undefined;
+};
+
+export const chooseStartupModel = (input: StartupModelSelectionInput): string => {
+  const explicit = trimmedOrUndefined(input.explicitModel);
+  if (explicit) return explicit;
+
+  const resumed = trimmedOrUndefined(input.resumedModel);
+  if (resumed && hasRuntimeForModel(resumed, input.modelCatalog, input.providers)) {
+    return resumed;
+  }
+
+  const configured = trimmedOrUndefined(input.configuredModel) ?? input.configuredModel;
+  if (hasRuntimeForModel(configured, input.modelCatalog, input.providers)) {
+    return configured;
+  }
+
+  return (
+    firstConnectedCatalogModel(input.modelCatalog, input.providers) ??
+    input.fallbackPool[0] ??
+    configured
+  );
+};
+
+export const providerForStartupModel = (
+  modelId: string,
+  catalog: readonly ModelInfo[] | undefined,
+  providers: RuntimeProviders
+): Provider | null => {
+  const kind = providerKindForStartupModel(modelId, catalog);
+  return kind ? providers[kind] ?? null : null;
+};
+
 /**
  * If the user hasn't configured a key explicitly but has Claude Code
  * installed, switch to the Anthropic provider with native model ids and
@@ -265,12 +347,10 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
 
   const fallbackPool =
     cfg?.defaultProvider === 'anthropic' ? ANTHROPIC_NATIVE_MODELS : OPENROUTER_FALLBACK_MODELS;
-  const defaultModel =
-    opts.model ??
+  const configuredModel =
     cfg?.defaultModel ??
     (cfg?.defaultProvider === 'anthropic' ? 'claude-sonnet-4-5' : 'anthropic/claude-sonnet-4');
   const fallbackModels = cfg?.fallbackModels ?? [];
-  const availableModels = uniq([defaultModel, ...fallbackModels, ...fallbackPool]);
 
   // Pull the live model catalog so the picker + thinking levels reflect
   // what the provider actually exposes today (cached for 24h on disk).
@@ -282,30 +362,12 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
   // (from providerFromConfigAsync above) is just the startup default.
   const providers = await buildAllProviders(cfg);
 
-  // The orchestrator (`atlas`) is the default entry. If the user passed
-  // -a we honor it; otherwise prefer `atlas`, falling back to the first
-  // installed agent (preserves behavior on minimal installs).
-  const initialAgent =
-    opts.agent ??
-    (agentsResult.ok && agentsResult.value.some((a) => a.name === 'atlas') ? 'atlas' : undefined);
-
-  if (
-    !opts.agent &&
-    agentsResult.ok &&
-    !agentsResult.value.some((a) => a.name === 'atlas') &&
-    agentsResult.value.length > 0
-  ) {
-    process.stderr.write(
-      "atlas: orchestrator agent not installed. Run `atlas init -f` to upgrade your ~/.atlas/ install.\n"
-    );
-  }
-
   // Sessions: SessionStore writes JSON snapshots to ~/.atlas/sessions/.
   // Behavior:
-  //   - --resume <id|latest>  → explicit load (error surfaced if missing).
-  //   - no flag, sessions on disk → silently auto-resume the most recent
+  //   - --resume <id|latest>  -> explicit load (error surfaced if missing).
+  //   - no flag, sessions on disk -> silently auto-resume the most recent
   //     one and tell the user how to start fresh (`/sessions new`).
-  //   - no flag, no sessions yet → start blank. We do NOT create a
+  //   - no flag, no sessions yet -> start blank. We do NOT create a
   //     session record on boot anymore — the App lazily creates one on
   //     the first user message so opening Atlas just to swap with
   //     `/sessions` doesn't litter the store with empty entries.
@@ -330,6 +392,45 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
       initialSession = latest.value;
       autoResumed = true;
     }
+  }
+
+  // Startup model priority:
+  //   1. explicit --model
+  //   2. model from the resumed/latest session
+  //   3. config defaultModel, when its provider is connected
+  //   4. first model exposed by a connected provider
+  const defaultModel = chooseStartupModel({
+    configuredModel,
+    providers,
+    fallbackPool,
+    ...(modelCatalog ? { modelCatalog } : {}),
+    ...(opts.model ? { explicitModel: opts.model } : {}),
+    ...(initialSession?.model ? { resumedModel: initialSession.model } : {})
+  });
+  const startupProvider = providerForStartupModel(defaultModel, modelCatalog, providers);
+  if (startupProvider) {
+    provider = startupProvider;
+    setupError = null;
+  }
+
+  const availableModels = uniq([defaultModel, ...fallbackModels, ...fallbackPool]);
+
+  // The orchestrator (`atlas`) is the default entry. If the user passed
+  // -a we honor it; otherwise prefer `atlas`, falling back to the first
+  // installed agent (preserves behavior on minimal installs).
+  const initialAgent =
+    opts.agent ??
+    (agentsResult.ok && agentsResult.value.some((a) => a.name === 'atlas') ? 'atlas' : undefined);
+
+  if (
+    !opts.agent &&
+    agentsResult.ok &&
+    !agentsResult.value.some((a) => a.name === 'atlas') &&
+    agentsResult.value.length > 0
+  ) {
+    process.stderr.write(
+      "atlas: orchestrator agent not installed. Run `atlas init -f` to upgrade your ~/.atlas/ install.\n"
+    );
   }
 
   // Workflow phase router — load the cwd's active task (if any) so the
@@ -406,7 +507,8 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
                 `this task requires. Do not commit — that happens automatically after verify passes.`;
               const out = await childRunner({
                 goal,
-                ...(req.signal ? { signal: req.signal } : {})
+                ...(req.signal ? { signal: req.signal } : {}),
+                ...(req.approve ? { approve: req.approve } : {})
               });
               return {
                 ok: out.ok,

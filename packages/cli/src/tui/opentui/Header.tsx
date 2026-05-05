@@ -9,10 +9,12 @@
  * surface in the OpenTUI variant. Width-responsive collapsing is also
  * deferred.
  */
+import { useEffect, useState } from 'react';
 import { createTextAttributes } from '@opentui/core';
 import { palette } from './palette.js';
 
 const BOLD = createTextAttributes({ bold: true });
+const STREAM_SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const;
 
 export type Mode = 'plan' | 'build' | 'autopilot';
 export type ThinkingEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -50,9 +52,24 @@ export interface HeaderProps {
   readonly streaming: boolean;
   /** Active session title (shown after the thinking chip). */
   readonly sessionTitle?: string | null;
+  /**
+   * True when no provider runtime is wired for the active model
+   * (no API key, OAuth not detected, etc). Renders a warning badge
+   * so the user sees the problem before sending a message.
+   */
+  readonly notConnected?: boolean;
 }
 
 export const Header = (props: HeaderProps) => {
+  const [spinIdx, setSpinIdx] = useState(0);
+  useEffect(() => {
+    if (!props.streaming) return;
+    const id = setInterval(
+      () => setSpinIdx((i) => (i + 1) % STREAM_SPIN_FRAMES.length),
+      80
+    );
+    return () => clearInterval(id);
+  }, [props.streaming]);
   return (
     <box
       style={{
@@ -61,7 +78,7 @@ export const Header = (props: HeaderProps) => {
         flexDirection: 'row',
         alignItems: 'center',
         backgroundColor: palette.backgroundElement,
-        borderColor: palette.primary,
+        borderColor: props.notConnected ? palette.warning : palette.primary,
         borderStyle: 'single',
         paddingLeft: 1,
         paddingRight: 1
@@ -70,7 +87,9 @@ export const Header = (props: HeaderProps) => {
       <text fg={colorForAgent(props.agentName)} attributes={BOLD}>{props.agentRole}</text>
       <text fg={palette.textMuted}> · </text>
       <text fg={palette.text}>{props.model}</text>
-      <text fg={palette.accent}> [{props.providerTag}]</text>
+      <text fg={props.notConnected ? palette.warning : palette.accent}>
+        {` [${props.notConnected ? 'NO KEY' : props.providerTag}]`}
+      </text>
       <text fg={palette.textMuted}> · </text>
       <text fg={modeColor(props.mode)} attributes={BOLD}>{props.mode}</text>
       <text fg={palette.textMuted}> · think </text>
@@ -86,7 +105,9 @@ export const Header = (props: HeaderProps) => {
       {props.streaming ? (
         <>
           <text fg={palette.textMuted}> · </text>
-          <text fg={palette.warning} attributes={BOLD}>streaming</text>
+          <text fg={palette.warning} attributes={BOLD}>
+            {`${STREAM_SPIN_FRAMES[spinIdx]} streaming`}
+          </text>
         </>
       ) : null}
     </box>

@@ -1,6 +1,6 @@
 {
   "name": "atlas-os-win32-x64",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Windows x64 binary for atlas-os (do not install directly).",
   "license": "MIT",
   "repository": {

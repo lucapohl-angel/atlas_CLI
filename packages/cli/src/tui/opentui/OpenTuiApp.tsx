@@ -468,23 +468,6 @@ type OverlayKind =
 const STATUSBAR =
   'Tab agent · Ctrl-O model · Ctrl-T think · Ctrl-P mode · Ctrl-X copy · ↵ send · Ctrl-J newline · Ctrl-D ×2 exit';
 
-/**
- * Collapse `$HOME` to `~` and trim leading path segments so the
- * cwd display in the statusbar bottom-right stays compact even on
- * deeply nested project paths. Mirrors the Ink TUI's footer
- * abbreviation.
- */
-const shortenCwd = (raw: string): string => {
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
-  let s = raw;
-  if (home && s.startsWith(home)) s = `~${s.slice(home.length)}`;
-  if (s.length <= 48) return s;
-  // Keep the last 3 segments + an ellipsis prefix.
-  const parts = s.split('/');
-  if (parts.length <= 4) return s;
-  return `…/${parts.slice(-3).join('/')}`;
-};
-
 type ProviderKindLabel = 'openrouter' | 'anthropic' | 'openai-codex' | 'unknown';
 
 /**
@@ -4647,38 +4630,40 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             onClose={() => {}}
           />
         ) : null}
-        {overlay === 'copy-picker' ? (
+        {overlay === 'copy-picker' ? (() => {
+          // Oldest first, newest at the bottom — initial selection
+          // lands on the most recent message, which is what people
+          // usually want to copy. Filter to user/assistant/thinking;
+          // system + error rows are noise.
+          const items = transcript.filter(
+            (t) =>
+              t.kind === 'assistant' ||
+              t.kind === 'user' ||
+              t.kind === 'thinking'
+          );
+          const last = items[items.length - 1];
+          return (
           <Picker
             title="copy message · pick one"
             descriptionColor={palette.textMuted}
-            options={(() => {
-              // Most recent first — newest is what people usually
-              // want to copy. Filter to user/assistant/thinking;
-              // system + error rows are noise here.
-              const items = transcript.filter(
-                (t) =>
-                  t.kind === 'assistant' ||
-                  t.kind === 'user' ||
-                  t.kind === 'thinking'
-              );
-              return [...items].reverse().map((t, i) => {
-                const preview = t.text
-                  .replace(/\s+/g, ' ')
-                  .trim()
-                  .slice(0, 70);
-                const tag =
-                  t.kind === 'assistant'
-                    ? 'assistant'
-                    : t.kind === 'user'
-                      ? 'you'
-                      : 'thinking';
-                return {
-                  value: t.key,
-                  label: `[${String(items.length - i).padStart(3, ' ')}] ${tag.padEnd(9)} ${preview}`,
-                  description: `${t.text.length} chars`
-                };
-              });
-            })()}
+            options={items.map((t, i) => {
+              const preview = t.text
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 70);
+              const tag =
+                t.kind === 'assistant'
+                  ? 'assistant'
+                  : t.kind === 'user'
+                    ? 'you'
+                    : 'thinking';
+              return {
+                value: t.key,
+                label: `[${String(i + 1).padStart(3, ' ')}] ${tag.padEnd(9)} ${preview}`,
+                description: `${t.text.length} chars`
+              };
+            })}
+            {...(last ? { initialValue: last.key } : {})}
             hint="↵ copy via OSC 52 · Esc cancel"
             onChoose={(messageKey) => {
               const item = transcript.find((t) => t.key === messageKey);
@@ -4697,7 +4682,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             }}
             onCancel={() => setOverlay(null)}
           />
-        ) : null}
+          );
+        })() : null}
         {overlay === 'skills-list' ? (
           <Picker
             title={`skills (${props.skills.list().length})`}
@@ -4808,8 +4794,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           </text>
         </box>
         <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundPanel }}>
-          <text fg={palette.textDim}>cwd: </text>
-          <text fg={palette.secondary}>{shortenCwd(props.toolContext.cwd)}</text>
+          <text fg={palette.textDim}>pwd: </text>
+          <text fg={palette.secondary}>{props.toolContext.cwd}</text>
         </box>
       </box>
     </box>

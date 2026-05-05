@@ -38,6 +38,7 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
+    "scripts/postinstall.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -60,6 +61,7 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "start": "node dist/bin/atlas.js",
+    "postinstall": "node scripts/postinstall.mjs",
     "prepublishOnly": "pnpm build && pnpm test:run"
   },
   "dependencies": {

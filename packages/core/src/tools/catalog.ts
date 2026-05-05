@@ -422,8 +422,23 @@ const installPlaywrightChromium = async (
   onProgress?: (line: string) => void
 ): Promise<ActionResult> => {
   const { spawn } = await import('node:child_process');
+  const { createRequire } = await import('node:module');
+  // Resolve playwright/cli.js from this file's location so we don't
+  // depend on `pnpm`/`npx` being available in the user's PATH (a
+  // common gap when atlas-os is installed globally via npm).
+  let cliPath: string;
+  try {
+    const require = createRequire(import.meta.url);
+    cliPath = require.resolve('playwright/cli.js');
+  } catch {
+    return {
+      ok: false,
+      message:
+        'playwright is not installed in this runtime. Reinstall atlas-os via npm to pull it as an optional dependency, then retry.'
+    };
+  }
   return new Promise((resolve) => {
-    const child = spawn('pnpm', ['exec', 'playwright', 'install', 'chromium'], {
+    const child = spawn(process.execPath, [cliPath, 'install', 'chromium'], {
       stdio: ['ignore', 'pipe', 'pipe']
     });
     const onLine = (chunk: Buffer): void => onProgress?.(chunk.toString('utf8'));

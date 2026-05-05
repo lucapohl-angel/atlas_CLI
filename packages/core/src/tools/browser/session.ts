@@ -96,17 +96,25 @@ export const browserAvailable = async (): Promise<boolean> => {
   return (await loadPlaywright()) !== null;
 };
 
+const isCompiledBunBinary = (): boolean => {
+  // bun build --compile produces a single-file executable whose
+  // process.execPath is the binary itself (not `bun` / `node`). Use
+  // that, plus the presence of the Bun global, as a heuristic.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (typeof (globalThis as any).Bun === 'undefined') return false;
+  const exe = (process.execPath ?? '').toLowerCase();
+  return !/(?:^|[\\/])(?:node|bun)(?:\.exe)?$/.test(exe);
+};
+
 const ensureBrowser = async (): Promise<Result<Page, ReturnType<typeof atlasError>>> => {
   if (_page) return ok(_page);
 
   const pw = await loadPlaywright();
   if (!pw) {
-    return err(
-      atlasError(
-        'TOOL_EXECUTION_FAILED',
-        'browser tool requires Playwright. Install with: `pnpm add -w playwright && pnpm exec playwright install chromium`'
-      )
-    );
+    const msg = isCompiledBunBinary()
+      ? 'browser tool is not available in the precompiled atlas binary (Playwright cannot be embedded cross-platform). Reinstall via `npm i -g atlas-os` to enable it — Chromium will be downloaded automatically on install.'
+      : 'browser tool requires Playwright + Chromium. Run `atlas` /setup → install browser, or `npx playwright install chromium`.';
+    return err(atlasError('TOOL_EXECUTION_FAILED', msg));
   }
 
   if (!_browserPromise) {

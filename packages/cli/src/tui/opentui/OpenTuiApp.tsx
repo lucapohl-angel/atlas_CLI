@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   allowAllPolicy,
+  saveLearnedSkill,
   ATLAS_VERSION,
   buildSystemPrompt,
   canRewindTo,
@@ -81,6 +82,13 @@ import {
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 import type { TextareaRenderable } from '@opentui/core';
 import { createTextAttributes } from '@opentui/core';
+import {
+  buildReflectionMessages,
+  describeLearnReason,
+  parseLearnedSkillDraft,
+  shouldOfferLearn,
+  type LearnedSkillDraft
+} from '../learn.js';
 
 const BOLD_ATTR = createTextAttributes({ bold: true });
 const ITALIC_ATTR = createTextAttributes({ italic: true });
@@ -463,7 +471,21 @@ type OverlayKind =
   | 'sessions-rename'
   | 'config-action-openrouter'
   | 'config-action-anthropic'
+  | 'learn-confirm'
   | 'ship-conflict';
+
+/**
+ * Companion state for the `learn-confirm` overlay. Held in its own
+ * useState (rather than baked into OverlayKind) so flipping the
+ * overlay channel doesn't force a wholesale type refactor — every
+ * other overlay is a plain string and we want to keep it that way.
+ */
+interface LearnConfirmState {
+  readonly stage: 'reflecting' | 'review' | 'saving';
+  readonly reason: string;
+  readonly draft?: LearnedSkillDraft;
+  readonly error?: string;
+}
 
 const STATUSBAR =
   'Tab agent · Ctrl-O model · Ctrl-T think · Ctrl-P mode · Ctrl-X copy · ↵ send · Ctrl-J newline · Ctrl-D ×2 exit';
@@ -688,7 +710,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'sessions', summary: 'list saved sessions (use /resume <id> to restore)' },
   { name: 'resume', summary: 'resume a session by id' },
   { name: 'compact', summary: 'auto-compaction status' },
-  { name: 'learn', summary: 'self-improvement loop status' },
+  { name: 'learn', summary: 'self-improvement loop: distill the current turn into a learned skill' },
   { name: 'skills', summary: 'list / enable / disable skills' },
   { name: 'next', summary: 'ask Atlas which command to run next' },
   { name: 'onboard', summary: 'brownfield onboarding wizard' },
@@ -1076,6 +1098,17 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // pipeline lives in @atlas/core and is wired in the Ink TUI; the
   // OpenTUI variant exposes the toggle so the surface matches).
   const learnEnabledRef = useRef<boolean>(true);
+  // Per-turn telemetry that the auto-learn heuristic reads after
+  // each `done` event. Reset on submit, mutated by tool_call_done +
+  // done. Mirrors App.tsx { turnRoundsRef, turnToolErrorsRef,
+  // lastUserMessageRef }.
+  const turnRoundsRef = useRef<number>(0);
+  const turnToolErrorsRef = useRef<number>(0);
+  const lastUserMessageRef = useRef<string>('');
+  // Reflection sub-call abort handle — Esc on the learn-confirm
+  // overlay aborts the in-flight stream.
+  const reflectAbortRef = useRef<AbortController | null>(null);
+  const [learnConfirm, setLearnConfirm] = useState<LearnConfirmState | null>(null);
   // Auto-compaction settings (loaded from config, mutated by /compact).
   const compactEnabledRef = useRef<boolean>(
     props.config?.compaction?.enabled ?? true
@@ -1699,7 +1732,12 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             setOverlay('model');
           }
           return true;
+        case 'models':
+          // Alias for `/model` with no arg — opens the picker.
+          setOverlay('model');
+          return true;
         case 'config':
+        case 'setup':
           setConfigError(null);
           setOverlay('config');
           return true;
@@ -2093,11 +2131,23 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             pushItem('system', 'auto-learn is OFF.');
             return true;
           }
-          if (sub === '' || sub === 'status') {
+          if (sub === 'status') {
             pushItem(
               'system',
-              `auto-learn: ${learnEnabledRef.current ? 'on' : 'off'}\n\nNote: the reflection loop runs in the Ink variant; the\nOpenTUI variant only exposes the toggle for now.`
+              `auto-learn: ${learnEnabledRef.current ? 'on' : 'off'}`
             );
+            return true;
+          }
+          if (sub === '') {
+            // No subcommand → manually trigger reflection on the
+            // current transcript (useful when the heuristic didn't
+            // fire but the user knows something reusable just
+            // happened).
+            if (messagesRef.current.length === 0) {
+              pushItem('error', 'nothing to learn from yet.');
+              return true;
+            }
+            void launchLearnReflection('manual /learn');
             return true;
           }
           pushItem('error', 'usage: /learn [on|off|status]');
@@ -2403,6 +2453,118 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     ]
   );
 
+  /**
+   * Persist a confirmed learned-skill draft. Writes
+   * `~/.atlas/skills/<slug>/SKILL.md` with `kind: learned` and adds
+   * the skill to the live registry so framework agents see it on
+   * their next turn (without restarting the CLI). Mirrors
+   * App.tsx § saveLearnedSkillDraft.
+   */
+  const saveLearnedSkillDraft = useCallback(
+    async (draft: LearnedSkillDraft, reason: string): Promise<void> => {
+      setLearnConfirm((s) => (s ? { ...s, stage: 'saving' } : s));
+      const r = await saveLearnedSkill({
+        name: draft.name,
+        description: draft.description,
+        triggers: draft.triggers,
+        body: draft.body,
+        createdBy: activeAgent?.name ?? 'atlas',
+        ...(sessionId ? { createdFromSession: sessionId } : {}),
+        createdReason: reason
+      });
+      if (!r.ok) {
+        setLearnConfirm((s) =>
+          s ? { ...s, stage: 'review', error: r.error.message } : s
+        );
+        return;
+      }
+      props.skills.add(r.value);
+      setLearnConfirm(null);
+      setOverlay(null);
+      pushItem(
+        'system',
+        `✦ saved learned skill: ${r.value.name} — ${r.value.description}`
+      );
+    },
+    [activeAgent, props.skills, sessionId, pushItem]
+  );
+
+  /**
+   * Run the meta-LLM reflection sub-call against the active provider
+   * and surface the draft (or "nothing to learn") in the
+   * learn-confirm overlay. Mirrors App.tsx § launchLearnReflection.
+   * Token cost is bounded — reuses the active provider's `stream`
+   * API for a single non-tool round-trip and prefers the cheap
+   * `routerModel` when configured.
+   */
+  const launchLearnReflection = useCallback(
+    async (reason: string): Promise<void> => {
+      if (!activeProvider) {
+        pushItem('error', 'cannot reflect: no provider configured');
+        return;
+      }
+      // Cancel any prior reflection still streaming.
+      reflectAbortRef.current?.abort();
+      const ac = new AbortController();
+      reflectAbortRef.current = ac;
+      setLearnConfirm({ stage: 'reflecting', reason });
+      setOverlay('learn-confirm');
+      const effectiveModel =
+        props.config?.routerModel ??
+        (activeAgent ? agentModels.get(activeAgent.name) : undefined) ??
+        activeModel;
+      const reflectionMsgs = buildReflectionMessages(
+        messagesRef.current,
+        reason
+      );
+      let buf = '';
+      try {
+        const stream = activeProvider.stream({
+          model: effectiveModel,
+          messages: reflectionMsgs,
+          tools: [],
+          signal: ac.signal
+        });
+        for await (const ev of stream) {
+          if (ev.type === 'delta') buf += ev.text;
+          else if (ev.type === 'error') {
+            setLearnConfirm({
+              stage: 'review',
+              reason,
+              error: ev.error.message
+            });
+            return;
+          }
+        }
+      } catch (e) {
+        if (ac.signal.aborted) {
+          setLearnConfirm(null);
+          setOverlay(null);
+          return;
+        }
+        setLearnConfirm({
+          stage: 'review',
+          reason,
+          error: (e as Error).message
+        });
+        return;
+      }
+      const parsed = parseLearnedSkillDraft(buf);
+      if (!parsed.ok) {
+        setLearnConfirm({ stage: 'review', reason, error: parsed.error });
+        return;
+      }
+      if (parsed.draft === null) {
+        // Model decided there's nothing reusable. Close silently.
+        setLearnConfirm(null);
+        setOverlay(null);
+        return;
+      }
+      setLearnConfirm({ stage: 'review', reason, draft: parsed.draft });
+    },
+    [activeProvider, activeModel, activeAgent, agentModels, props.config?.routerModel, pushItem]
+  );
+
   const submit = useCallback(async (): Promise<void> => {
     const buffered = composerRef.current?.plainText ?? input;
     let text = buffered.trim();
@@ -2442,6 +2604,12 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     clearComposer();
     setError(null);
     pushItem('user', text);
+    // Reset per-turn telemetry that the auto-learn heuristic reads
+    // after `done`. Remember the user message so success-phrase
+    // detection has something to look at.
+    turnRoundsRef.current = 0;
+    turnToolErrorsRef.current = 0;
+    lastUserMessageRef.current = text;
 
     // Per-agent override takes precedence over the global model.
     const effectiveModel =
@@ -2873,6 +3041,27 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               setCostUsd((prev) => prev + spent);
             }
           }
+          turnRoundsRef.current = ev.rounds;
+          // Self-improvement heuristic: if this turn was "hard"
+          // (many rounds, repeated tool errors, or the user signalled
+          // success after a struggle), offer to distill a learned
+          // skill. The actual reflection is one extra LLM call gated
+          // behind user confirmation in the learn-confirm overlay.
+          if (
+            learnEnabledRef.current &&
+            shouldOfferLearn(
+              turnRoundsRef.current,
+              turnToolErrorsRef.current,
+              lastUserMessageRef.current
+            )
+          ) {
+            const reason = describeLearnReason(
+              turnRoundsRef.current,
+              turnToolErrorsRef.current,
+              lastUserMessageRef.current
+            );
+            void launchLearnReflection(reason);
+          }
           break;
         case 'tool_call_start': {
           finishThinking();
@@ -2907,6 +3096,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         case 'tool_call_done': {
           const status: SidebarToolEvent['status'] =
             ev.outcome.type === 'error' ? 'error' : 'done';
+          if (ev.outcome.type === 'error') {
+            turnToolErrorsRef.current += 1;
+          }
           const id = ev.call.id ?? '';
           const startedAt = toolStartedAt.get(id);
           const elapsedMs =
@@ -3004,7 +3196,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     pushItem,
     handleSlash,
     slashSuggestions,
-    slashCursor
+    slashCursor,
+    launchLearnReflection
   ]);
 
   // Global hotkeys. Composer-local keys (Enter, Ctrl-J, Backspace,
@@ -3012,11 +3205,21 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   useKeyboard((key) => {
     if (overlay) {
       if (key.name === 'escape') {
+        // Cancel an in-flight reflection sub-call so closing the
+        // overlay also stops the streaming LLM call.
+        if (overlay === 'learn-confirm' && learnConfirm?.stage === 'reflecting') {
+          reflectAbortRef.current?.abort();
+        }
         setOverlay(null);
+        if (overlay === 'learn-confirm') setLearnConfirm(null);
         return;
       }
       if (key.ctrl && key.name === 'c') {
+        if (overlay === 'learn-confirm' && learnConfirm?.stage === 'reflecting') {
+          reflectAbortRef.current?.abort();
+        }
         setOverlay(null);
+        if (overlay === 'learn-confirm') setLearnConfirm(null);
         return;
       }
       return;
@@ -4693,6 +4896,85 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             }}
             onCancel={() => setOverlay(null)}
           />
+          );
+        })() : null}
+        {overlay === 'learn-confirm' && learnConfirm ? (() => {
+          if (learnConfirm.stage === 'reflecting') {
+            return (
+              <InfoOverlay
+                title="✦ atlas wants to save a learned skill"
+                body={`Reflecting on the last turn…\nTrigger: ${learnConfirm.reason}\n\nEsc to cancel.`}
+                tone="info"
+                onClose={() => {
+                  reflectAbortRef.current?.abort();
+                  setLearnConfirm(null);
+                  setOverlay(null);
+                }}
+              />
+            );
+          }
+          if (learnConfirm.stage === 'saving') {
+            return (
+              <InfoOverlay
+                title="✦ atlas wants to save a learned skill"
+                body="Saving skill…"
+                tone="info"
+                onClose={() => {}}
+              />
+            );
+          }
+          // review
+          if (!learnConfirm.draft) {
+            return (
+              <InfoOverlay
+                title="✦ atlas wants to save a learned skill"
+                body={`Reflection failed: ${learnConfirm.error ?? 'unknown error'}\n\nEsc to dismiss.`}
+                tone="error"
+                onClose={() => {
+                  setLearnConfirm(null);
+                  setOverlay(null);
+                }}
+              />
+            );
+          }
+          const draft = learnConfirm.draft;
+          const bodyPreview =
+            draft.body.split('\n').slice(0, 6).join(' · ').slice(0, 140) +
+            (draft.body.split('\n').length > 6 ? ' …' : '');
+          return (
+            <Picker
+              title={`✦ learned skill draft · ${draft.name}`}
+              descriptionColor={palette.textMuted}
+              options={[
+                {
+                  value: 'save',
+                  label: `Save  →  ~/.atlas/skills/${draft.name}/SKILL.md`,
+                  description: `${draft.description.slice(0, 80)}`
+                },
+                {
+                  value: 'discard',
+                  label: 'Discard',
+                  description: `triggers: ${draft.triggers.join(', ') || '(none)'} · body: ${bodyPreview}`
+                }
+              ]}
+              hint={
+                learnConfirm.error
+                  ? `save failed: ${learnConfirm.error} · ↵ retry · Esc cancel`
+                  : `reason: ${learnConfirm.reason} · ↵ pick · Esc cancel`
+              }
+              onChoose={(v) => {
+                if (v === 'save') {
+                  void saveLearnedSkillDraft(draft, learnConfirm.reason);
+                } else {
+                  setLearnConfirm(null);
+                  setOverlay(null);
+                }
+              }}
+              onCancel={() => {
+                setLearnConfirm(null);
+                setOverlay(null);
+              }}
+            />
           );
         })() : null}
         {overlay === 'skills-list' ? (

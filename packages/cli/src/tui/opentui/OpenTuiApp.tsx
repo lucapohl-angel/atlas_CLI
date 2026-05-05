@@ -45,6 +45,7 @@ import {
   isFrameworkAgent,
   loadClaudeCodeCredentials,
   loadContextPack,
+  findSuggestion,
   PHASES,
   phasePromptAddendum,
   readSignals,
@@ -65,6 +66,7 @@ import {
   type HookRegistry,
   type InteractionRequest,
   type LoopEvent,
+  type McpServerConfig,
   type Message,
   type ModelInfo,
   type OnboardPreflight,
@@ -73,6 +75,7 @@ import {
   type ReasoningEffort,
   type ReasoningOptions,
   type SessionStore,
+  type SessionRecord,
   type SkillRegistry,
   type TaskState,
   type ThinkingLevel,
@@ -82,6 +85,7 @@ import {
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 import type { TextareaRenderable } from '@opentui/core';
 import { createTextAttributes } from '@opentui/core';
+import { isAbsolute, resolve as resolvePath } from 'node:path';
 import {
   buildReflectionMessages,
   describeLearnReason,
@@ -139,14 +143,11 @@ export interface OpenTuiAppProps {
   readonly sessionStore?: SessionStore;
   /**
    * Resumed session restored at startup (when invoked with
-   * `--resume <id>` or `--continue`). Drives the initial session id /
-   * title shown in the header. Optional — fresh runs start with no
-   * persisted session id.
+   * `--resume <id>` or `--continue`). The full record is passed in
+   * (not just id+title) so the OpenTUI variant can hydrate the
+   * transcript and messagesRef on mount, matching Ink behaviour.
    */
-  readonly initialSession?: {
-    readonly id: string;
-    readonly title?: string;
-  };
+  readonly initialSession?: SessionRecord;
   /** MCP server startup status (running + failed). Surfaced via `/mcps`. */
   readonly mcpStatus?: {
     readonly running: readonly { readonly name: string; readonly toolCount: number }[];
@@ -460,6 +461,23 @@ const fmtElapsed = (ms: number): string =>
  * full stream the moment it arrives. Pass `Infinity` for frozen
  * thinking steps in the transcript history (everything visible).
  */
+/**
+ * Convert a workspace-relative or absolute file path into a `file://`
+ * URL so OpenTUI's `<text link>` prop can emit an OSC 8 hyperlink.
+ * Most modern terminals (iTerm2, Kitty, WezTerm, Ghostty, GNOME
+ * Terminal, recent xterm) render OSC 8 sequences as Ctrl+click /
+ * ⌘+click targets.
+ */
+function filePathToUrl(p: string): string {
+  const abs = isAbsolute(p) ? p : resolvePath(process.cwd(), p);
+  // file:// URLs need each path segment encoded but slashes preserved.
+  const encoded = abs
+    .split('/')
+    .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+    .join('/');
+  return `file://${encoded}`;
+}
+
 const renderStepRow = (
   step: TurnStep,
   keyPrefix: string,
@@ -516,7 +534,10 @@ const renderStepRow = (
         <text fg={labelColor}>{`${tool.icon} `}</text>
         <text fg={labelColor} attributes={BOLD_ATTR}>{step.label}</text>
         {step.filePath ? (
-          <text fg={palette.warning} attributes={BOLD_ATTR}>{` ${step.filePath}`}</text>
+          <text fg={palette.warning} attributes={BOLD_ATTR}>
+            {' '}
+            <link href={filePathToUrl(step.filePath)}>{step.filePath}</link>
+          </text>
         ) : null}
         {step.command ? (
           <>
@@ -589,6 +610,10 @@ type OverlayKind =
   | 'config-key-openrouter'
   | 'config-key-anthropic'
   | 'config-mcp'
+  | 'config-mcp-action'
+  | 'config-mcp-add-env'
+  | 'config-mcp-add-confirm'
+  | 'config-mcp-custom'
   | 'config-ship'
   | 'config-info'
   | 'mcps-manage'
@@ -1017,7 +1042,23 @@ const removeProviderKey = async (
 export const OpenTuiApp = (props: OpenTuiAppProps) => {
   const { width, height } = useTerminalDimensions();
   const [input, setInput] = useState<string>('');
-  const [transcript, setTranscript] = useState<readonly TranscriptItem[]>([]);
+  const [transcript, setTranscript] = useState<readonly TranscriptItem[]>(() => {
+    // Hydrate visible chat from the resumed session's messages so the
+    // user lands inside their previous conversation, not a blank
+    // splash. Tool/reasoning rounds are not replayed (we never
+    // persisted those) — only the user/assistant turns survive.
+    const seed = props.initialSession?.messages ?? [];
+    return seed.map((m, i) => ({
+      kind:
+        m.role === 'user'
+          ? ('user' as const)
+          : m.role === 'assistant'
+            ? ('assistant' as const)
+            : ('system' as const),
+      text: typeof m.content === 'string' ? m.content : '',
+      key: `seed_${i}`
+    }));
+  });
   const [streaming, setStreaming] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(props.setupError ?? null);
   const [tokensUsed, setTokensUsed] = useState<number>(0);
@@ -1028,6 +1069,14 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // action overlay (`mcps-actions`) to know which entry to
   // enable/disable/remove.
   const [selectedMcp, setSelectedMcp] = useState<string | null>(null);
+  // Active /config -> MCP add wizard. Tracks the suggestion being
+  // installed, which env var we're collecting next, and the values
+  // accumulated so far. Reset whenever the wizard closes.
+  const [mcpAddState, setMcpAddState] = useState<{
+    readonly id: string;
+    readonly envIndex: number;
+    readonly collected: Record<string, string>;
+  } | null>(null);
   // Session id selected in `sessions-list` — used by the per-row
   // action overlay (`sessions-actions`) to know which session to
   // resume/rename/delete.
@@ -1042,6 +1091,12 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   const [sessionTitle, setSessionTitle] = useState<string | null>(
     props.initialSession?.title ?? null
   );
+  // Mutable mirror of the active session record. Used for per-turn
+  // writes (we mutate `messages` in place and fire-and-forget the
+  // disk write) and to know whether the next user turn should lazily
+  // create a fresh session record on disk. Mirrors Ink's
+  // `sessionRef` pattern (App.tsx:615).
+  const sessionRef = useRef<SessionRecord | null>(props.initialSession ?? null);
   // Draft string the user is typing in the rename overlay.
   const [renameDraft, setRenameDraft] = useState<string>('');
   // Cached session listing for the modal. Refreshed on overlay open
@@ -1102,7 +1157,12 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
    * Atlas would feel amnesiac (every reply ignores the previous
    * exchange). Mirrors `messagesRef` in App.tsx.
    */
-  const messagesRef = useRef<Message[]>([]);
+  const messagesRef = useRef<Message[]>(
+    // Seed with the resumed session's prior messages on mount so the
+    // model sees the full conversation history. Empty array on a
+    // fresh launch.
+    props.initialSession?.messages ? [...props.initialSession.messages] : []
+  );
   const [recentTools, setRecentTools] = useState<readonly SidebarToolEvent[]>([]);
   const [thinkingLine, setThinkingLine] = useState<string | null>(null);
   const [toolCount, setToolCount] = useState<number>(0);
@@ -1984,6 +2044,10 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           // messagesRef.current = []; setTranscript([])` reset.
           if (arg.toLowerCase() === 'new' && cmd === 'sessions') {
             setTranscript([]);
+            messagesRef.current = [];
+            sessionRef.current = null;
+            setSessionId(null);
+            setSessionTitle(null);
             transcriptKey.current += 1;
             pushItem('system', '✦ new session — transcript cleared.');
             return true;
@@ -2011,6 +2075,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                 }));
                 setTranscript(items);
                 transcriptKey.current += 1;
+                messagesRef.current = [...r.value.messages];
+                sessionRef.current = r.value;
                 setSessionId(r.value.id);
                 setSessionTitle(r.value.title ?? null);
                 pushItem(
@@ -2682,11 +2748,13 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         for await (const ev of stream) {
           if (ev.type === 'delta') buf += ev.text;
           else if (ev.type === 'error') {
-            setLearnConfirm({
-              stage: 'review',
-              reason,
-              error: ev.error.message
-            });
+            // Reflection failed mid-stream — close the popup and surface
+            // the error as a regular system message. There is no draft
+            // to accept/reject so opening the modal would just trap the
+            // user with a meaningless OK button.
+            setLearnConfirm(null);
+            setOverlay(null);
+            pushItem('error', `reflection failed: ${ev.error.message}`);
             return;
           }
         }
@@ -2696,16 +2764,16 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           setOverlay(null);
           return;
         }
-        setLearnConfirm({
-          stage: 'review',
-          reason,
-          error: (e as Error).message
-        });
+        setLearnConfirm(null);
+        setOverlay(null);
+        pushItem('error', `reflection failed: ${(e as Error).message}`);
         return;
       }
       const parsed = parseLearnedSkillDraft(buf);
       if (!parsed.ok) {
-        setLearnConfirm({ stage: 'review', reason, error: parsed.error });
+        setLearnConfirm(null);
+        setOverlay(null);
+        pushItem('error', `reflection parse failed: ${parsed.error}`);
         return;
       }
       if (parsed.draft === null) {
@@ -2874,6 +2942,25 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       ...messagesRef.current,
       { role: 'user', content: text }
     ];
+
+    // Lazy session creation: the first user message is what brings a
+    // session into existence. Opening Atlas just to swap with
+    // `/sessions` no longer creates an empty record on disk. Mirrors
+    // App.tsx:1705.
+    if (props.sessionStore && !sessionRef.current) {
+      const created = await props.sessionStore.create({
+        cwd: process.cwd(),
+        agent: activeAgent.name,
+        model: activeModel
+      });
+      if (created.ok) {
+        sessionRef.current = created.value;
+        setSessionId(created.value.id);
+        setSessionTitle(created.value.title ?? null);
+      } else {
+        pushItem('error', `failed to create session: ${created.error.message}`);
+      }
+    }
 
     const ac = new AbortController();
     abortRef.current = ac;
@@ -3203,6 +3290,24 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             if (cleaned === m.content) return m;
             return { ...m, content: cleaned };
           });
+          // Persist the session after each turn so resuming the
+          // conversation later just works. We mutate the record in
+          // place (it's a private ref, never read across renders) and
+          // fire-and-forget the disk write — sessions are best-effort,
+          // a write failure is logged but doesn't break the chat
+          // loop. Mirrors App.tsx:2141.
+          if (props.sessionStore && sessionRef.current) {
+            const rec = sessionRef.current;
+            rec.messages = [...messagesRef.current];
+            if (activeAgent) rec.agent = activeAgent.name;
+            rec.model = effectiveModel;
+            void props.sessionStore.write(rec).then((r) => {
+              if (!r.ok) {
+                // eslint-disable-next-line no-console
+                console.error('session write failed:', r.error.message);
+              }
+            });
+          }
           if (ev.usage) {
             const u = ev.usage;
             const prompt = u.promptTokens ?? 0;
@@ -3546,6 +3651,17 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     }
     if (key.name === 'end' && !composerFocused) {
       scrollboxRef.current?.scrollBy(1, 'content');
+      return;
+    }
+    // Shift+Up / Shift+Down — single-line scroll, parity with the
+    // Ink TUI. Works regardless of composer focus so users can
+    // skim the transcript without losing their input draft.
+    if (key.shift && key.name === 'up') {
+      scrollboxRef.current?.scrollBy(-1, 'absolute');
+      return;
+    }
+    if (key.shift && key.name === 'down') {
+      scrollboxRef.current?.scrollBy(1, 'absolute');
       return;
     }
     // Slash autocomplete navigation — only active when the popup
@@ -4364,55 +4480,316 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         ) : null}
         {overlay === 'config-mcp' ? (
           <Picker
-            title="MCP servers — pick one to learn how to enable"
+            title="MCP servers — pick one to install or inspect"
             descriptionColor={palette.success}
             options={(() => {
               const configured = new Set(
                 (props.config?.mcp?.servers ?? []).map((s) => s.name)
               );
-              return MCP_CATALOG.map((s) => ({
+              const rows: PickerOption[] = MCP_CATALOG.map((s) => ({
                 value: s.id,
                 label: `${s.id.padEnd(12)} (${s.pricing})  ${s.summary}`,
                 description: configured.has(s.id) ? '● configured' : ''
               }));
+              rows.push({
+                value: '__custom__',
+                label: '+ custom server  (not in this list)',
+                description: 'manual ~/.atlas/config.yaml instructions'
+              });
+              return rows;
             })()}
-            hint="↑/↓ navigate · ↵ details · Esc back"
+            hint="↑/↓ navigate · ↵ choose · Esc back"
             onChoose={(id) => {
-              const entry = MCP_CATALOG.find((s) => s.id === id);
-              if (!entry) {
+              if (id === '__custom__') {
+                setOverlay('config-mcp-custom');
+                return;
+              }
+              const sug = findSuggestion(id);
+              if (!sug) {
                 setOverlay(null);
                 return;
               }
-              const lines: string[] = [
-                entry.summary,
-                '',
-                `transport: ${entry.transport}`
-              ];
-              if (entry.url) lines.push(`url:       ${entry.url}`);
-              if (entry.envKey) {
-                lines.push(
-                  '',
-                  `env var:   ${entry.envKey}=${entry.envPlaceholder ?? '…'}`
-                );
-              }
-              lines.push(
-                '',
-                'Add under `mcp.servers` in ~/.atlas/config.yaml.',
-                'Then re-launch Atlas. The interactive add wizard is',
-                'not yet ported in the OpenTUI variant — use --ui=ink',
-                'for the guided flow.'
-              );
-              if (entry.docs) lines.push('', `docs: ${entry.docs}`);
-              setInfoOverlay({
-                title: `MCP · ${entry.id}`,
-                body: lines.join('\n'),
-                tone: entry.pricing === 'paid' ? 'warn' : 'info'
-              });
-              setOverlay('config-info');
+              setSelectedMcp(id);
+              setOverlay('config-mcp-action');
             }}
             onCancel={() => setOverlay('config')}
           />
         ) : null}
+        {overlay === 'config-mcp-action' && selectedMcp ? (() => {
+          const sug = findSuggestion(selectedMcp);
+          if (!sug) { setOverlay('config-mcp'); return null; }
+          const alreadyConfigured = (props.config?.mcp?.servers ?? []).some(
+            (s) => s.name === sug.name
+          );
+          const opts: PickerOption[] = [];
+          if (!alreadyConfigured) {
+            opts.push({
+              value: 'add',
+              label: `Add ${sug.name} to ~/.atlas/config.yaml`,
+              description:
+                sug.transport === 'http'
+                  ? 'http transport · ' + (sug.env.length > 0
+                      ? `prompts for ${sug.env.length} secret(s)`
+                      : 'no secrets needed')
+                  : 'stdio transport · ' + (sug.env.length > 0
+                      ? `prompts for ${sug.env.length} secret(s)`
+                      : 'no secrets needed')
+            });
+          }
+          opts.push({ value: 'details', label: 'Show details', description: '' });
+          opts.push({ value: 'back', label: 'Back to catalog', description: '' });
+          return (
+            <Picker
+              title={`MCP · ${sug.name}${alreadyConfigured ? ' (already configured)' : ''}`}
+              descriptionColor={palette.success}
+              options={opts}
+              hint="↵ pick · Esc cancel"
+              onChoose={(v) => {
+                if (v === 'back') { setOverlay('config-mcp'); return; }
+                if (v === 'details') {
+                  const lines: string[] = [
+                    sug.summary,
+                    '',
+                    `transport: ${sug.transport}`,
+                    `pricing:   ${sug.pricing}`
+                  ];
+                  if (sug.transport === 'http') {
+                    lines.push(`url:       ${sug.url}`);
+                  } else {
+                    lines.push(`command:   ${[sug.command, ...sug.args].join(' ')}`);
+                    lines.push(`needs:     ${sug.prerequisite.bin} on PATH`);
+                  }
+                  if (sug.env.length > 0) {
+                    lines.push('', 'env vars:');
+                    for (const e of sug.env) {
+                      lines.push(
+                        `  ${e.key}${e.required ? ' (required)' : ' (optional)'}`
+                      );
+                    }
+                  }
+                  lines.push('', `docs: ${sug.docs}`);
+                  if (sug.transport === 'stdio' && sug.authMethods?.includes('oauth-gh')) {
+                    lines.push(
+                      '',
+                      'Tip: this server supports OAuth via the `gh` CLI.',
+                      'The OAuth flow is currently Ink-only — launch with',
+                      '--ui=ink and use /config to use it. Otherwise paste a',
+                      'PAT below.'
+                    );
+                  }
+                  setInfoOverlay({
+                    title: `MCP · ${sug.name}`,
+                    body: lines.join('\n'),
+                    tone: sug.pricing === 'paid' ? 'warn' : 'info'
+                  });
+                  setOverlay('config-info');
+                  return;
+                }
+                if (v === 'add') {
+                  setMcpAddState({ id: sug.id, envIndex: 0, collected: {} });
+                  if (sug.env.length === 0) {
+                    setOverlay('config-mcp-add-confirm');
+                  } else {
+                    setOverlay('config-mcp-add-env');
+                  }
+                }
+              }}
+              onCancel={() => setOverlay('config-mcp')}
+            />
+          );
+        })() : null}
+        {overlay === 'config-mcp-custom' ? (
+          <InfoOverlay
+            title="Add a custom MCP server"
+            body={[
+              'The interactive AI-assisted custom-server wizard is Ink-only.',
+              'Launch with --ui=ink and use /config → MCP server → custom for',
+              'the guided flow.',
+              '',
+              'Manual setup (works in either UI):',
+              '',
+              '  1. Open ~/.atlas/config.yaml',
+              '  2. Under `mcp.servers:` add an entry like:',
+              '',
+              '       - name: my-server',
+              '         transport: stdio   # or http',
+              '         command: npx       # for stdio',
+              '         args: [-y, "@vendor/mcp-server"]',
+              '         env: {}',
+              '         enabled: true',
+              '',
+              '     For HTTP servers use `url:` and optional `headers:` instead.',
+              '  3. Restart atlas to load the new server.'
+            ].join('\n')}
+            tone="info"
+            onClose={() => setOverlay('config-mcp')}
+          />
+        ) : null}
+        {overlay === 'config-mcp-add-env' && mcpAddState ? (() => {
+          const sug = findSuggestion(mcpAddState.id);
+          const spec = sug?.env[mcpAddState.envIndex];
+          if (!sug || !spec) {
+            setOverlay('config-mcp-add-confirm');
+            return null;
+          }
+          const friendly: Record<string, { title: string; helper: string }> = {
+            GITHUB_PERSONAL_ACCESS_TOKEN: {
+              title: 'Paste your GitHub Personal Access Token',
+              helper:
+                'Create one at https://github.com/settings/tokens (classic\nor fine-grained). At minimum `repo` for private repos, or\n`public_repo` for public-only.'
+            },
+            HIGGSFIELD_API_KEY: {
+              title: 'Paste your Higgsfield API key',
+              helper: 'Grab it from https://higgsfield.ai/mcp → your account.'
+            },
+            FIGMA_API_TOKEN: {
+              title: 'Paste your Figma personal access token',
+              helper:
+                'Figma → Settings → Account → Personal access tokens.'
+            }
+          };
+          const f = friendly[spec.key];
+          const title = f
+            ? `${f.title}${spec.required ? '' : ' (optional)'}`
+            : `${sug.name} → ${spec.key}${spec.required ? ' (required)' : ' (optional)'}`;
+          const help = (f?.helper ?? spec.description) +
+            `\n\nServer ${sug.name} · env ${mcpAddState.envIndex + 1} of ${sug.env.length}` +
+            (spec.required ? '' : '\nLeave blank + press ↵ to skip.');
+          return (
+            <KeyEntry
+              key={`mcpenv:${mcpAddState.id}:${mcpAddState.envIndex}`}
+              title={title}
+              help={help}
+              placeholder={spec.placeholder ?? ''}
+              mask
+              onSubmit={(v) => {
+                const value = v.trim();
+                const next: Record<string, string> = { ...mcpAddState.collected };
+                if (value.length > 0) next[spec.key] = value;
+                else if (spec.required) {
+                  pushItem('error', `${spec.key} is required`);
+                  return;
+                }
+                const nextIdx = mcpAddState.envIndex + 1;
+                setMcpAddState({
+                  id: mcpAddState.id,
+                  envIndex: nextIdx,
+                  collected: next
+                });
+                if (nextIdx >= sug.env.length) {
+                  setOverlay('config-mcp-add-confirm');
+                } else {
+                  // stay on the env overlay; React will pick up the
+                  // bumped envIndex and render the next spec.
+                }
+              }}
+              onCancel={() => {
+                setMcpAddState(null);
+                setOverlay('config-mcp');
+              }}
+            />
+          );
+        })() : null}
+        {overlay === 'config-mcp-add-confirm' && mcpAddState ? (() => {
+          const sug = findSuggestion(mcpAddState.id);
+          if (!sug) {
+            setMcpAddState(null);
+            setOverlay('config-mcp');
+            return null;
+          }
+          const summary: string[] = [];
+          if (sug.transport === 'http') {
+            summary.push(`url: ${sug.url}`);
+            const hdrKeys = Object.keys(sug.headerTemplate);
+            if (hdrKeys.length > 0) summary.push(`headers: ${hdrKeys.join(', ')}`);
+          } else {
+            summary.push(`command: ${[sug.command, ...sug.args].join(' ')}`);
+          }
+          const collectedKeys = Object.keys(mcpAddState.collected);
+          if (collectedKeys.length > 0) {
+            summary.push(`secrets: ${collectedKeys.join(', ')}`);
+          }
+          return (
+            <Picker
+              title={`Add MCP server '${sug.name}'? · ${summary.join(' · ')}`}
+              options={[
+                { value: 'no', label: 'No — cancel', description: '' },
+                {
+                  value: 'yes',
+                  label: 'Yes — save to ~/.atlas/config.yaml',
+                  description: ''
+                }
+              ]}
+              hint="↵ confirm · Esc cancel"
+              onChoose={(choice) => {
+                if (choice !== 'yes') {
+                  setMcpAddState(null);
+                  setOverlay('config-mcp');
+                  return;
+                }
+                const baseCfg = props.config;
+                if (!baseCfg) {
+                  pushItem('error', 'no config — cannot save');
+                  setMcpAddState(null);
+                  setOverlay(null);
+                  return;
+                }
+                const entry: McpServerConfig = sug.transport === 'http'
+                  ? {
+                      name: sug.name,
+                      transport: 'http',
+                      url: sug.url,
+                      args: [],
+                      env: {},
+                      headers: Object.fromEntries(
+                        Object.entries(sug.headerTemplate).map(([k, v]) => [
+                          k,
+                          v.replace(/\$\{([A-Z0-9_]+)\}/g, (_, key: string) =>
+                            mcpAddState.collected[key] ?? ''
+                          )
+                        ])
+                      ),
+                      enabled: true
+                    }
+                  : {
+                      name: sug.name,
+                      transport: 'stdio',
+                      command: sug.command,
+                      args: [...sug.args],
+                      env: { ...mcpAddState.collected },
+                      headers: {},
+                      enabled: true
+                    };
+                const next: AtlasConfig = {
+                  ...baseCfg,
+                  mcp: {
+                    ...baseCfg.mcp,
+                    servers: [
+                      ...(baseCfg.mcp?.servers ?? []).filter((s) => s.name !== entry.name),
+                      entry
+                    ]
+                  }
+                };
+                void saveConfig(next).then((r) => {
+                  if (!r.ok) {
+                    pushItem('error', `save failed: ${r.error.message}`);
+                  } else {
+                    pushItem(
+                      'system',
+                      `✓ added MCP server '${sug.name}'. Restart atlas to spawn it.`
+                    );
+                  }
+                });
+                setMcpAddState(null);
+                setOverlay(null);
+              }}
+              onCancel={() => {
+                setMcpAddState(null);
+                setOverlay('config-mcp');
+              }}
+            />
+          );
+        })() : null}
         {overlay === 'config-ship' ? (() => {
           const cfg = props.config;
           const cur = cfg?.ship?.autoResolve ?? shipAutoResolveRef.current;
@@ -4677,6 +5054,10 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             onChoose={(value) => {
               if (value === '__new__') {
                 setTranscript([]);
+                messagesRef.current = [];
+                sessionRef.current = null;
+                setSessionId(null);
+                setSessionTitle(null);
                 transcriptKey.current += 1;
                 pushItem('system', '✦ new session — transcript cleared.');
                 setOverlay(null);
@@ -4733,6 +5114,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                     }));
                     setTranscript(items);
                     transcriptKey.current += 1;
+                    messagesRef.current = [...r.value.messages];
+                    sessionRef.current = r.value;
                     setSessionId(r.value.id);
                     setSessionTitle(r.value.title ?? null);
                     pushItem('system', `✦ resumed session ${target} (${items.length} turns)`);

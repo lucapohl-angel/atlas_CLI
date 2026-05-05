@@ -197,19 +197,47 @@ interface TurnStep {
   readonly detail?: string;
   /** Tool name — used to look up the icon/color. Tool steps only. */
   readonly toolName?: string;
+  /**
+   * Optional file basename (rendered yellow next to the verb). Set
+   * for read/write/edit/delete steps so the path is visually
+   * distinct from the verb and the elapsed time.
+   */
+  readonly filePath?: string;
+  /**
+   * Optional shell command preview (rendered purple inside backticks).
+   * Set for terminal/exec steps.
+   */
+  readonly command?: string;
+  /**
+   * Optional line-count delta — added (+green) and removed (-red),
+   * shown after the elapsed time, à la VS Code's diff strip.
+   * Set for read (linesAdded only), write (linesAdded only), and
+   * edit (both) tool calls.
+   */
+  readonly linesAdded?: number;
+  readonly linesRemoved?: number;
 }
 
 /**
- * Heuristic verb-first label for a tool call. Mirrors VS Code's
- * "Reading file.ts / Edited config.json / Searched 'foo'". Falls
- * back to the bare tool name for anything we don't recognise so a
- * new MCP tool still shows up sensibly.
+ * Structured verb-first label for a tool call. Mirrors VS Code's
+ * "Reading file.ts / Edited config.json / Searched 'foo'" — the
+ * verb, optional file basename (rendered yellow), and optional
+ * shell command (rendered purple) come back as separate fields so
+ * the timeline can colorise them. Falls back to the bare tool name
+ * for anything we don't recognise so a new MCP tool still shows up
+ * sensibly.
  */
-const labelForToolCall = (
+interface ToolCallParts {
+  readonly verb: string;
+  readonly filePath?: string;
+  readonly command?: string;
+}
+
+const describeToolCall = (
   name: string,
   args: unknown,
   past: boolean
-): string => {
+): ToolCallParts => {
   // `args` arrives as the raw JSON string from the provider; parse
   // best-effort so a malformed payload doesn't crash the timeline.
   let parsed: Record<string, unknown> = {};
@@ -238,24 +266,34 @@ const labelForToolCall = (
   };
   const path = baseOf(a.path ?? a.filePath ?? a.file ?? a.relativePath ?? a.uri);
   if (/(^|_)read(_|file|dir|page|webpage|skill|notebook)/i.test(name)) {
-    return path ? `${past ? 'Read' : 'Reading'} ${path}` : past ? 'Read' : 'Reading';
+    return path
+      ? { verb: past ? 'Read' : 'Reading', filePath: path }
+      : { verb: past ? 'Read' : 'Reading' };
   }
   if (/list_dir|list_files|file_search/i.test(name)) {
     const q = truncate(a.query ?? a.path ?? a.pattern, 40);
-    return `${past ? 'Listed' : 'Listing'} ${q || 'files'}`;
+    return { verb: past ? 'Listed' : 'Listing', filePath: q || 'files' };
   }
   if (/grep|search/i.test(name) && !/web/i.test(name)) {
     const q = truncate(a.query ?? a.pattern ?? '', 40);
-    return q ? `${past ? 'Searched' : 'Searching'} "${q}"` : past ? 'Searched' : 'Searching';
+    return q
+      ? { verb: `${past ? 'Searched' : 'Searching'} "${q}"` }
+      : { verb: past ? 'Searched' : 'Searching' };
   }
   if (/(^|_)write(_|file|notebook)?|create_file|create_directory/i.test(name)) {
-    return path ? `${past ? 'Wrote' : 'Writing'} ${path}` : past ? 'Wrote' : 'Writing';
+    return path
+      ? { verb: past ? 'Wrote' : 'Writing', filePath: path }
+      : { verb: past ? 'Wrote' : 'Writing' };
   }
   if (/edit|replace_string|multi_replace|insert_edit|edit_notebook|patch/i.test(name)) {
-    return path ? `${past ? 'Edited' : 'Editing'} ${path}` : past ? 'Edited' : 'Editing';
+    return path
+      ? { verb: past ? 'Edited' : 'Editing', filePath: path }
+      : { verb: past ? 'Edited' : 'Editing' };
   }
   if (/delete|remove/i.test(name)) {
-    return path ? `${past ? 'Deleted' : 'Deleting'} ${path}` : past ? 'Deleted' : 'Deleting';
+    return path
+      ? { verb: past ? 'Deleted' : 'Deleting', filePath: path }
+      : { verb: past ? 'Deleted' : 'Deleting' };
   }
   if (/web_fetch|fetch_webpage|fetch_url|http_get/i.test(name)) {
     let host = '';
@@ -272,33 +310,118 @@ const labelForToolCall = (
         host = truncate(a.urls[0], 40);
       }
     }
-    return host ? `${past ? 'Fetched' : 'Fetching'} ${host}` : past ? 'Fetched' : 'Fetching';
+    return host
+      ? { verb: past ? 'Fetched' : 'Fetching', filePath: host }
+      : { verb: past ? 'Fetched' : 'Fetching' };
   }
   if (/web_search|search_web/i.test(name)) {
     const q = truncate(a.query ?? '', 40);
-    return q ? `${past ? 'Searched web for' : 'Searching web for'} "${q}"` : past ? 'Searched web' : 'Searching web';
+    return q
+      ? { verb: `${past ? 'Searched web for' : 'Searching web for'} "${q}"` }
+      : { verb: past ? 'Searched web' : 'Searching web' };
   }
   if (/run_in_terminal|terminal|shell|exec|run_command/i.test(name)) {
     const cmd = truncate(a.command ?? a.cmd ?? '', 40);
-    return cmd ? `${past ? 'Ran' : 'Running'} \`${cmd}\`` : past ? 'Ran shell' : 'Running shell';
+    return cmd
+      ? { verb: past ? 'Ran' : 'Running', command: cmd }
+      : { verb: past ? 'Ran shell' : 'Running shell' };
   }
   if (/skill/i.test(name)) {
     const id = truncate(a.skill ?? a.name ?? a.id ?? '', 40);
-    return id ? `${past ? 'Read skill' : 'Reading skill'} ${id}` : past ? 'Read skill' : 'Reading skill';
+    return id
+      ? { verb: past ? 'Read skill' : 'Reading skill', filePath: id }
+      : { verb: past ? 'Read skill' : 'Reading skill' };
   }
   if (/think|plan|discover|reason/i.test(name)) {
-    return past ? 'Planned' : 'Planning';
+    return { verb: past ? 'Planned' : 'Planning' };
   }
   if (/ship|git_commit|commit/i.test(name)) {
-    return past ? 'Shipped' : 'Shipping';
+    return { verb: past ? 'Shipped' : 'Shipping' };
   }
   if (/todo/i.test(name)) {
-    return past ? 'Updated todos' : 'Updating todos';
+    return { verb: past ? 'Updated todos' : 'Updating todos' };
   }
   if (/ask_question|user_input/i.test(name)) {
-    return past ? 'Asked you' : 'Asking you';
+    return { verb: past ? 'Asked you' : 'Asking you' };
   }
-  return past ? `Used ${name}` : `Using ${name}`;
+  return { verb: past ? `Used ${name}` : `Using ${name}` };
+};
+
+/**
+ * Compute a `+added / -removed` line delta for a tool call so the
+ * timeline can render a VS Code-style diff strip. Reads / writes
+ * report the file's line count under `linesAdded`. Edits parse
+ * `oldString` / `newString` (or the array of replacements for
+ * `multi_replace_string_in_file`) and report both sides.
+ *
+ * Returns an empty object when the tool either isn't a file op or
+ * we can't extract enough info — never throws.
+ */
+const computeLineStats = (
+  name: string,
+  args: unknown,
+  result: unknown
+): { linesAdded?: number; linesRemoved?: number } => {
+  // Parse args (mirrors the parser inside describeToolCall — kept
+  // local so neither helper needs to allocate a shared cache).
+  let a: Record<string, unknown> = {};
+  if (typeof args === 'string' && args.length > 0) {
+    try {
+      const v = JSON.parse(args) as unknown;
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        a = v as Record<string, unknown>;
+      }
+    } catch {
+      // ignore
+    }
+  } else if (args && typeof args === 'object' && !Array.isArray(args)) {
+    a = args as Record<string, unknown>;
+  }
+  const lineCount = (s: unknown): number => {
+    if (typeof s !== 'string' || s.length === 0) return 0;
+    return s.split('\n').length;
+  };
+  // Read* — count lines in the result. Tool may return either the
+  // file content directly (string) or an object like `{ content }`.
+  if (/(^|_)read(_|file|notebook)/i.test(name)) {
+    if (typeof result === 'string') return { linesAdded: lineCount(result) };
+    if (result && typeof result === 'object') {
+      const o = result as Record<string, unknown>;
+      const text = o.content ?? o.text ?? o.value;
+      if (typeof text === 'string') return { linesAdded: lineCount(text) };
+    }
+    return {};
+  }
+  // Write/create — count lines in the args' content payload.
+  if (/(^|_)write(_|file)?|create_file/i.test(name)) {
+    const text = a.content ?? a.text ?? a.body ?? a.value;
+    if (typeof text === 'string') return { linesAdded: lineCount(text) };
+    return {};
+  }
+  // Single-shot edit — diff the two literal blocks.
+  if (/replace_string|insert_edit|patch/i.test(name) && !/multi/i.test(name)) {
+    const oldStr = a.oldString ?? a.old_str ?? a.search ?? '';
+    const newStr = a.newString ?? a.new_str ?? a.replace ?? a.insert_text ?? '';
+    return { linesAdded: lineCount(newStr), linesRemoved: lineCount(oldStr) };
+  }
+  // Multi-edit — sum across the array.
+  if (/multi_replace|multi_edit/i.test(name)) {
+    const list = a.replacements ?? a.edits ?? a.patches;
+    if (Array.isArray(list)) {
+      let added = 0;
+      let removed = 0;
+      for (const r of list) {
+        if (r && typeof r === 'object') {
+          const o = r as Record<string, unknown>;
+          added += lineCount(o.newString ?? o.new_str ?? '');
+          removed += lineCount(o.oldString ?? o.old_str ?? '');
+        }
+      }
+      return { linesAdded: added, linesRemoved: removed };
+    }
+    return {};
+  }
+  return {};
 };
 
 /**
@@ -392,7 +515,23 @@ const renderStepRow = (
         <text fg={glyphColor}>{`${glyph} `}</text>
         <text fg={labelColor}>{`${tool.icon} `}</text>
         <text fg={labelColor} attributes={BOLD_ATTR}>{step.label}</text>
+        {step.filePath ? (
+          <text fg={palette.warning} attributes={BOLD_ATTR}>{` ${step.filePath}`}</text>
+        ) : null}
+        {step.command ? (
+          <>
+            <text fg={palette.textDim}> `</text>
+            <text fg={palette.accent}>{step.command}</text>
+            <text fg={palette.textDim}>`</text>
+          </>
+        ) : null}
         <text fg={palette.textDim}>{`  ${fmtElapsed(elapsed)}`}</text>
+        {typeof step.linesAdded === 'number' && step.linesAdded > 0 ? (
+          <text fg={palette.success}>{`  +${step.linesAdded}`}</text>
+        ) : null}
+        {typeof step.linesRemoved === 'number' && step.linesRemoved > 0 ? (
+          <text fg={palette.error}>{` -${step.linesRemoved}`}</text>
+        ) : null}
       </box>
       {detailLines.map((line, i) => (
         <box
@@ -450,6 +589,7 @@ type OverlayKind =
   | 'config-key-openrouter'
   | 'config-key-anthropic'
   | 'config-mcp'
+  | 'config-ship'
   | 'config-info'
   | 'mcps-manage'
   | 'mcps-actions'
@@ -1094,6 +1234,20 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   const shipPromptOnConflictRef = useRef<boolean>(
     props.config?.ship?.promptOnConflict ?? false
   );
+  // Live ship-conflict overlay state. When ship_apply hits a
+  // conflict and shipPromptOnConflictRef is true, we set this and
+  // surface the strategy picker; the resolver ref holds the pending
+  // promise so the user's pick unblocks the agent loop.
+  const [shipConflict, setShipConflict] = useState<{
+    readonly base: string;
+    readonly branch: string;
+    readonly conflictFiles: readonly string[];
+    readonly selected: 'abort' | 'ours' | 'theirs' | 'ai';
+    readonly persist: boolean;
+  } | null>(null);
+  const shipResolveResolverRef = useRef<
+    ((v: { strategy: 'abort' | 'ours' | 'theirs' | 'ai'; persist: boolean } | null) => void) | null
+  >(null);
   // Auto-learn toggle (just a flag for now — the actual reflection
   // pipeline lives in @atlas/core and is wired in the Ink TUI; the
   // OpenTUI variant exposes the toggle so the surface matches).
@@ -2868,14 +3022,34 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             autoResolve: shipAutoResolveRef.current,
             promptOnConflict: shipPromptOnConflictRef.current
           },
-          // Conflict callback — the OpenTUI variant doesn't pop the
-          // overlay yet, so we just resolve to the configured default.
-          // This keeps `ship_apply` from blocking when it expects the
-          // host to ask the user.
-          shipResolveAsk: async () => ({
-            strategy: shipAutoResolveRef.current,
-            persist: false
-          }),
+          // Conflict callback. When prompt-on-conflict is enabled,
+          // pop the ship-conflict overlay and wait for the user's
+          // pick. Otherwise (or if the user hits Esc → null), fall
+          // back to the configured strategy so the loop never blocks
+          // forever.
+          shipResolveAsk: async (req) =>
+            new Promise((resolve) => {
+              if (!shipPromptOnConflictRef.current) {
+                resolve({ strategy: shipAutoResolveRef.current, persist: false });
+                return;
+              }
+              shipResolveResolverRef.current = (pick) => {
+                resolve(
+                  pick ?? { strategy: shipAutoResolveRef.current, persist: false }
+                );
+              };
+              setShipConflict({
+                base: req.base,
+                branch: req.branch,
+                conflictFiles: req.conflictFiles,
+                selected:
+                  shipAutoResolveRef.current === 'abort'
+                    ? 'ai'
+                    : shipAutoResolveRef.current,
+                persist: false
+              });
+              setOverlay('ship-conflict');
+            }),
           callingAgent: { name: activeAgent.name },
           signal: ac.signal
         },
@@ -3080,15 +3254,18 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           // Push the matching timeline step. We key it on the same
           // call id so `tool_call_done` can flip it to past tense
           // without a second lookup.
+          const startParts = describeToolCall(ev.call.name, ev.call.arguments, false);
           setCurrentTurnSteps((prev) => [
             ...prev,
             {
               id: `step-${id}`,
               kind: 'tool',
-              label: labelForToolCall(ev.call.name, ev.call.arguments, false),
+              label: startParts.verb,
               status: 'running',
               startedAt: Date.now(),
-              toolName: ev.call.name
+              toolName: ev.call.name,
+              ...(startParts.filePath ? { filePath: startParts.filePath } : {}),
+              ...(startParts.command ? { command: startParts.command } : {})
             }
           ]);
           break;
@@ -3125,14 +3302,27 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               ? (ev.outcome.error as { message?: string } | undefined)?.message ?? 'error'
               : (ev.outcome as { result?: unknown }).result;
           const detail = firstLineOf(detailRaw);
+          const doneParts = describeToolCall(ev.call.name, ev.call.arguments, true);
+          const stats =
+            ev.outcome.type === 'error'
+              ? {}
+              : computeLineStats(ev.call.name, ev.call.arguments, detailRaw);
           setCurrentTurnSteps((prev) =>
             prev.map((s) =>
               s.id === stepId
                 ? {
                     ...s,
                     status: status === 'error' ? 'error' : 'ok',
-                    label: labelForToolCall(ev.call.name, ev.call.arguments, true),
+                    label: doneParts.verb,
                     finishedAt: Date.now(),
+                    ...(doneParts.filePath ? { filePath: doneParts.filePath } : {}),
+                    ...(doneParts.command ? { command: doneParts.command } : {}),
+                    ...(typeof stats.linesAdded === 'number'
+                      ? { linesAdded: stats.linesAdded }
+                      : {}),
+                    ...(typeof stats.linesRemoved === 'number'
+                      ? { linesRemoved: stats.linesRemoved }
+                      : {}),
                     ...(detail ? { detail } : {})
                   }
                 : s
@@ -3204,6 +3394,70 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // arrows, paste) are handled by the focused `<textarea>`.
   useKeyboard((key) => {
     if (overlay) {
+      // Ship-conflict overlay swallows all input — number keys (1-4)
+      // jump to a strategy, ↑/↓ move the cursor, p / space toggles
+      // persist, ↵ confirms, Esc resolves with null (the agent loop
+      // then falls back to the configured default).
+      if (overlay === 'ship-conflict' && shipConflict) {
+        const STRATS = ['abort', 'ours', 'theirs', 'ai'] as const;
+        if (key.name === 'escape') {
+          shipResolveResolverRef.current?.(null);
+          shipResolveResolverRef.current = null;
+          setShipConflict(null);
+          setOverlay(null);
+          return;
+        }
+        if (key.name === 'return') {
+          if (shipConflict.persist) {
+            shipAutoResolveRef.current = shipConflict.selected;
+            const baseCfg = props.config;
+            if (baseCfg) {
+              const next: AtlasConfig = {
+                ...baseCfg,
+                ship: { ...baseCfg.ship, autoResolve: shipConflict.selected }
+              };
+              void saveConfig(next).then((r) => {
+                if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+              });
+            }
+            pushItem(
+              'system',
+              `auto-resolve default set to ${shipConflict.selected}.`
+            );
+          }
+          shipResolveResolverRef.current?.({
+            strategy: shipConflict.selected,
+            persist: shipConflict.persist
+          });
+          shipResolveResolverRef.current = null;
+          setShipConflict(null);
+          setOverlay(null);
+          return;
+        }
+        if (key.name === 'up') {
+          const i = STRATS.indexOf(shipConflict.selected);
+          const nextSel = STRATS[(i - 1 + STRATS.length) % STRATS.length];
+          if (nextSel) setShipConflict({ ...shipConflict, selected: nextSel });
+          return;
+        }
+        if (key.name === 'down' || key.name === 'tab') {
+          const i = STRATS.indexOf(shipConflict.selected);
+          const nextSel = STRATS[(i + 1) % STRATS.length];
+          if (nextSel) setShipConflict({ ...shipConflict, selected: nextSel });
+          return;
+        }
+        if (key.sequence === 'p' || key.sequence === ' ') {
+          setShipConflict({ ...shipConflict, persist: !shipConflict.persist });
+          return;
+        }
+        const n = Number(key.sequence ?? '');
+        if (Number.isInteger(n) && n >= 1 && n <= 4) {
+          const pick = STRATS[n - 1];
+          if (pick) setShipConflict({ ...shipConflict, selected: pick });
+          return;
+        }
+        return;
+      }
       if (key.name === 'escape') {
         // Cancel an in-flight reflection sub-call so closing the
         // overlay also stops the streaming LLM call.
@@ -3883,6 +4137,13 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                   value: 'mcp',
                   label: 'MCP server          (model context protocol)',
                   description: mcpCount > 0 ? `● ${mcpCount} configured` : ''
+                },
+                {
+                  value: 'ship',
+                  label: '/ship merge defaults (auto-resolve, prompt-on-conflict)',
+                  description: cfg?.ship?.autoResolve
+                    ? `● ${cfg.ship.autoResolve}${cfg.ship.promptOnConflict ? ', prompt' : ''}`
+                    : ''
                 }
               ];
               return opts;
@@ -3931,6 +4192,10 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               }
               if (v === 'mcp') {
                 setOverlay('config-mcp');
+                return;
+              }
+              if (v === 'ship') {
+                setOverlay('config-ship');
                 return;
               }
             }}
@@ -4148,6 +4413,83 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             onCancel={() => setOverlay('config')}
           />
         ) : null}
+        {overlay === 'config-ship' ? (() => {
+          const cfg = props.config;
+          const cur = cfg?.ship?.autoResolve ?? shipAutoResolveRef.current;
+          const prompt = cfg?.ship?.promptOnConflict ?? shipPromptOnConflictRef.current;
+          const opts: PickerOption[] = [
+            {
+              value: 'autoresolve:abort',
+              label: `auto-resolve = abort   ${cur === 'abort' ? '●' : ' '}`,
+              description: 'stop on conflict, print a manual-resolution recipe'
+            },
+            {
+              value: 'autoresolve:ours',
+              label: `auto-resolve = ours    ${cur === 'ours' ? '●' : ' '}`,
+              description: 'keep the branch you are ON for every conflict'
+            },
+            {
+              value: 'autoresolve:theirs',
+              label: `auto-resolve = theirs  ${cur === 'theirs' ? '●' : ' '}`,
+              description: 'keep the branch being merged IN for every conflict'
+            },
+            {
+              value: 'autoresolve:ai',
+              label: `auto-resolve = ai      ${cur === 'ai' ? '●' : ' '}`,
+              description: 'let an AI agent resolve the markers (review!)'
+            },
+            {
+              value: 'prompt:toggle',
+              label: `prompt-on-conflict     ${prompt ? '[x]' : '[ ]'}`,
+              description: prompt
+                ? 'currently ON — atlas will pop the strategy picker on every conflict'
+                : 'currently OFF — atlas will use the auto-resolve default silently'
+            }
+          ];
+          return (
+            <Picker
+              title="/ship merge defaults"
+              descriptionColor={palette.success}
+              options={opts}
+              hint="↑/↓ navigate · ↵ apply · Esc back"
+              onChoose={(v) => {
+                const baseCfg = cfg;
+                if (!baseCfg) {
+                  pushItem('error', 'no config — cannot persist');
+                  return;
+                }
+                let next: AtlasConfig = baseCfg;
+                if (v.startsWith('autoresolve:')) {
+                  const strat = v.split(':')[1] as 'abort' | 'ours' | 'theirs' | 'ai';
+                  shipAutoResolveRef.current = strat;
+                  next = {
+                    ...baseCfg,
+                    ship: { ...baseCfg.ship, autoResolve: strat }
+                  };
+                  pushItem('system', `ship.autoResolve → ${strat}`);
+                } else if (v === 'prompt:toggle') {
+                  const nextPrompt = !prompt;
+                  shipPromptOnConflictRef.current = nextPrompt;
+                  next = {
+                    ...baseCfg,
+                    ship: { ...baseCfg.ship, promptOnConflict: nextPrompt }
+                  };
+                  pushItem(
+                    'system',
+                    `ship.promptOnConflict → ${nextPrompt ? 'on' : 'off'}`
+                  );
+                }
+                void saveConfig(next).then((r) => {
+                  if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+                });
+                // Stay on the overlay so the user can flip multiple
+                // settings in a row without bouncing back to the
+                // config menu. Esc takes them back manually.
+              }}
+              onCancel={() => setOverlay('config')}
+            />
+          );
+        })() : null}
         {overlay === 'mcps-manage' ? (
           <Picker
             title="MCP servers — pick one to manage"
@@ -4975,6 +5317,83 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                 setOverlay(null);
               }}
             />
+          );
+        })() : null}
+        {overlay === 'ship-conflict' && shipConflict ? (() => {
+          const STRATS = [
+            { key: 'abort' as const, desc: 'stop, print manual-resolution recipe' },
+            {
+              key: 'ours' as const,
+              desc: `keep YOUR side — ${shipConflict.base} wins on every conflict`
+            },
+            {
+              key: 'theirs' as const,
+              desc: `keep THEIR side — ${shipConflict.branch} wins on every conflict`
+            },
+            {
+              key: 'ai' as const,
+              desc: 'let an AI agent read both sides + resolve markers (review!)'
+            }
+          ];
+          const cols = width;
+          const dialogWidth = Math.min(cols - 4, 90);
+          const left = Math.max(2, Math.floor((cols - dialogWidth) / 2));
+          return (
+            <box
+              style={{
+                position: 'absolute',
+                top: 2,
+                left,
+                width: dialogWidth,
+                flexDirection: 'column',
+                borderStyle: 'double',
+                borderColor: palette.warning,
+                backgroundColor: palette.backgroundElement,
+                padding: 1
+              }}
+            >
+              <text fg={palette.warning} attributes={BOLD_ATTR}>
+                {`!!  Merge conflict — how should atlas resolve it?`}
+              </text>
+              <box style={{ marginTop: 1, flexDirection: 'column', backgroundColor: palette.backgroundElement }}>
+                <text fg={palette.text}>
+                  {`Merging ${shipConflict.branch} into ${shipConflict.base} hit ${shipConflict.conflictFiles.length} conflicting file${shipConflict.conflictFiles.length === 1 ? '' : 's'}:`}
+                </text>
+                {shipConflict.conflictFiles.slice(0, 8).map((f) => (
+                  <text key={f} fg={palette.textMuted}>{`  · ${f}`}</text>
+                ))}
+                {shipConflict.conflictFiles.length > 8 ? (
+                  <text fg={palette.textMuted}>
+                    {`  · (+${shipConflict.conflictFiles.length - 8} more)`}
+                  </text>
+                ) : null}
+              </box>
+              <box style={{ marginTop: 1, flexDirection: 'column', backgroundColor: palette.backgroundElement }}>
+                {STRATS.map((s, i) => {
+                  const active = shipConflict.selected === s.key;
+                  return (
+                    <text key={s.key} fg={active ? palette.primaryBright : palette.text}>
+                      {`  ${active ? '>' : ' '} [${i + 1}] ${s.key.padEnd(7)} ${s.desc}`}
+                    </text>
+                  );
+                })}
+                <box style={{ marginTop: 1, backgroundColor: palette.backgroundElement }}>
+                  <text fg={palette.textDim}>
+                    {`tip: "ours" = the branch you're ON (${shipConflict.base}). "theirs" = the one being merged IN (${shipConflict.branch}). git's wording, not ours.`}
+                  </text>
+                </box>
+              </box>
+              <box style={{ marginTop: 1, backgroundColor: palette.backgroundElement }}>
+                <text fg={palette.text}>
+                  {`  ${shipConflict.persist ? '[x]' : '[ ]'} [p / space] save this choice as my default for the future`}
+                </text>
+              </box>
+              <box style={{ marginTop: 1, backgroundColor: palette.backgroundElement }}>
+                <text fg={palette.textDim}>
+                  {`up/down select · 1-4 jump · enter confirm · esc abort`}
+                </text>
+              </box>
+            </box>
           );
         })() : null}
         {overlay === 'skills-list' ? (

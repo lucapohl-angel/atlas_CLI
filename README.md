@@ -9,7 +9,6 @@ Hand it a vague idea. Get back a planned, built, tested, committed feature —
 with a Greek pantheon of specialist agents doing the work.
 
 [![npm version](https://img.shields.io/npm/v/atlas-os?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/atlas-os)
-[![npm downloads](https://img.shields.io/npm/dm/atlas-os?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/atlas-os)
 [![GitHub stars](https://img.shields.io/github/stars/lucapohl-angel/atlas_CLI?style=for-the-badge&logo=github&color=181717)](https://github.com/lucapohl-angel/atlas_CLI)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 
@@ -19,7 +18,7 @@ with a Greek pantheon of specialist agents doing the work.
 npx atlas-os@latest
 ```
 
-**Works on Mac, Windows, and Linux. Bring any model — Claude, GPT, Gemini, local Ollama, OpenRouter.**
+**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, or OpenRouter.**
 
 <br>
 
@@ -29,9 +28,9 @@ npx atlas-os@latest
 
 [Why I Built This](#why-i-built-this) ·
 [How It Compares](#how-it-compares) ·
-[How It Works](#how-it-works) ·
 [Install](#install) ·
-[Walkthrough](./examples/sdd-walkthrough.md)
+[How It Works](#how-it-works) ·
+[Dev](#dev)
 
 </div>
 
@@ -41,12 +40,12 @@ npx atlas-os@latest
 
 Atlas exists because most AI coding CLIs are either:
 
-- a single chatbot that loses project context after a few prompts, or
-- a heavyweight process framework with too much ceremony for small teams.
+- a single chatbot that loses project shape after a few prompts, or
+- a process you have to assemble yourself before it can help you ship.
 
 ATLAS·OS keeps the flow simple (`atlas`, describe the goal, ship) while keeping
 the engine serious: multi-agent orchestration, typed tools, hook-based safety,
-and a persistent context pack.
+and persistent project state.
 
 ---
 
@@ -54,69 +53,53 @@ and a persistent context pack.
 
 | Capability | **ATLAS·OS** | Claude Code | OpenCode | Gemini CLI | Kilo Code |
 |---|---|---|---|---|---|
-| Multi-provider models | ✅ Anthropic · OpenAI · Google · OpenRouter · Ollama | ❌ Claude only (Anthropic / Bedrock / Vertex) | ✅ Provider-agnostic | ❌ Gemini only | ✅ 500+ via Kilo router |
-| Multi-agent orchestration | ✅ Greek pantheon, role-routed by project state | ✅ Agent Teams + subagents | ⚠️ Build / Plan + `@general` subagent | ⚠️ Subagents (experimental) | ⚠️ Modes (Architect / Coder / Debugger) |
-| Spec-driven pipeline (PRD → arch → stories → impl → QA → release) | ✅ Built into the orchestrator | ❌ Bring your own | ❌ Bring your own | ❌ Bring your own | ❌ Bring your own |
-| Lifecycle hooks (block / modify / allow tool calls) | ✅ Typed TS hooks | ✅ Extensive — shell, HTTP, MCP, prompt, agent | ❌ Plugins / MCP instead | ✅ Hooks supported | ❌ Plugins / MCP instead |
-| Agent Skills | ✅ Built-in skill loader | ✅ | ✅ | ✅ | ⚠️ Inherited from OpenCode |
-| Project context auto-injected | ✅ Six-file context pack | ⚠️ Single `CLAUDE.md` | ⚠️ Single `AGENTS.md` | ⚠️ Single `GEMINI.md` | ⚠️ Single `AGENTS.md` |
-| MCP servers | ⚠️ Planned | ✅ | ✅ | ✅ | ✅ |
-| Terminal-first | ✅ `atlas` opens TUI | ✅ | ✅ | ✅ | ⚠️ VS Code extension first; CLI added later |
-| License | ✅ MIT | ❌ Proprietary | ✅ MIT | ✅ Apache-2.0 | ✅ MIT |
+| Provider choice | Anthropic · OpenAI · OpenRouter | Claude-focused | Provider-agnostic | Gemini-focused | Kilo router |
+| Multi-agent orchestration | Built-in Greek pantheon, routed by project state | Agent teams + subagents | Build / Plan + subagent | Subagents | Modes |
+| Spec-driven pipeline | Built-in PRD -> architecture -> stories -> implementation -> QA -> release | Bring your own | Bring your own | Bring your own | Bring your own |
+| Lifecycle hooks | Typed TypeScript hooks around tools/messages | Hook system | Plugins / MCP | Hooks | Plugins / MCP |
+| Agent skills | Built-in skill loader + learned skills | Skills | Skills | Skills | Skills |
+| MCP servers | Built in: stdio + Streamable HTTP, configured from the TUI | Built in | Built in | Built in | Built in |
+| Terminal-first | `atlas` opens the full-screen TUI | Terminal | Terminal | Terminal | VS Code-first, CLI available |
+| License | MIT | Proprietary | MIT | Apache-2.0 | MIT |
 
-> Verified against each tool's public docs. Atlas's edge isn't any single
-> feature — it's the opinionated **SDD pipeline + six-file context pack +
-> typed TS hooks/tools** shipped in one package. The other tools each do parts
-> of this well; none ship the whole loop out of the box.
+Atlas's edge is not one isolated feature. It is the SDD pipeline, specialist
+agents, typed hooks/tools, MCP integration, and release workflow shipped as one
+terminal system.
 
 ---
 
 ## Install
 
+### macOS
+
 ```bash
-# One-shot (latest)
 npx atlas-os@latest
 
-# Or install globally — works with any package manager
-npm  install -g atlas-os
-pnpm add    -g atlas-os
-bun  install -g atlas-os
-yarn global add  atlas-os
-
+# Or install globally
+npm install -g atlas-os
 atlas
 ```
 
-The install grabs a small dispatcher (~5 KB JS) plus **one** native
-binary matching your platform (~100 MB). All other platform binaries are
-declared as `optionalDependencies`, so npm / pnpm / bun / yarn skip the
-ones you don't need automatically. Atlas runs as a self-contained
-executable — no Node, Bun, or Python is required at runtime.
+### Linux
 
-If the native binary is unavailable for your platform (or fails to
-install), the dispatcher falls back to a bundled JS build that runs on
-your local Node 20+.
+```bash
+npx atlas-os@latest
 
-### Compatibility
+# Or install globally
+npm install -g atlas-os
+atlas
+```
 
-| OS | Status | Notes |
-|---|---|---|
-| Linux x64 / arm64 | ✅ Tested | Arch / Garuda, Ubuntu, Fedora, Raspberry Pi |
-| macOS (Intel + Apple Silicon) | ✅ Supported | Self-contained binary, no Node required |
-| Windows + WSL2 | ✅ Recommended for Windows users | Identical experience to Linux |
-| Windows native (PowerShell / cmd) | ⚠️ Partial | Shell tool assumes POSIX; SearXNG (Docker) unavailable |
+### Windows
 
-Native binaries are built from source by Bun's `--compile` (CI) and
-embed the runtime, so end-users do not need any extra dependency. The JS
-fallback requires **Node.js 20+**.
-
-### Windows setup (WSL2 — recommended)
+WSL2 is recommended for the full Atlas experience.
 
 ```powershell
-# In an elevated PowerShell, one-time:
+# In an elevated PowerShell, one time:
 wsl --install -d Ubuntu
 ```
 
-Then inside the new Ubuntu shell:
+Then inside Ubuntu:
 
 ```bash
 sudo apt update && sudo apt install -y nodejs npm
@@ -124,40 +107,49 @@ npm install -g atlas-os
 atlas
 ```
 
-Native Windows works for the core REPL, but the built-in shell tool runs POSIX
-commands and the optional SearXNG web-search needs Docker. Use WSL2 for full
-fidelity.
+Native Windows can run the core CLI, but the shell tool expects POSIX commands.
+Use WSL2 if you want tool execution to match Linux/macOS behavior.
 
-### VS Code setup
+### What Gets Installed
 
-The VS Code integrated terminal swallows shortcuts like `Ctrl+P` before the
-TUI sees them. Fix it in one command:
+The package installs a small dispatcher plus the native binary for your platform.
+Other platform binaries are optional dependencies and are skipped automatically.
+If the native binary is unavailable, Atlas falls back to the bundled JS build on
+Node.js 20+.
+
+### VS Code Setup
+
+The VS Code integrated terminal catches shortcuts like `Ctrl+P` before terminal
+apps can see them. Run this once if you use Atlas inside VS Code:
 
 ```bash
-atlas vscode-setup        # patches your VS Code settings.json
+atlas vscode-setup
 # then reload VS Code
 ```
 
-The patcher writes:
+Use `--dry-run` to preview the settings change, or `--path <file>` for a
+non-default VS Code settings file.
 
-- `terminal.integrated.sendKeybindingsToShell: true`
-- `commandsToSkipShell` overrides so `Ctrl+P`, `Ctrl+Shift+P`, `Ctrl+B`,
-  `Ctrl+J`, `Ctrl+W`, ``Ctrl+` `` reach Atlas instead of VS Code
+### Providers
 
-Use `--dry-run` to preview, or `--path <file>` for a non-default install
-location. Same constraint applies to Claude Code and OpenCode in the VS Code
-terminal — Atlas just ships a one-liner.
-
-Set one provider key:
+The easiest path is inside the TUI:
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...     # default — gives you every model
-export ANTHROPIC_API_KEY=sk-ant-...     # Claude direct
-export OPENAI_API_KEY=sk-...            # GPT direct
-export GOOGLE_API_KEY=...               # Gemini direct
+atlas
 ```
 
-Optional config (`~/.atlas/config.yaml`):
+Then open `/config`, choose a provider, and paste the key. Atlas stores it in
+`~/.atlas/config.yaml`.
+
+Environment variables also work:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...     # broad hosted-model catalog
+export ANTHROPIC_API_KEY=sk-ant-...     # Anthropic direct
+export OPENAI_API_KEY=sk-...            # OpenAI / ChatGPT direct
+```
+
+Optional config:
 
 ```yaml
 defaultProvider: openrouter
@@ -167,35 +159,63 @@ providers:
     apiKey: sk-or-...
 ```
 
-Bootstrap:
+### Project Bootstrap
+
+Run this once per machine or project workspace:
 
 ```bash
-atlas init       # install built-in agents, skills, templates, checklists
-atlas status     # the orchestrator tells you what to do next
-atlas            # open the TUI
+atlas init
 ```
+
+Then open Atlas:
+
+```bash
+atlas
+```
+
+New launches start on a fresh splash. Use `/sessions` or `/resume <id>` when you
+want to manually reopen an older transcript.
 
 ---
 
 ## How It Works
 
-1. Run `atlas init` once in a project.
-2. Launch with `atlas` and describe the goal.
-3. The orchestrator routes work by project state:
+### Greenfield
 
-```
-no PRD            →  Athena       (PM — writes PRD)
-PRD only          →  Prometheus   (architect — locks design)
-arch, no pack     →  Athena       (scaffold the context pack)
-pack, no stories  →  Hestia       (scrum master — breaks into stories)
-stories ready     →  Hercules     (dev — implements)
-implementation    →  Nemesis      (QA — verifies, files bugs)
-verified          →  Iris         (release — ships)
-```
-4. Agents use typed tools, lifecycle hooks, and checklists to keep quality and
-safety high while still moving fast.
+Use Atlas when you have an idea but no project shape yet.
 
-See [examples/sdd-walkthrough.md](./examples/sdd-walkthrough.md) for a full run.
+1. Run `atlas init`.
+2. Start `atlas`.
+3. Describe the product or feature.
+4. Atlas routes through planning, architecture, stories, implementation, QA,
+   and release.
+
+Typical flow:
+
+```text
+idea only         -> Athena      (PM: clarify and write the PRD)
+PRD ready         -> Prometheus  (architect: lock design and constraints)
+stories needed    -> Hestia      (scrum master: split into buildable work)
+story ready       -> Hercules    (dev: implement)
+implementation    -> Nemesis     (QA: verify and file issues)
+verified          -> Iris        (release: package and ship)
+```
+
+### Brownfield
+
+Use Atlas inside an existing repo when you want it to understand what is already
+there before changing code.
+
+1. Open the repo.
+2. Run `atlas init` if the built-in agents/skills are not installed yet.
+3. Start `atlas`.
+4. Use `/onboard` to map the codebase, reuse existing docs when available, and
+   generate or update onboarding artifacts.
+5. Ask for the change you want. Atlas should inspect the repo, plan narrowly,
+   edit, then run the repo's own verification gates.
+
+Sessions are saved, but Atlas does not auto-open the last one. Reopen old work
+from `/sessions` when you need it.
 
 ---
 
@@ -228,7 +248,19 @@ pnpm --filter atlas-os build && \
 pnpm lint
 ```
 
-More detail: [ARCHITECTURE.md](./ARCHITECTURE.md), [AGENTS.md](./AGENTS.md), [context/](./context/)
+Experienced-user tweaks:
+
+- Providers: edit `~/.atlas/config.yaml`, set provider env vars, or use
+  `/config` in the TUI.
+- MCP servers: use `/mcps` and `/mcps add` in the TUI, or edit
+  `~/.atlas/config.yaml` under `mcp.servers`.
+- Agents: add user agents under `~/.atlas/agents/<name>/AGENT.md`; project
+  overrides can live in `<repo>/.atlas/agents/`.
+- Skills: add skills under `~/.atlas/skills/<name>/SKILL.md`; use `/skills`
+  to inspect or toggle them.
+- Models: use `/model`, `/config`, or `defaultModel` / `fallbackModels` in
+  `~/.atlas/config.yaml`.
+- Sessions: use `/sessions` to resume, rename, or delete saved transcripts.
 
 ---
 

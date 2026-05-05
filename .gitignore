@@ -30,12 +30,15 @@ coverage/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
+.claude/
 *.swp
 *.swo
 .DS_Store
 
 # Atlas runtime
 .atlas-cache/
+context/*.local.md
+context/private/
 
 # OS
 Thumbs.db

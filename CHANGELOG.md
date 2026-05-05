@@ -32,6 +32,10 @@ semantic versioning.
   in the documented release quality gate.
 - CI and release tag builds now run the lint gate as part of quality
   verification before publishable artifacts are produced.
+- Atlas now starts on a fresh splash/transcript by default; saved sessions
+  are reopened only through explicit `--resume`, `/resume`, or `/sessions`.
+- Public README copy now matches the supported provider set and documents
+  install, provider setup, greenfield/brownfield flows, and advanced tweaks.
 
 ### Fixed
 - Anthropic message translation now drops empty assistant turns instead of

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   chooseStartupModel,
   providerForStartupModel,
+  shouldLoadStartupSession,
   type StartupModelSelectionInput
 } from './runTui.js';
 import type {
@@ -71,5 +72,13 @@ describe('startup model selection', () => {
         openrouter: runtime
       })
     ).toBe(runtime);
+  });
+});
+
+describe('startup session selection', () => {
+  it('starts fresh unless the user explicitly asks to resume', () => {
+    expect(shouldLoadStartupSession(undefined)).toBe(false);
+    expect(shouldLoadStartupSession('latest')).toBe(true);
+    expect(shouldLoadStartupSession('session_123')).toBe(true);
   });
 });

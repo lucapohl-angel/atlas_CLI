@@ -180,6 +180,11 @@ export const providerForStartupModel = (
   return kind ? providers[kind] ?? null : null;
 };
 
+export const shouldLoadStartupSession = (
+  resume: string | undefined
+): resume is string =>
+  resume !== undefined;
+
 /**
  * If the user hasn't configured a key explicitly but has Claude Code
  * installed, switch to the Anthropic provider with native model ids and
@@ -365,16 +370,15 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
   // Sessions: SessionStore writes JSON snapshots to ~/.atlas/sessions/.
   // Behavior:
   //   - --resume <id|latest>  -> explicit load (error surfaced if missing).
-  //   - no flag, sessions on disk -> silently auto-resume the most recent
-  //     one and tell the user how to start fresh (`/sessions new`).
-  //   - no flag, no sessions yet -> start blank. We do NOT create a
-  //     session record on boot anymore — the App lazily creates one on
-  //     the first user message so opening Atlas just to swap with
-  //     `/sessions` doesn't litter the store with empty entries.
+  //   - no flag -> always start fresh on the splash. Saved sessions are
+  //     still available through `/sessions` or `/resume <id>` after launch.
+  // We do NOT create a session record on boot anymore — the App lazily
+  // creates one on the first user message so opening Atlas just to swap
+  // with `/sessions` doesn't litter the store with empty entries.
   const sessionStore = new SessionStore();
   let initialSession: SessionRecord | null = null;
   let autoResumed = false;
-  if (opts.resume) {
+  if (shouldLoadStartupSession(opts.resume)) {
     const loaded =
       opts.resume === 'latest'
         ? await sessionStore.latest()
@@ -386,17 +390,11 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
         `atlas: could not resume session '${opts.resume}'${loaded.ok ? ' (no sessions saved yet)' : `: ${loaded.error.message}`}\n`
       );
     }
-  } else {
-    const latest = await sessionStore.latest();
-    if (latest.ok && latest.value) {
-      initialSession = latest.value;
-      autoResumed = true;
-    }
   }
 
   // Startup model priority:
   //   1. explicit --model
-  //   2. model from the resumed/latest session
+  //   2. model from an explicitly resumed session
   //   3. config defaultModel, when its provider is connected
   //   4. first model exposed by a connected provider
   const defaultModel = chooseStartupModel({

@@ -63,6 +63,8 @@ token-optimization** track on top of it.
 
 > Append newest at the top. One line each: `[shortsha] one-line summary`.
 
+- `[9f4d19c]` workflows now let `pnpm/action-setup` use the pinned
+  `packageManager` version, fixing release/CI setup.
 - `[2d76cf9]` v0.1.6 final cleanup: fresh startup splash by default,
   public README refresh, and local/private artifact ignores.
 - `[975523f]` v0.1.6 release prep: OpenTUI polish, inherited subagent approvals,

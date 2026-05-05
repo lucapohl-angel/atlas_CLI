@@ -64,6 +64,8 @@ token-optimization** track on top of it.
 
 > Append newest at the top. One line each: `[shortsha] one-line summary`.
 
+- `[975523f]` v0.1.6 release prep: OpenTUI polish, inherited subagent approvals,
+  lint/pnpm gates, and release workflow quality checks.
 - `[30e657d]` perf: 6 token/perf optimizations — Anthropic
   `cache_control` markers, head+tail tool-result truncation,
   `edit_file` tool, `routerModel` cheap-model router, sliding-window

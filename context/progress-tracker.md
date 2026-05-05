@@ -63,6 +63,8 @@ token-optimization** track on top of it.
 
 > Append newest at the top. One line each: `[shortsha] one-line summary`.
 
+- `[371ef5b]` terminal tool now kills POSIX process groups on timeout/abort,
+  fixing CI shell-child hangs.
 - `[9f4d19c]` workflows now let `pnpm/action-setup` use the pinned
   `packageManager` version, fixing release/CI setup.
 - `[2d76cf9]` v0.1.6 final cleanup: fresh startup splash by default,

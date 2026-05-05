@@ -1,0 +1,178 @@
+name: release
+
+# Cross-compiles atlas-os into one self-contained binary per platform
+# (linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64) using
+# `bun build --compile`.
+#
+# Publishing is OPT-IN ONLY:
+#   • Tags + pushes never publish — they only build and upload artifacts
+#     so you can download and test the binaries.
+#   • To actually publish, trigger this workflow manually
+#     (Actions → release → Run workflow) and set `publish=true`.
+#
+# Packages this would publish (when explicitly enabled):
+#   atlas-os                  ← dispatcher + JS fallback (this package)
+#   atlas-os-linux-x64        ← native binary for linux x64
+#   atlas-os-linux-arm64      ← native binary for linux arm64
+#   atlas-os-darwin-x64       ← native binary for macOS x64
+#   atlas-os-darwin-arm64     ← native binary for macOS arm64
+#   atlas-os-win32-x64        ← native binary for windows x64
+#
+# Required repository secret (only consumed when publish=true):
+#   • NPM_TOKEN  — npm automation token with publish access to the
+#                  atlas-os* package names.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to npm? Set to "true" to actually publish (default: false = build artifacts only).'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.slug }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        # Bun cross-compiles all targets from one Linux runner, so we
+        # use a matrix only for parallelism + per-target artifacts.
+        slug:
+          - linux-x64
+          - linux-arm64
+          - darwin-x64
+          - darwin-arm64
+          - win32-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install workspace deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build JS bundle
+        run: pnpm --filter atlas-os build
+
+      - name: Cross-compile native binary
+        run: bun run scripts/build-binaries.mjs ${{ matrix.slug }}
+
+      - name: Verify binary exists
+        run: |
+          if [ "${{ matrix.slug }}" = "win32-x64" ]; then
+            test -f "packages/binaries/${{ matrix.slug }}/bin/atlas.exe"
+          else
+            test -f "packages/binaries/${{ matrix.slug }}/bin/atlas"
+          fi
+          ls -lh "packages/binaries/${{ matrix.slug }}/bin/"
+
+      - name: Smoke-test (linux-x64 only)
+        if: matrix.slug == 'linux-x64'
+        run: |
+          ./packages/binaries/linux-x64/bin/atlas --version
+          ./packages/binaries/linux-x64/bin/atlas --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-binary-${{ matrix.slug }}
+          path: packages/binaries/${{ matrix.slug }}/bin/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    # Hard guard: only publish when the workflow was triggered manually
+    # AND the user explicitly set publish=true. Tag pushes will build
+    # artifacts but stop here.
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install workspace deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build JS bundle (for atlas-os fallback)
+        run: pnpm --filter atlas-os build
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Re-hydrate binary directories
+        run: |
+          for slug in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            mkdir -p "packages/binaries/$slug/bin"
+            cp -v "artifacts/atlas-binary-$slug/"* "packages/binaries/$slug/bin/"
+            if [ "$slug" != "win32-x64" ]; then
+              chmod +x "packages/binaries/$slug/bin/atlas"
+            fi
+          done
+
+      - name: Verify version alignment
+        run: |
+          ROOT_VERSION=$(node -p "require('./packages/cli/package.json').version")
+          echo "Top-level version: $ROOT_VERSION"
+          for slug in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            V=$(node -p "require('./packages/binaries/$slug/package.json').version")
+            if [ "$V" != "$ROOT_VERSION" ]; then
+              echo "::error::Version mismatch in atlas-os-$slug ($V vs $ROOT_VERSION)"
+              exit 1
+            fi
+          done
+
+      # Publish platform packages first so when atlas-os goes live, its
+      # optional-dep version is already resolvable on the registry.
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for slug in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            echo "→ publishing atlas-os-$slug"
+            (cd "packages/binaries/$slug" && npm publish --access public --provenance)
+          done
+
+      - name: Publish atlas-os dispatcher
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # The atlas-os package.json uses workspace:* for the optional
+          # platform deps. `pnpm publish` rewrites those to the real
+          # version automatically. We use pnpm here (not npm) for that
+          # reason. --no-git-checks lets it run on a tag commit.
+          pnpm --filter atlas-os publish --access public --no-git-checks --provenance

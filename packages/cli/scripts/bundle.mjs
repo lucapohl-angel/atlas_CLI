@@ -2,11 +2,13 @@
 // inlining @atlas/core (workspace) while keeping heavy runtime deps
 // (react, ink, pino, etc.) as external require()s resolved by npm.
 //
-// Output: packages/cli/dist/bin/atlas.js (executable, with shebang)
+// Output: packages/cli/dist/launcher.mjs (npm `bin`, no deps, dispatches
+//                                          to native binary or JS fallback)
+//         packages/cli/dist/bin/atlas.js (JS fallback, with shebang)
 //         packages/cli/dist/index.js     (library entry, optional)
 
 import { build } from 'esbuild';
-import { chmod, writeFile, readFile, mkdir } from 'node:fs/promises';
+import { chmod, copyFile, writeFile, readFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,5 +86,14 @@ await writeFile(
   'export {};\n',
   'utf8',
 );
+
+// 4. Launcher (no bundling — pure Node script with zero deps).
+//    This is what package.json `bin` points to. It tries the native
+//    Bun-compiled binary first, falls back to dist/bin/atlas.js.
+await copyFile(
+  resolve(root, 'src/launcher.mjs'),
+  resolve(root, 'dist/launcher.mjs'),
+);
+await chmod(resolve(root, 'dist/launcher.mjs'), 0o755);
 
 console.log('atlas-os bundle complete →', resolve(root, 'dist'));

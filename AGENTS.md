@@ -47,11 +47,33 @@ If you only have time for two files, read 1 and 5.
 atlas_CLI/
 ├── packages/
 │   ├── core/        @atlas/core — engine (providers, tools, hooks, skills, agents, orchestrator)
-│   └── cli/         atlas-os — bin entry, REPL, command parsing
+│   ├── cli/         atlas-os — bin entry, REPL, command parsing
+│   └── binaries/    per-platform npm packages that ship a Bun-compiled
+│                    `atlas` executable. Published as optionalDependencies
+│                    of atlas-os. Built by scripts/build-binaries.mjs.
+├── scripts/
+│   └── build-binaries.mjs   bun build --compile per target (linux-x64,
+│                            linux-arm64, darwin-x64, darwin-arm64,
+│                            win32-x64). Requires Bun on the build host.
+├── .github/workflows/
+│   └── release.yml          tag-triggered cross-compile + npm publish
 ├── tsconfig.base.json
 ├── pnpm-workspace.yaml
 └── package.json     monorepo root
 ```
+
+### Distribution model
+
+`atlas-os` ships a tiny launcher (`packages/cli/src/launcher.mjs`) as its
+npm `bin`. At runtime the launcher tries the matching
+`atlas-os-<platform>-<arch>` optional-dep package and execs the embedded
+`bin/atlas` binary. If that package isn't installed (unsupported
+platform, partial publish, or `--ignore-optional`), it falls back to
+running the bundled JS at `dist/bin/atlas.js` under Node.
+
+Releases are cut by pushing a `vX.Y.Z` tag. `release.yml` cross-compiles
+all 5 binaries from a single Linux runner with Bun, then publishes the 5
+platform packages **first** and the dispatcher last.
 
 ## Workflow
 

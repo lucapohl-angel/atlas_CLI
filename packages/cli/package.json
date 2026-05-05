@@ -32,7 +32,7 @@
   "author": "Luca Pohl Angel",
   "type": "module",
   "bin": {
-    "atlas": "dist/bin/atlas.js"
+    "atlas": "dist/launcher.mjs"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -43,6 +43,14 @@
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "optionalDependencies": {
+    "atlas-os-darwin-arm64": "workspace:*",
+    "atlas-os-darwin-x64": "workspace:*",
+    "atlas-os-linux-arm64": "workspace:*",
+    "atlas-os-linux-x64": "workspace:*",
+    "atlas-os-win32-x64": "workspace:*",
+    "playwright": "^1.49.0"
   },
   "scripts": {
     "build": "pnpm --filter @atlas/core build && rm -rf dist && tsc --noEmit -p tsconfig.build.json && node scripts/bundle.mjs",
@@ -55,6 +63,8 @@
     "prepublishOnly": "pnpm build && pnpm test:run"
   },
   "dependencies": {
+    "@opentui/core": "^0.2.2",
+    "@opentui/react": "^0.2.2",
     "commander": "^13.1.0",
     "fs-extra": "^11.3.0",
     "gray-matter": "^4.0.3",
@@ -70,9 +80,6 @@
     "yaml": "^2.8.3",
     "zod": "^3.24.2",
     "zod-to-json-schema": "^3.25.2"
-  },
-  "optionalDependencies": {
-    "playwright": "^1.49.0"
   },
   "devDependencies": {
     "@atlas/core": "workspace:*",

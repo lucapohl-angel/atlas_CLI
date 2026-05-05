@@ -107,6 +107,43 @@ export type ThinkingEffort = 'off' | ReasoningEffort | 'xhigh';
 
 const THINKING_CYCLE: readonly ThinkingEffort[] = ['off', 'low', 'medium', 'high', 'xhigh'];
 
+/**
+ * Atlas color palette. Keeps Atlas's blue identity but adopts OpenCode's
+ * "painted surfaces" structure — a dark background fills the whole alt
+ * screen, panels sit one step lighter, borders use muted neutrals so the
+ * blue accents pop without shouting.
+ *
+ * Reference: github.com/anomalyco/opencode (MIT, theme/opencode.json)
+ */
+const palette = {
+  // Surfaces (paint the alt screen + panels)
+  background: '#0a0a0a',       // step1 — full-screen base
+  backgroundPanel: '#141414',  // step2 — composer / sidebar / dialogs
+  backgroundElement: '#1e1e1e',// step3 — selected row, hover
+
+  // Atlas blue — primary brand
+  primary: '#5c9cf5',          // cyanBright equivalent — assistant, focus
+  primaryBright: '#7fb8ff',
+  secondary: '#56b6c2',        // cyan — links, info
+  accent: '#9d7cd8',           // purple — sub-agents, headings
+
+  // Text hierarchy
+  text: '#eeeeee',
+  textMuted: '#808080',
+  textDim: '#606060',
+
+  // Borders (no harsh white lines — use mid grays)
+  border: '#484848',
+  borderSubtle: '#3c3c3c',
+
+  // Semantic
+  success: '#7fd88f',
+  warning: '#f5a742',
+  error: '#e06c75',
+  info: '#56b6c2'
+} as const;
+
+
 interface TranscriptItem {
   readonly key: string;
   readonly kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'system' | 'error';
@@ -4150,8 +4187,8 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
 
   const showSidebar = cols >= 110;
   return (
-    <Box flexDirection="row" width={cols} height={rows}>
-      <Box flexDirection="column" flexGrow={1}>
+    <Box flexDirection="row" width={cols} height={rows} backgroundColor={palette.background}>
+      <Box flexDirection="column" flexGrow={1} backgroundColor={palette.background}>
       <Header
         agent={activeAgent}
         model={model}
@@ -4167,7 +4204,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         width={cols}
       />
       {transcript.length === 0 && overlay.kind !== 'setup' && <Splash defaultModel={model} />}
-      <Box flexDirection="column" flexGrow={1}>
+      <Box flexDirection="column" flexGrow={1} backgroundColor={palette.background}>
         {hiddenCount > 0 && (
           <Text color="gray" dimColor>
             ↑ {hiddenCount} earlier message{hiddenCount === 1 ? '' : 's'} (PgUp to scroll)
@@ -5884,16 +5921,16 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         </Box>
       )}
       {overlay.kind === 'none' && (
-        <Box borderStyle="round" borderColor={streaming ? 'yellow' : 'gray'} paddingX={1}>
+        <Box borderStyle="round" borderColor={streaming ? palette.primary : palette.border} backgroundColor={palette.backgroundPanel} paddingX={1}>
           {streaming ? (
             <Box>
-              <Text color="yellow">
+              <Text color={palette.primary}>
                 <Spinner type="dots" />
               </Text>
-              <Text color="yellow" bold>
+              <Text color={palette.primary} bold>
                 {' streaming'}
               </Text>
-              <Text color="gray" dimColor>
+              <Text color={palette.textMuted}>
                 {usage
                   ? ` · ${usage.tokens.toLocaleString()} tok · ${usage.rounds} round${usage.rounds === 1 ? '' : 's'}`
                   : ''}
@@ -5902,7 +5939,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             </Box>
           ) : (
             <Box width={Math.max(20, cols - 4 - (showSidebar ? 48 : 0))}>
-              <Text color={caretOn ? 'cyan' : 'gray'} bold={caretOn} dimColor={!caretOn}>› </Text>
+              <Text color={caretOn ? palette.primary : palette.textDim} bold={caretOn}>› </Text>
               <TextInput value={input} onChange={setInput} onSubmit={handleInputSubmit} />
             </Box>
           )}
@@ -6521,8 +6558,15 @@ const OverlayBox = ({
   title: string;
   children: React.ReactNode;
 }): React.JSX.Element => (
-  <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginY={1}>
-    <Text bold color="cyan">
+  <Box
+    flexDirection="column"
+    borderStyle="round"
+    borderColor={palette.border}
+    backgroundColor={palette.backgroundPanel}
+    paddingX={1}
+    marginY={1}
+  >
+    <Text bold color={palette.text}>
       {title}
     </Text>
     <Box marginTop={1} flexDirection="column">
@@ -6956,7 +7000,8 @@ const ActivitySidebar = ({
       flexShrink={0}
       marginLeft={1}
       borderStyle="round"
-      borderColor="gray"
+      borderColor={palette.border}
+      backgroundColor={palette.backgroundPanel}
       paddingX={1}
     >
       {/* Top block: tokens + cost — aligns with header bar visually. */}
@@ -7089,40 +7134,42 @@ const Splash = ({ defaultModel }: { defaultModel: string }): React.JSX.Element =
     ' ██║  ██║   ██║   ███████╗██║  ██║███████║   ╚██████╔╝███████║',
     ' ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚══════╝    ╚═════╝ ╚══════╝'
   ];
-  const palette = [
-    'cyanBright',
-    'cyanBright',
-    'cyan',
-    'cyan',
-    'blueBright',
-    'blue'
-  ] as const;
+  // Atlas blue gradient. Brightest at the top, settling into the primary
+  // brand tone, then a cyan footing — reads as "soft" not "neon."
+  const gradient: readonly string[] = [
+    palette.primaryBright,
+    palette.primaryBright,
+    palette.primary,
+    palette.primary,
+    palette.secondary,
+    palette.secondary
+  ];
   return (
     <Box flexDirection="column" alignItems="center" marginY={1}>
       <Box flexDirection="column">
         {lines.map((l, i) => (
-          <Text key={i} color={palette[i] ?? 'cyan'} bold>
+          <Text key={i} color={gradient[i] ?? palette.primary} bold>
             {l}
           </Text>
         ))}
       </Box>
       <Box marginTop={1}>
-        <Text color="blueBright">Autonomous Teams · Lifecycle · Agents · Skills — Orchestration System</Text>
+        <Text color={palette.text}>Autonomous Teams · Lifecycle · Agents · Skills — Orchestration System</Text>
       </Box>
       <Box>
-        <Text color="gray">spec-driven development crew · </Text>
-        <Text color="white">{defaultModel}</Text>
+        <Text color={palette.textMuted}>spec-driven development crew · </Text>
+        <Text color={palette.text}>{defaultModel}</Text>
       </Box>
       <Box marginTop={1}>
-        <Text color="red" dimColor>
+        <Text color={palette.textDim}>
           for the best experience, run Atlas in a fullscreen or reasonably-sized terminal window.
         </Text>
       </Box>
       <Box marginTop={1}>
-        <Text color="gray">
-          <Text color="cyan">/</Text> commands · <Text color="cyan">Tab</Text> agent ·{' '}
-          <Text color="cyan">Ctrl-O</Text> model · <Text color="cyan">Ctrl-T</Text> thinking ·{' '}
-          <Text color="cyan">Ctrl-D</Text>×2 exit
+        <Text color={palette.textMuted}>
+          <Text color={palette.primary}>/</Text> commands · <Text color={palette.primary}>Tab</Text> agent ·{' '}
+          <Text color={palette.primary}>Ctrl-O</Text> model · <Text color={palette.primary}>Ctrl-T</Text> thinking ·{' '}
+          <Text color={palette.primary}>Ctrl-D</Text>×2 exit
         </Text>
       </Box>
     </Box>

@@ -70,12 +70,18 @@ export const buildProgram = (): Command => {
     .option('-m, --model <id>', 'override the default model')
     .option('-a, --agent <name>', 'start in this agent (otherwise the first installed)')
     .option('--no-tui', 'use the plain readline REPL instead of the Ink TUI')
+    .option(
+      '--ui <runtime>',
+      'TUI runtime: "ink" (default, Node + Bun) or "opentui" (new, Bun-only, Phase 1: chat only)',
+      'ink'
+    )
     .option('--resume [id]', "resume a saved session (omit id for the latest)")
     .action(
       async (opts: {
         model?: string;
         agent?: string;
         tui?: boolean;
+        ui?: string;
         resume?: string | boolean;
       }) => {
         if (opts.tui === false) {
@@ -85,12 +91,18 @@ export const buildProgram = (): Command => {
           if (exitCode !== 0) process.exitCode = exitCode;
           return;
         }
-        const tuiOpts: { model?: string; agent?: string; resume?: string } = {};
+        const tuiOpts: {
+          model?: string;
+          agent?: string;
+          resume?: string;
+          ui?: 'ink' | 'opentui';
+        } = {};
         if (opts.model !== undefined) tuiOpts.model = opts.model;
         if (opts.agent !== undefined) tuiOpts.agent = opts.agent;
         if (opts.resume !== undefined) {
           tuiOpts.resume = typeof opts.resume === 'string' ? opts.resume : 'latest';
         }
+        if (opts.ui === 'opentui' || opts.ui === 'ink') tuiOpts.ui = opts.ui;
         const { exitCode } = await runTui(tuiOpts);
         if (exitCode !== 0) process.exitCode = exitCode;
       }

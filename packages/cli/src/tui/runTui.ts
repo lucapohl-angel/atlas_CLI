@@ -55,6 +55,14 @@ export interface RunTuiOptions {
   readonly config?: AtlasConfig;
   /** Resume an existing session by id, or 'latest' for the most recent. */
   readonly resume?: string;
+  /**
+   * Which UI runtime to mount. `ink` (default) keeps the legacy Ink
+   * TUI — works on Node + Bun. `opentui` mounts the new OpenTUI
+   * variant (Bun-only; falls back with a clear error under Node).
+   * Phase 1 of the OpenTUI port: only the chat screen is ported,
+   * overlays/wizards are not.
+   */
+  readonly ui?: 'ink' | 'opentui';
 }
 
 export interface RunTuiResult {
@@ -453,17 +461,57 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
   // Use the alternate screen buffer so Atlas owns the whole terminal
   // window like opencode/htop/vim. We restore the original screen on
   // exit so the user's prompt history is preserved.
+  //
+  // We also set the terminal's *default background color* via OSC 11 to
+  // Atlas's dark surface (#0a0a0a). This is the trick OpenCode uses to
+  // paint the entire terminal — Ink's <Box backgroundColor> only paints
+  // cells it actually emits, so users with transparent or light terminal
+  // themes saw their wallpaper bleed through empty rows. OSC 11 changes
+  // the terminal's own clear-color, so every cell — including ones Ink
+  // never touches and ones revealed during resize — paints dark. OSC 111
+  // on exit restores the user's original background.
+  //
+  // Supported by: kitty, alacritty, wezterm, foot, konsole, xterm,
+  // gnome-terminal, iTerm2, vte-based terminals, Windows Terminal.
+  // Terminals that don't support OSC 11 silently ignore it.
   const useAltScreen = process.stdout.isTTY === true && !process.env['ATLAS_NO_ALTSCREEN'];
+  const paintBg = useAltScreen && !process.env['ATLAS_NO_PAINT_BG'];
   if (useAltScreen) {
-    // \x1b[?1049h = enter alternate screen, \x1b[2J = clear, \x1b[H = home cursor
-    process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H');
+    // \x1b[?1049h = enter alternate screen
+    process.stdout.write('\x1b[?1049h');
+    if (paintBg) {
+      // OSC 11 ; #RRGGBB BEL — set terminal default background.
+      // \x1b[48;2;R;G;Bm — also set ANSI bg attr so the immediate clear
+      // paints dark even on terminals that ignore OSC 11.
+      process.stdout.write('\x1b]11;#0a0a0a\x07\x1b[48;2;10;10;10m');
+    }
+    // \x1b[2J = clear screen with current bg, \x1b[H = home cursor
+    process.stdout.write('\x1b[2J\x1b[H');
   }
 
   const restore = (): void => {
     mcpStartup.stopAll();
-    if (useAltScreen) process.stdout.write('\x1b[?1049l');
+    if (useAltScreen) {
+      // \x1b[0m reset attrs, OSC 111 reset default bg, leave alt screen.
+      if (paintBg) process.stdout.write('\x1b[0m\x1b]111\x07');
+      process.stdout.write('\x1b[?1049l');
+    }
   };
   process.on('exit', restore);
+
+  // Phase 1 OpenTUI route. Branches BEFORE the Ink render so neither
+  // runtime is double-mounted. Same `props` object — the OpenTUI
+  // variant accepts a strict subset (chat-only) and ignores the rest.
+  if (opts.ui === 'opentui') {
+    try {
+      const { runOpenTui } = await import('./opentui/runOpenTui.js');
+      const result = await runOpenTui(props);
+      return result;
+    } finally {
+      process.off('exit', restore);
+      restore();
+    }
+  }
 
   try {
     const { waitUntilExit } = render(React.createElement(TuiApp, props), {

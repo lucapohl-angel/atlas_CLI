@@ -39,3 +39,6 @@ coverage/
 
 # OS
 Thumbs.db
+
+# Bun-compiled native binaries (built by CI per release; never commit)
+packages/binaries/*/bin/

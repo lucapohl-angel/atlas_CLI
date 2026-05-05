@@ -77,22 +77,37 @@ and a persistent context pack.
 # One-shot (latest)
 npx atlas-os@latest
 
-# Or install globally
-npm install -g atlas-os
+# Or install globally — works with any package manager
+npm  install -g atlas-os
+pnpm add    -g atlas-os
+bun  install -g atlas-os
+yarn global add  atlas-os
+
 atlas
 ```
+
+The install grabs a small dispatcher (~5 KB JS) plus **one** native
+binary matching your platform (~100 MB). All other platform binaries are
+declared as `optionalDependencies`, so npm / pnpm / bun / yarn skip the
+ones you don't need automatically. Atlas runs as a self-contained
+executable — no Node, Bun, or Python is required at runtime.
+
+If the native binary is unavailable for your platform (or fails to
+install), the dispatcher falls back to a bundled JS build that runs on
+your local Node 20+.
 
 ### Compatibility
 
 | OS | Status | Notes |
 |---|---|---|
-| Linux | ✅ Tested | Arch / Garuda, Ubuntu, Fedora |
-| macOS (Intel + Apple Silicon) | ✅ Supported | Same Node 20+ POSIX runtime |
+| Linux x64 / arm64 | ✅ Tested | Arch / Garuda, Ubuntu, Fedora, Raspberry Pi |
+| macOS (Intel + Apple Silicon) | ✅ Supported | Self-contained binary, no Node required |
 | Windows + WSL2 | ✅ Recommended for Windows users | Identical experience to Linux |
 | Windows native (PowerShell / cmd) | ⚠️ Partial | Shell tool assumes POSIX; SearXNG (Docker) unavailable |
 
-Requirements: **Node.js 20+** and a terminal that supports the alt-screen TUI
-(Windows Terminal, iTerm2, WezTerm, Ghostty, Kitty, Alacritty all work).
+Native binaries are built from source by Bun's `--compile` (CI) and
+embed the runtime, so end-users do not need any extra dependency. The JS
+fallback requires **Node.js 20+**.
 
 ### Windows setup (WSL2 — recommended)
 

@@ -1,0 +1,4817 @@
+/** @jsxImportSource @opentui/react */
+/**
+ * OpenTUI variant of the Atlas TUI.
+ *
+ * Phases 1-8: runtime + visual identity + interactive pickers + multi-line
+ * composer + slash-command router.
+ *
+ *   Phase 3  Tab          → agent picker
+ *   Phase 4  Ctrl-O       → model picker
+ *   Phase 5  Ctrl-T       → thinking-effort picker
+ *   Phase 6  Ctrl-P       → mode picker
+ *   Phase 7  composer     → `<textarea>` (Enter sends, Ctrl-J newline)
+ *   Phase 8  slash router → /help /clear /history /quit /agent /model
+ *                          /agents /models /thinking /mode
+ *
+ * Behavior parity for the heavier overlays (setup wizard, autopilot
+ * confirm, sessions, MCP, ship-conflict, full live telemetry, markdown
+ * transcript) lands in subsequent slices. This file remains the entry
+ * point for the OpenTUI runtime and is feature-flagged behind
+ * `--ui=opentui`.
+ *
+ * Runtime requirement: OpenTUI uses `node:ffi`, which is only
+ * available in Bun. The dispatcher (`launcher.mjs`) routes users to
+ * the bundled Bun binary by default; running this file under Node
+ * throws a clear error at boot.
+ */
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  allowAllPolicy,
+  ATLAS_VERSION,
+  buildSystemPrompt,
+  canRewindTo,
+  classifyIntent,
+  clearActiveTask,
+  compactIfNeeded,
+  consumeDiscoverWarnings,
+  denyAllPolicy,
+  estimateCost,
+  estimateOnboardCost,
+  fetchAnthropicModels,
+  fetchCodexModels,
+  fetchOpenRouterModels,
+  formatPhaseLine,
+  isFrameworkAgent,
+  loadClaudeCodeCredentials,
+  loadContextPack,
+  PHASES,
+  phasePromptAddendum,
+  readSignals,
+  resolveCatalogStatus,
+  runAgentLoop,
+  runToolAction,
+  saveConfig,
+  setSkillDisabled,
+  startTask,
+  thinkingLevelsFor,
+  titleFromMessage,
+  tryExtractInteraction,
+  updateTask,
+  writeRepoMap,
+  type Agent,
+  type AgentRegistry,
+  type AtlasConfig,
+  type HookRegistry,
+  type InteractionRequest,
+  type LoopEvent,
+  type Message,
+  type ModelInfo,
+  type OnboardPreflight,
+  type ResolvedToolStatus,  type Phase,
+  type Provider,
+  type ReasoningEffort,
+  type ReasoningOptions,
+  type SessionStore,
+  type SkillRegistry,
+  type TaskState,
+  type ThinkingLevel,
+  type ToolContext,
+  type ToolRegistry
+} from '@atlas/core';
+import { useKeyboard, useTerminalDimensions } from '@opentui/react';
+import type { TextareaRenderable } from '@opentui/core';
+import { createTextAttributes } from '@opentui/core';
+
+const BOLD_ATTR = createTextAttributes({ bold: true });
+const ITALIC_ATTR = createTextAttributes({ italic: true });
+import { palette } from './palette.js';
+import { Splash } from './Splash.js';
+import { renderMarkdownBlock } from './markdown.js';
+import { styleForTool } from './tool-style.js';
+import { Header, type Mode, type ThinkingEffort } from './Header.js';
+import { Sidebar, type SidebarToolEvent } from './Sidebar.js';
+import {
+  ColoredGroupedPicker,
+  Confirm,
+  InfoOverlay,
+  KeyEntry,
+  Picker,
+  SlashAutocomplete,
+  type GroupedPickerEntry,
+  type PickerOption,
+  type SlashSuggestion
+} from './Picker.js';
+
+export interface OpenTuiAppProps {
+  readonly provider: Provider | null;
+  /**
+   * Live per-provider runtimes built from config (openrouter / anthropic
+   * / openai-codex). Drives the /config menu's connection badges and
+   * the model-picker section visibility — same contract as the Ink TUI.
+   */
+  readonly providers?: Partial<Record<'openrouter' | 'anthropic' | 'openai-codex', Provider>>;
+  readonly agents: AgentRegistry;
+  readonly skills: SkillRegistry;
+  readonly tools: ToolRegistry;
+  readonly toolContext: ToolContext;
+  readonly hooks?: HookRegistry;
+  readonly defaultModel: string;
+  readonly fallbackModels?: readonly string[];
+  readonly availableModels?: readonly string[];
+  /**
+   * Live model catalog (OpenRouter / Anthropic / Codex) — same shape
+   * the Ink TUI consumes. Drives model-picker grouping, thinking-level
+   * filtering, context-window sizing, and the provider tag in the
+   * header. Optional: the picker falls back to a static seed list.
+   */
+  readonly modelCatalog?: readonly ModelInfo[];
+  readonly initialAgentName?: string;
+  readonly config?: AtlasConfig;
+  readonly setupError?: string;
+  readonly sessionStore?: SessionStore;
+  /**
+   * Resumed session restored at startup (when invoked with
+   * `--resume <id>` or `--continue`). Drives the initial session id /
+   * title shown in the header. Optional — fresh runs start with no
+   * persisted session id.
+   */
+  readonly initialSession?: {
+    readonly id: string;
+    readonly title?: string;
+  };
+  /** MCP server startup status (running + failed). Surfaced via `/mcps`. */
+  readonly mcpStatus?: {
+    readonly running: readonly { readonly name: string; readonly toolCount: number }[];
+    readonly failed: readonly { readonly name: string; readonly error: string }[];
+  };
+  /**
+   * The active workflow task (if any) restored from
+   * `.atlas/active-task.json`. Drives `/status`, `/back`, `/skip`,
+   * `/abort`. The OpenTUI variant doesn't yet auto-advance phases on
+   * each turn (the Ink TUI's classifyIntent router is heavy state);
+   * the user can drive it manually via the four phase commands.
+   */
+  readonly initialActiveTask?: TaskState | null;
+  /** Called when the user requests exit (Ctrl-D twice / Ctrl-C / Esc on empty input). */
+  readonly onExit?: () => void;
+}
+
+interface TranscriptItem {
+  readonly key: string;
+  readonly kind: 'user' | 'assistant' | 'system' | 'error' | 'thinking' | 'timeline';
+  readonly text: string;
+  readonly author?: string;
+  /** Frozen turn-timeline steps. Only set when `kind === 'timeline'`. */
+  readonly steps?: readonly TurnStep[];
+}
+
+/**
+ * One row in the per-turn "what is the model doing" timeline. Drives
+ * the live VS-Code-style activity strip that appears above the
+ * composer while the model is working, and the frozen card that's
+ * appended to the transcript when the turn ends. The data is
+ * derived from the existing `LoopEvent` stream — there is no extra
+ * provider call.
+ */
+interface TurnStep {
+  readonly id: string;
+  readonly kind: 'thinking' | 'tool' | 'note';
+  /** Verb-prefixed label, e.g. "Reading App.tsx" or "Thinking…". */
+  readonly label: string;
+  readonly status: 'running' | 'ok' | 'error';
+  readonly startedAt: number;
+  readonly finishedAt?: number;
+  /**
+   * One short line of context (first line of a tool result, or the
+   * tail of the model's reasoning). Truncated to ~120 chars by the
+   * renderer.
+   */
+  readonly detail?: string;
+  /** Tool name — used to look up the icon/color. Tool steps only. */
+  readonly toolName?: string;
+}
+
+/**
+ * Heuristic verb-first label for a tool call. Mirrors VS Code's
+ * "Reading file.ts / Edited config.json / Searched 'foo'". Falls
+ * back to the bare tool name for anything we don't recognise so a
+ * new MCP tool still shows up sensibly.
+ */
+const labelForToolCall = (
+  name: string,
+  args: unknown,
+  past: boolean
+): string => {
+  // `args` arrives as the raw JSON string from the provider; parse
+  // best-effort so a malformed payload doesn't crash the timeline.
+  let parsed: Record<string, unknown> = {};
+  if (typeof args === 'string' && args.length > 0) {
+    try {
+      const v = JSON.parse(args) as unknown;
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        parsed = v as Record<string, unknown>;
+      }
+    } catch {
+      // ignore — we'll just render the bare tool name.
+    }
+  } else if (args && typeof args === 'object' && !Array.isArray(args)) {
+    parsed = args as Record<string, unknown>;
+  }
+  const a = parsed;
+  const baseOf = (v: unknown): string => {
+    if (typeof v !== 'string' || v.length === 0) return '';
+    const s = v.replace(/\\/g, '/');
+    const i = s.lastIndexOf('/');
+    return i >= 0 ? s.slice(i + 1) : s;
+  };
+  const truncate = (v: unknown, n: number): string => {
+    const s = typeof v === 'string' ? v : '';
+    return s.length > n ? `${s.slice(0, n).trimEnd()}…` : s;
+  };
+  const path = baseOf(a.path ?? a.filePath ?? a.file ?? a.relativePath ?? a.uri);
+  if (/(^|_)read(_|file|dir|page|webpage|skill|notebook)/i.test(name)) {
+    return path ? `${past ? 'Read' : 'Reading'} ${path}` : past ? 'Read' : 'Reading';
+  }
+  if (/list_dir|list_files|file_search/i.test(name)) {
+    const q = truncate(a.query ?? a.path ?? a.pattern, 40);
+    return `${past ? 'Listed' : 'Listing'} ${q || 'files'}`;
+  }
+  if (/grep|search/i.test(name) && !/web/i.test(name)) {
+    const q = truncate(a.query ?? a.pattern ?? '', 40);
+    return q ? `${past ? 'Searched' : 'Searching'} "${q}"` : past ? 'Searched' : 'Searching';
+  }
+  if (/(^|_)write(_|file|notebook)?|create_file|create_directory/i.test(name)) {
+    return path ? `${past ? 'Wrote' : 'Writing'} ${path}` : past ? 'Wrote' : 'Writing';
+  }
+  if (/edit|replace_string|multi_replace|insert_edit|edit_notebook|patch/i.test(name)) {
+    return path ? `${past ? 'Edited' : 'Editing'} ${path}` : past ? 'Edited' : 'Editing';
+  }
+  if (/delete|remove/i.test(name)) {
+    return path ? `${past ? 'Deleted' : 'Deleting'} ${path}` : past ? 'Deleted' : 'Deleting';
+  }
+  if (/web_fetch|fetch_webpage|fetch_url|http_get/i.test(name)) {
+    let host = '';
+    if (typeof a.url === 'string') {
+      try {
+        host = new URL(a.url).host;
+      } catch {
+        host = truncate(a.url, 40);
+      }
+    } else if (Array.isArray(a.urls) && typeof a.urls[0] === 'string') {
+      try {
+        host = new URL(a.urls[0]).host;
+      } catch {
+        host = truncate(a.urls[0], 40);
+      }
+    }
+    return host ? `${past ? 'Fetched' : 'Fetching'} ${host}` : past ? 'Fetched' : 'Fetching';
+  }
+  if (/web_search|search_web/i.test(name)) {
+    const q = truncate(a.query ?? '', 40);
+    return q ? `${past ? 'Searched web for' : 'Searching web for'} "${q}"` : past ? 'Searched web' : 'Searching web';
+  }
+  if (/run_in_terminal|terminal|shell|exec|run_command/i.test(name)) {
+    const cmd = truncate(a.command ?? a.cmd ?? '', 40);
+    return cmd ? `${past ? 'Ran' : 'Running'} \`${cmd}\`` : past ? 'Ran shell' : 'Running shell';
+  }
+  if (/skill/i.test(name)) {
+    const id = truncate(a.skill ?? a.name ?? a.id ?? '', 40);
+    return id ? `${past ? 'Read skill' : 'Reading skill'} ${id}` : past ? 'Read skill' : 'Reading skill';
+  }
+  if (/think|plan|discover|reason/i.test(name)) {
+    return past ? 'Planned' : 'Planning';
+  }
+  if (/ship|git_commit|commit/i.test(name)) {
+    return past ? 'Shipped' : 'Shipping';
+  }
+  if (/todo/i.test(name)) {
+    return past ? 'Updated todos' : 'Updating todos';
+  }
+  if (/ask_question|user_input/i.test(name)) {
+    return past ? 'Asked you' : 'Asking you';
+  }
+  return past ? `Used ${name}` : `Using ${name}`;
+};
+
+/**
+ * Pull the first non-empty line out of an arbitrary tool result so
+ * we can render it as the timeline step's secondary line. Strings
+ * pass through; objects get JSON-encoded; null/undefined → empty.
+ */
+const firstLineOf = (v: unknown, max = 120): string => {
+  let s: string;
+  if (v == null) return '';
+  if (typeof v === 'string') s = v;
+  else {
+    try {
+      s = JSON.stringify(v);
+    } catch {
+      s = String(v);
+    }
+  }
+  const line = s.split('\n').find((l) => l.trim().length > 0) ?? '';
+  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line.trim();
+};
+
+/** `1.2s` / `342ms` formatter used everywhere in the timeline. */
+const fmtElapsed = (ms: number): string =>
+  ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+
+/**
+ * Render a single TurnStep as a 1-2 row block. Running steps tick
+ * a live elapsed timer (the parent re-renders every 250 ms while a
+ * tool is in flight). Done steps render the final elapsed time and
+ * a muted detail line.
+ *
+ * For thinking steps, `revealedChars` lets the parent gate how
+ * much of the accumulated reasoning buffer to display so the text
+ * appears at a comfortable typewriter pace instead of dumping the
+ * full stream the moment it arrives. Pass `Infinity` for frozen
+ * thinking steps in the transcript history (everything visible).
+ */
+const renderStepRow = (
+  step: TurnStep,
+  keyPrefix: string,
+  now: number,
+  revealedLines: number = Infinity
+): ReactNode => {
+  const tool =
+    step.kind === 'tool' && step.toolName
+      ? styleForTool(step.toolName)
+      : { icon: step.kind === 'thinking' ? '[*]' : '[·]', color: palette.accent };
+  const glyph =
+    step.status === 'running' ? '..' : step.status === 'error' ? 'xx' : 'ok';
+  const glyphColor =
+    step.status === 'running'
+      ? palette.warning
+      : step.status === 'error'
+        ? palette.error
+        : palette.success;
+  const labelColor = step.status === 'error' ? palette.error : tool.color;
+  const elapsed =
+    step.finishedAt !== undefined
+      ? step.finishedAt - step.startedAt
+      : now - step.startedAt;
+  // Compute the visible detail block. Tool steps get one line of
+  // result preview. Thinking steps get up to 10 lines of the
+  // accumulated reasoning, gated by `revealedLines` for the
+  // typewriter effect (one new row roughly every 140 ms).
+  let detailLines: readonly string[] = [];
+  if (step.kind === 'thinking' && step.detail) {
+    const all = step.detail.split('\n').filter((l) => l.trim().length > 0);
+    const cap = Number.isFinite(revealedLines)
+      ? Math.max(0, Math.min(all.length, revealedLines))
+      : all.length;
+    const visible = all.slice(0, cap);
+    detailLines = visible.slice(-10);
+  } else if (step.detail) {
+    detailLines = [step.detail];
+  }
+  return (
+    <box
+      key={keyPrefix}
+      style={{
+        flexDirection: 'column',
+        backgroundColor: palette.backgroundPanel
+      }}
+    >
+      <box
+        style={{
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundPanel
+        }}
+      >
+        <text fg={glyphColor}>{`${glyph} `}</text>
+        <text fg={labelColor}>{`${tool.icon} `}</text>
+        <text fg={labelColor} attributes={BOLD_ATTR}>{step.label}</text>
+        <text fg={palette.textDim}>{`  ${fmtElapsed(elapsed)}`}</text>
+      </box>
+      {detailLines.map((line, i) => (
+        <box
+          key={`${keyPrefix}_d${i}`}
+          style={{
+            flexDirection: 'row',
+            paddingLeft: 6,
+            backgroundColor: palette.backgroundPanel
+          }}
+        >
+          <text fg={palette.textMuted} attributes={ITALIC_ATTR}>{line}</text>
+        </box>
+      ))}
+    </box>
+  );
+};
+
+/**
+ * Render the live / frozen turn-timeline as a plain stack of
+ * rows. No border, no nested background — sits flush in the chat
+ * scrollback so it doesn't break the surrounding panel color.
+ * Visually similar to VS Code Copilot's "Searched, Read, Edited"
+ * activity trail above the assistant reply.
+ */
+const renderTimelineCard = (
+  steps: readonly TurnStep[],
+  itemKey: string,
+  revealedLines: number = Infinity
+): ReactNode => {
+  if (steps.length === 0) return null;
+  const now = Date.now();
+  return (
+    <box
+      style={{
+        width: '100%',
+        flexDirection: 'column',
+        backgroundColor: palette.backgroundPanel
+      }}
+    >
+      {steps.map((s, i) =>
+        renderStepRow(s, `${itemKey}_s${i}`, now, revealedLines)
+      )}
+    </box>
+  );
+};
+
+type OverlayKind =
+  | 'agent'
+  | 'model'
+  | 'model-add'
+  | 'thinking'
+  | 'mode'
+  | 'autopilot-confirm'
+  | 'config'
+  | 'config-key-openrouter'
+  | 'config-key-anthropic'
+  | 'config-mcp'
+  | 'config-info'
+  | 'mcps-manage'
+  | 'mcps-actions'
+  | 'sessions-list'
+  | 'sessions-actions'
+  | 'option-picker'
+  | 'option-freeform'
+  | 'tools-list'
+  | 'tools-actions'
+  | 'onboard-loading'
+  | 'onboard-mode'
+  | 'onboard-strategy'
+  | 'onboard-pick-model'
+  | 'onboard-confirm'
+  | 'onboard-running'
+  | 'copy-picker'
+  | 'skills-list'
+  | 'skills-actions'
+  | 'sessions-rename'
+  | 'config-action-openrouter'
+  | 'config-action-anthropic'
+  | 'ship-conflict';
+
+const STATUSBAR =
+  'Tab agent · Ctrl-O model · Ctrl-T think · Ctrl-P mode · Ctrl-X copy · ↵ send · Ctrl-J newline · Ctrl-D ×2 exit';
+
+/**
+ * Collapse `$HOME` to `~` and trim leading path segments so the
+ * cwd display in the statusbar bottom-right stays compact even on
+ * deeply nested project paths. Mirrors the Ink TUI's footer
+ * abbreviation.
+ */
+const shortenCwd = (raw: string): string => {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+  let s = raw;
+  if (home && s.startsWith(home)) s = `~${s.slice(home.length)}`;
+  if (s.length <= 48) return s;
+  // Keep the last 3 segments + an ellipsis prefix.
+  const parts = s.split('/');
+  if (parts.length <= 4) return s;
+  return `…/${parts.slice(-3).join('/')}`;
+};
+
+type ProviderKindLabel = 'openrouter' | 'anthropic' | 'openai-codex' | 'unknown';
+
+/**
+ * Resolve the provider that should run a given model id. Mirrors
+ * `providerKindFor` in App.tsx — first the live catalog, then a
+ * shape heuristic. Critical: without this the OpenTUI variant would
+ * keep sending OpenAI / OpenRouter ids to whatever provider happened
+ * to be active at boot (often Anthropic via Claude Code OAuth) and
+ * 404 on the first turn.
+ */
+const providerKindFor = (
+  modelId: string,
+  catalog: readonly ModelInfo[] | undefined
+): ProviderKindLabel => {
+  const hit = catalog?.find((m) => m.id === modelId);
+  if (hit) return hit.provider;
+  if (modelId.includes('/')) return 'openrouter';
+  const m = modelId.toLowerCase();
+  if (/^claude/.test(m)) return 'anthropic';
+  if (/^(gpt-|codex-|o[1-9])/.test(m)) return 'openai-codex';
+  return 'unknown';
+};
+
+/** Long-form provider label for the system-prompt self-knowledge block. */
+const providerLongLabel = (kind: ProviderKindLabel): string => {
+  switch (kind) {
+    case 'openrouter':
+      return 'OpenRouter';
+    case 'anthropic':
+      return 'Anthropic';
+    case 'openai-codex':
+      return 'OpenAI (ChatGPT/Codex backend)';
+    case 'unknown':
+      return 'unknown';
+  }
+};
+
+// Default context window for the right-sidebar token chip when the
+// active model isn't recognised. 200k matches Claude Sonnet 4.5 — the
+// Atlas default. The Ink TUI uses the same fallback.
+const DEFAULT_CONTEXT_WINDOW = 200_000;
+
+/**
+ * Per-model context window resolver. Mirrors `contextWindowFor` in
+ * App.tsx: prefer the live catalog (so multi-key users get the
+ * correct chip for whichever provider exposes the model), fall back
+ * to id-shape heuristics for offline / custom ids.
+ */
+const contextWindowFor = (
+  modelId: string,
+  catalog: readonly ModelInfo[] | undefined
+): number => {
+  const hit = catalog?.find((m) => m.id === modelId);
+  if (hit?.contextWindow) return hit.contextWindow;
+  const m = modelId.toLowerCase();
+  if (/claude-(opus|sonnet|haiku)-4/.test(m)) return 200_000;
+  if (/claude-3/.test(m)) return 200_000;
+  if (/gpt-5|gpt-4\.1/.test(m)) return 1_000_000;
+  if (/gpt-4o/.test(m)) return 128_000;
+  if (/gemini-2\.5/.test(m)) return 1_000_000;
+  if (/gemini-1\.5/.test(m)) return 1_000_000;
+  return DEFAULT_CONTEXT_WINDOW;
+};
+
+/**
+ * Strip every `<atlas:question>...</atlas:question>` block from a
+ * string. Mirrors `stripInteractionBlocks` in App.tsx — used to keep
+ * the protocol noise out of the transcript and out of message
+ * history (so the next turn doesn't quote a stale question back at
+ * the model).
+ */
+const stripInteractionBlocks = (s: string): string =>
+  s.replace(/<atlas:question>[\s\S]*?<\/atlas:question>/g, '').trim();
+
+/**
+ * Strip *complete* interaction blocks AND hide an *in-progress*
+ * (still-streaming) opener so the live transcript stays free of raw
+ * protocol noise while the model is mid-question. Same contract as
+ * App.tsx's `renderVisibleAssistant`.
+ */
+const renderVisibleAssistant = (buf: string): string => {
+  const stripped = buf.replace(
+    /<atlas:question>[\s\S]*?<\/atlas:question>/g,
+    ''
+  );
+  const open = stripped.indexOf('<atlas:question>');
+  return (open >= 0 ? stripped.slice(0, open) : stripped).trimEnd();
+};
+
+/** Build the runtime reasoning option from the user's `/thinking` pick. */
+const buildReasoning = (
+  level: ThinkingLevel
+): ReasoningOptions | undefined => {
+  if (level === 'off') return undefined;
+  if (level === 'xhigh') return { effort: 'high' as ReasoningEffort, maxTokens: 32_000 };
+  return { effort: level as ReasoningEffort };
+};
+
+// Minimum width before we mount the right-side activity sidebar. Below
+// this the chat column gets the full row. Mirrors the Ink TUI cutoff.
+const SIDEBAR_MIN_COLS = 110;
+
+const THINKING_OPTIONS_ALL: readonly PickerOption[] = [
+  { value: 'off', label: 'off', description: 'no thinking budget' },
+  { value: 'low', label: 'low', description: 'fast — minimal reasoning' },
+  { value: 'medium', label: 'medium', description: 'balanced (default)' },
+  { value: 'high', label: 'high', description: 'deeper reasoning' },
+  { value: 'xhigh', label: 'xhigh', description: 'maximum budget' }
+];
+
+const MODE_OPTIONS: readonly PickerOption[] = [
+  { value: 'plan', label: 'plan', description: 'read-only — no tool side effects' },
+  { value: 'build', label: 'build', description: 'tool calls require approval' },
+  {
+    value: 'autopilot',
+    label: 'autopilot',
+    description: 'unattended — tools auto-approved'
+  }
+];
+
+// Static fallback list — used when no live model catalog is available.
+// Augmented with anything the user has configured under
+// `providers.openrouter.customModels` and the active default + fallbacks.
+const STATIC_MODELS: readonly string[] = [
+  'anthropic/claude-sonnet-4-5',
+  'anthropic/claude-opus-4-1',
+  'openai/gpt-4o',
+  'openai/o4-mini',
+  'google/gemini-2.0-flash',
+  'google/gemini-2.5-pro',
+  'meta-llama/llama-3.3-70b-instruct',
+  'qwen/qwen3-coder'
+];
+
+const PROVIDER_TAG: Record<string, string> = {
+  openrouter: 'OR',
+  anthropic: 'AN',
+  'openai-codex': 'CDX'
+};
+
+interface SlashCommand {
+  readonly name: string;
+  readonly summary: string;
+}
+
+interface McpCatalogEntry {
+  readonly id: string;
+  readonly pricing: 'free' | 'byo' | 'paid' | 'freemium';
+  readonly transport: 'stdio' | 'http';
+  readonly summary: string;
+  readonly url?: string;
+  readonly envKey?: string;
+  readonly envPlaceholder?: string;
+  readonly docs?: string;
+}
+
+// Curated MCP catalog mirroring the Ink TUI's `/config → MCP server`
+// add wizard. Keep in sync with packages/cli/src/tui/App.tsx (the
+// MCP_CATALOG constant near `mcpCatalog`). When you add an entry
+// here, mirror it in Ink so both variants surface the same set.
+const MCP_CATALOG: readonly McpCatalogEntry[] = [
+  {
+    id: 'filesystem',
+    pricing: 'free',
+    transport: 'stdio',
+    summary: 'Read/write files in a sandboxed root directory.',
+    docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem'
+  },
+  {
+    id: 'github',
+    pricing: 'byo',
+    transport: 'stdio',
+    summary: 'GitHub API: issues, PRs, repos, code search.',
+    envKey: 'GITHUB_PERSONAL_ACCESS_TOKEN',
+    envPlaceholder: 'ghp_…',
+    docs: 'https://github.com/github/github-mcp-server'
+  },
+  {
+    id: 'higgsfield',
+    pricing: 'paid',
+    transport: 'http',
+    url: 'https://higgsfield.ai/mcp',
+    summary: 'Higgsfield — image + video generation (hosted).',
+    envKey: 'HIGGSFIELD_API_KEY',
+    envPlaceholder: 'hgs_…',
+    docs: 'https://higgsfield.ai/mcp'
+  },
+  {
+    id: 'figma',
+    pricing: 'freemium',
+    transport: 'http',
+    url: 'https://mcp.figma.com/mcp',
+    summary: 'Figma — read frames, components, styles (hosted).',
+    envKey: 'FIGMA_API_TOKEN',
+    envPlaceholder: 'figd_…',
+    docs: 'https://github.com/figma/mcp-server-guide'
+  },
+  {
+    id: 'memory',
+    pricing: 'free',
+    transport: 'stdio',
+    summary: 'Built-in long-term memory store (Atlas).'
+  }
+];
+
+const SLASH_COMMANDS: readonly SlashCommand[] = [
+  { name: 'help', summary: 'show this list' },
+  { name: 'clear', summary: 'clear the conversation' },
+  { name: 'history', summary: 'print the message history' },
+  { name: 'model', summary: 'switch model (no arg → open picker)' },
+  { name: 'restart', summary: 'force-refresh the live model catalog' },
+  { name: 'agent', summary: 'switch agent (or list)' },
+  { name: 'agents', summary: 'list installed agents and their bound models' },
+  { name: 'mode', summary: 'set permission mode (plan|build|autopilot)' },
+  { name: 'thinking', summary: 'set reasoning effort (model-aware)' },
+  { name: 'config', summary: 'open the config menu (API keys, OAuth, integrations)' },
+  { name: 'mcps', summary: 'list / add / enable / disable MCP servers' },
+  { name: 'sessions', summary: 'list saved sessions (use /resume <id> to restore)' },
+  { name: 'resume', summary: 'resume a session by id' },
+  { name: 'compact', summary: 'auto-compaction status' },
+  { name: 'learn', summary: 'self-improvement loop status' },
+  { name: 'skills', summary: 'list / enable / disable skills' },
+  { name: 'next', summary: 'ask Atlas which command to run next' },
+  { name: 'onboard', summary: 'brownfield onboarding wizard' },
+  { name: 'tools', summary: 'list registered tools' },
+  { name: 'status', summary: 'show current workflow phase / active task' },
+  { name: 'back', summary: 'rewind the workflow to an earlier phase' },
+  { name: 'skip', summary: 'jump forward to the next workflow phase' },
+  { name: 'abort', summary: 'abandon the current task (state preserved)' },
+  { name: 'quit', summary: 'leave atlas' },
+  { name: 'exit', summary: 'leave atlas' }
+];
+
+// Slash commands not yet ported — surfaced with a clear message instead
+// of failing silently. Mirrors the Ink TUI's behavior for the same
+// commands once Atlas was upgraded but the OpenTUI variant trailed.
+//
+// Round 5 (May 2026): emptied. Every slash command in SLASH_COMMANDS
+// now has a real handler. The set is kept (empty) so the dispatch
+// site stays generic — adding a future stub-only command is a
+// one-liner instead of restructuring the switch.
+const NOT_YET_PORTED = new Set<string>([]);
+
+const providerTagFor = (
+  model: string,
+  catalog: readonly ModelInfo[] | undefined
+): string => {
+  // Prefer the live catalog — same heuristic the Ink TUI uses, so
+  // multi-provider users see the correct backend chip even for
+  // ambiguous ids like `gpt-5` (OpenRouter vs Codex OAuth).
+  const hit = catalog?.find((m) => m.id === model);
+  if (hit) return PROVIDER_TAG[hit.provider] ?? 'OR';
+  if (model.includes('/')) return 'OR';
+  const m = model.toLowerCase();
+  if (/^claude/.test(m)) return 'AN';
+  if (/^(gpt-|codex-|o[1-9])/.test(m)) return 'CDX';
+  return 'OR';
+};
+
+/**
+ * Persist a single API key into ~/.atlas/config.yaml. Returns the
+ * resolved path on success or a human-readable error string on
+ * failure. Handles the "first run \u2014 no config file yet" case by
+ * synthesising a sensible default config so the user can configure
+ * Atlas without any prior `atlas init` step.
+ */
+const saveProviderKey = async (
+  target: 'openrouter' | 'anthropic',
+  key: string,
+  current: AtlasConfig | undefined
+): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
+  const trimmed = key.trim();
+  if (trimmed.length < 8) return { ok: false, error: 'key looks too short' };
+  // Comma-separated rotation: first id = primary, rest = fallback rotated on 401/429.
+  const parts = trimmed.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+  const primary = parts[0] ?? trimmed;
+  const fallbacks = parts.slice(1);
+  const baseCfg: AtlasConfig = current ?? {
+    defaultProvider: target,
+    defaultModel: target === 'anthropic' ? 'claude-sonnet-4-5' : 'anthropic/claude-sonnet-4-5',
+    fallbackModels: [],
+    providers: {
+      openrouter: {
+        baseUrl: 'https://openrouter.ai/api/v1',
+        title: 'Atlas CLI',
+        apiKeys: [],
+        customModels: []
+      },
+      anthropic: {
+        baseUrl: 'https://api.anthropic.com',
+        useClaudeCodeOauth: true,
+        apiKeys: []
+      },
+      openai: {
+        codex: {},
+        baseUrl: 'https://chatgpt.com/backend-api/codex'
+      }
+    },
+    mcp: { servers: [], builtinsSeeded: false },
+    github: {},
+    compaction: { enabled: true, threshold: 0.8, contextTokens: 200_000 },
+    guardrails: {
+      enabled: true,
+      dangerousCommand: true,
+      pathSafety: true,
+      secretRedaction: true,
+      promptInjectionDetector: true,
+      discoverGuardrails: true,
+      progressTracker: true,
+      extraDeniedPaths: [],
+      extraDeniedCommands: []
+    },
+    ship: { autoResolve: 'abort', promptOnConflict: true }
+  };
+  const next: AtlasConfig =
+    target === 'openrouter'
+      ? {
+          ...baseCfg,
+          providers: {
+            ...baseCfg.providers,
+            openrouter: {
+              ...baseCfg.providers.openrouter,
+              apiKey: primary,
+              apiKeys: fallbacks
+            }
+          }
+        }
+      : {
+          ...baseCfg,
+          providers: {
+            ...baseCfg.providers,
+            anthropic: {
+              ...baseCfg.providers.anthropic,
+              apiKey: primary,
+              apiKeys: fallbacks
+            }
+          }
+        };
+  const saved = await saveConfig(next);
+  if (!saved.ok) return { ok: false, error: saved.error.message };
+  return { ok: true, path: saved.value.path };
+};
+
+/**
+ * Strip the saved API key (and any rotation list) for `target` from
+ * the on-disk config and return the new file path. Used by /config →
+ * "remove key" so the user can revoke a leaked key from inside the
+ * TUI without editing ~/.atlas/config.yaml by hand. Mirrors the Ink
+ * TUI's disconnect flow.
+ */
+const removeProviderKey = async (
+  target: 'openrouter' | 'anthropic',
+  current: AtlasConfig | undefined
+): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
+  if (!current) return { ok: false, error: 'no config to modify' };
+  const next: AtlasConfig =
+    target === 'openrouter'
+      ? {
+          ...current,
+          providers: {
+            ...current.providers,
+            openrouter: {
+              ...current.providers.openrouter,
+              apiKey: undefined,
+              apiKeys: []
+            }
+          }
+        }
+      : {
+          ...current,
+          providers: {
+            ...current.providers,
+            anthropic: {
+              ...current.providers.anthropic,
+              apiKey: undefined,
+              apiKeys: []
+            }
+          }
+        };
+  const saved = await saveConfig(next);
+  if (!saved.ok) return { ok: false, error: saved.error.message };
+  return { ok: true, path: saved.value.path };
+};
+
+export const OpenTuiApp = (props: OpenTuiAppProps) => {
+  const { width, height } = useTerminalDimensions();
+  const [input, setInput] = useState<string>('');
+  const [transcript, setTranscript] = useState<readonly TranscriptItem[]>([]);
+  const [streaming, setStreaming] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(props.setupError ?? null);
+  const [tokensUsed, setTokensUsed] = useState<number>(0);
+  const [mode, setMode] = useState<Mode>('build');
+  const [thinking, setThinking] = useState<ThinkingEffort>('medium');
+  const [overlay, setOverlay] = useState<OverlayKind | null>(null);
+  // Server name selected in `mcps-manage` — used by the per-row
+  // action overlay (`mcps-actions`) to know which entry to
+  // enable/disable/remove.
+  const [selectedMcp, setSelectedMcp] = useState<string | null>(null);
+  // Session id selected in `sessions-list` — used by the per-row
+  // action overlay (`sessions-actions`) to know which session to
+  // resume/rename/delete.
+  const [selectedSession, setSelectedSession] = useState<string | null>(null);
+  // Active session id + title shown in the header. Initially seeded
+  // from `props.initialSession` (when atlas was launched with
+  // `--resume`/`--continue`); updated on resume from the modal and
+  // on rename via the modal's edit action.
+  const [sessionId, setSessionId] = useState<string | null>(
+    props.initialSession?.id ?? null
+  );
+  const [sessionTitle, setSessionTitle] = useState<string | null>(
+    props.initialSession?.title ?? null
+  );
+  // Draft string the user is typing in the rename overlay.
+  const [renameDraft, setRenameDraft] = useState<string>('');
+  // Cached session listing for the modal. Refreshed on overlay open
+  // and after every mutating action.
+  const [sessionList, setSessionList] = useState<
+    readonly { id: string; updatedAt?: string; title?: string }[]
+  >([]);
+  // Onboarding wizard draft — populated by `estimateOnboardCost` and
+  // mutated step-by-step. Mirrors Ink's `OnboardDraft`.
+  type OnboardMode = 'full' | 'cost-reduction' | 'map-only';
+  type OnboardStrategy = 'same-model' | 'cheap-fallback' | 'manual';
+  interface OnboardDraft {
+    readonly preflight: OnboardPreflight;
+    readonly mode: OnboardMode;
+    readonly strategy: OnboardStrategy;
+    readonly sameModel?: string;
+    readonly cheapModel?: string;
+    readonly fallbackModel?: string;
+    readonly stageModels?: {
+      readonly map?: string;
+      readonly architecture?: string;
+      readonly onboarding?: string;
+    };
+  }
+  const [onboardDraft, setOnboardDraft] = useState<OnboardDraft | null>(null);
+  const [onboardTarget, setOnboardTarget] = useState<
+    'same' | 'cheap' | 'fallback' | 'map' | 'arch' | 'onboard' | null
+  >(null);
+  const [onboardStatus, setOnboardStatus] = useState<string>('');
+  // Tools manage modal — cached catalog status. Refreshed each time
+  // the overlay opens.
+  const [toolStatusList, setToolStatusList] = useState<
+    readonly ResolvedToolStatus[]
+  >([]);
+  const [selectedTool, setSelectedTool] = useState<string | null>(null);
+  const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
+  const [activeAgentName, setActiveAgentName] = useState<string | null>(
+    props.initialAgentName ?? null
+  );
+  const [activeModel, setActiveModel] = useState<string>(props.defaultModel);
+  // Live provider runtime — switched whenever the user picks a model
+  // from a different vendor (e.g. /model gpt-5.5 with Codex OAuth
+  // configured swaps from Anthropic to Codex). Without this state
+  // every turn would route through `props.provider`, the boot-time
+  // default, regardless of what the user picked.
+  const [activeProvider, setActiveProvider] = useState<Provider | null>(
+    props.provider
+  );
+  const [activeProviderKind, setActiveProviderKind] =
+    useState<ProviderKindLabel>(() =>
+      providerKindFor(props.defaultModel, props.modelCatalog)
+    );
+  /**
+   * Persistent conversation history for the current session. Each
+   * call to `submit()` appends the user message; on `turn_end` we
+   * append the model's committed `assistantMessage`. Sent verbatim
+   * to `runAgentLoop` so the model sees prior turns — without this
+   * Atlas would feel amnesiac (every reply ignores the previous
+   * exchange). Mirrors `messagesRef` in App.tsx.
+   */
+  const messagesRef = useRef<Message[]>([]);
+  const [recentTools, setRecentTools] = useState<readonly SidebarToolEvent[]>([]);
+  const [thinkingLine, setThinkingLine] = useState<string | null>(null);
+  const [toolCount, setToolCount] = useState<number>(0);
+  /**
+   * Live "current tool" — the one tool that's executing right now,
+   * if any. Rendered as an ephemeral row right above the composer
+   * (the way VS Code shows "Running cell…" / "Searching files…")
+   * and cleared on `tool_call_done` so it never accumulates.
+   */
+  const [activeTool, setActiveTool] = useState<{
+    name: string;
+    startedAt: number;
+  } | null>(null);
+  /**
+   * Live VS-Code-style turn timeline — one row per "phase" of the
+   * current turn (Thinking…, Reading foo.ts, Edited bar.ts, …).
+   * Reset at the start of every `submit()`. Frozen into the
+   * transcript as a `kind:'timeline'` item on `done`. Drives the
+   * activity strip rendered just above the composer.
+   */
+  const [currentTurnSteps, setCurrentTurnSteps] = useState<readonly TurnStep[]>([]);
+  /**
+   * Key of the live timeline transcript item that's pushed at
+   * submit-time so the activity card renders ABOVE the assistant
+   * reply (matching the VS Code chat order: user → activity →
+   * answer). Cleared between turns.
+   */
+  const liveTimelineKey = useRef<string | null>(null);
+  /**
+   * Typewriter reveal — total chars from `thinkingLine` (the full
+   * accumulated reasoning buffer) currently visible on screen.
+   * Advances ~6 chars every 40 ms while a thinking step is open,
+   * which roughly matches the VS Code Copilot reveal speed and
+   * stays comfortably readable instead of dumping the whole stream
+   * the instant the provider sends it.
+   */
+  const [thinkingRevealedLines, setThinkingRevealedLines] = useState<number>(0);
+  // Mirror `currentTurnSteps` into the live timeline transcript
+  // item so the activity card visible ABOVE the assistant reply
+  // updates as events stream in. Skips when there's no live key
+  // (between turns) — the frozen card is owned by the transcript
+  // directly at that point.
+  useEffect(() => {
+    const k = liveTimelineKey.current;
+    if (!k) return;
+    setTranscript((prev) =>
+      prev.map((it) =>
+        it.key === k && it.kind === 'timeline'
+          ? { ...it, steps: currentTurnSteps }
+          : it
+      )
+    );
+  }, [currentTurnSteps]);
+  // Re-render every 250 ms while a tool is running so the live
+  // elapsed timer ticks. Cheap because we only schedule the timer
+  // when there's actually a tool in flight.
+  const [, setTickNow] = useState<number>(0);
+  useEffect(() => {
+    if (!activeTool) return;
+    const id = setInterval(() => setTickNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [activeTool]);
+  // Typewriter — line-oriented reveal. Reveal one whole row of
+  // reasoning every ~140 ms (≈ 7 lines/sec) so the panel feels
+  // like VS Code Copilot's "thinking" stream: each thought lands
+  // as a discrete row instead of crawling in character by
+  // character. Slow enough to actually read, fast enough that it
+  // never feels stalled.
+  const thinkingBufferLines = useMemo(
+    () => (thinkingLine ? thinkingLine.split('\n').length : 0),
+    [thinkingLine]
+  );
+  useEffect(() => {
+    if (thinkingBufferLines === 0) return;
+    if (thinkingRevealedLines >= thinkingBufferLines) return;
+    const id = setInterval(() => {
+      setThinkingRevealedLines((prev) =>
+        prev >= thinkingBufferLines ? prev : prev + 1
+      );
+    }, 140);
+    return () => clearInterval(id);
+  }, [thinkingBufferLines, thinkingRevealedLines]);
+  // /config overlay state — transient panels (info text shown in the
+  // 'config-info' overlay; key entry error message under the masked
+  // input). Reset whenever the overlay closes.
+  const [infoOverlay, setInfoOverlay] = useState<{
+    title: string;
+    body: string;
+    tone?: 'info' | 'warn' | 'error';
+  } | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
+  // Slash autocomplete cursor — index into the *filtered* match list.
+  // Resets to 0 every time the input changes. The list itself is
+  // computed below as `slashSuggestions`.
+  const [slashCursor, setSlashCursor] = useState<number>(0);
+  // Workflow phase task — restored on launch, mutated by /back, /skip,
+  // /abort. Mirrors the Ink TUI's `activeTask` state.
+  const [activeTask, setActiveTask] = useState<TaskState | null>(
+    props.initialActiveTask ?? null
+  );
+  // Track the active task in a ref too so the background phase
+  // classifier in submit() reads the latest value without depending
+  // on React's render cycle. Mirrors `activeTaskRef` in App.tsx.
+  const activeTaskRef = useRef<TaskState | null>(activeTask);
+  useEffect(() => {
+    activeTaskRef.current = activeTask;
+  }, [activeTask]);
+  // Structured-question protocol — when the model emits an
+  // `<atlas:question>` block we extract it, hide the raw block from
+  // the transcript, and pop a picker overlay so the user picks one
+  // of the suggested options (or types freeform). Mirrors the Ink
+  // TUI's option-picker / option-freeform overlay pair.
+  const [interactionRequest, setInteractionRequest] =
+    useState<InteractionRequest | null>(null);
+  // Cumulative spend for this session (USD). Computed from the
+  // model catalog's pricing data after each `done` event.
+  const [costUsd, setCostUsd] = useState<number>(0);
+  // Ship-conflict config — fed straight into toolContext.shipDefaults
+  // so `ship_apply` doesn't crash with an unhandled prompt and the
+  // user-configured strategy actually applies. The OpenTUI variant
+  // doesn't pop the conflict overlay yet (it falls back to the
+  // configured strategy automatically), so the prompt callback just
+  // returns the default. This is still a parity improvement —
+  // before, ship_apply would call into a missing `shipResolveAsk`
+  // and the loop would block.
+  const shipAutoResolveRef = useRef<'abort' | 'ours' | 'theirs' | 'ai'>(
+    props.config?.ship?.autoResolve ?? 'abort'
+  );
+  const shipPromptOnConflictRef = useRef<boolean>(
+    props.config?.ship?.promptOnConflict ?? false
+  );
+  // Auto-learn toggle (just a flag for now — the actual reflection
+  // pipeline lives in @atlas/core and is wired in the Ink TUI; the
+  // OpenTUI variant exposes the toggle so the surface matches).
+  const learnEnabledRef = useRef<boolean>(true);
+  // Auto-compaction settings (loaded from config, mutated by /compact).
+  const compactEnabledRef = useRef<boolean>(
+    props.config?.compaction?.enabled ?? true
+  );
+  const compactThresholdRef = useRef<number>(
+    props.config?.compaction?.threshold ?? 0.75
+  );
+  const compactContextTokensRef = useRef<number>(
+    props.config?.compaction?.contextTokens ?? 200_000
+  );
+  const compactModelRef = useRef<string | null>(
+    props.config?.compaction?.model ?? null
+  );
+  // Per-agent model bindings — `/agent <name> <model>` records the
+  // pairing so future routing-only flips between agents stay on the
+  // model the user picked for that agent. Mirrors Ink's
+  // `agentModels` Map<string,string>.
+  const [agentModels, setAgentModels] = useState<Map<string, string>>(
+    () => new Map()
+  );
+  // Live-refreshed model catalog override (set by `/restart models`).
+  // When non-null it replaces props.modelCatalog in modelEntries.
+  const [catalogOverride, setCatalogOverride] = useState<
+    readonly ModelInfo[] | null
+  >(null);
+  // Anthropic OAuth health: when the user signed into Claude Code
+  // and the token has since expired (and there's no fallback API
+  // key), the model picker hides Anthropic models and surfaces a
+  // refresh hint instead. Mirrors what the Ink TUI's setup menu
+  // shows when the user opens the Claude Code panel.
+  const [anthropicOAuthExpired, setAnthropicOAuthExpired] =
+    useState<boolean>(false);
+  useEffect(() => {
+    let cancelled = false;
+    const hasApiKey = Boolean(
+      props.config?.providers.anthropic.apiKey
+    );
+    if (hasApiKey) {
+      setAnthropicOAuthExpired(false);
+      return;
+    }
+    void (async (): Promise<void> => {
+      const r = await loadClaudeCodeCredentials({});
+      if (cancelled) return;
+      if (!r.ok) {
+        // No creds → not "expired", just unconfigured. We use the
+        // expired flag specifically for the *was-signed-in-but-stale*
+        // case so we can show the right hint.
+        setAnthropicOAuthExpired(false);
+        return;
+      }
+      const exp = r.value.expiresAt;
+      const isExpired =
+        typeof exp === 'number' && exp > 0 && exp < Date.now();
+      setAnthropicOAuthExpired(isExpired);
+    })();
+    return (): void => {
+      cancelled = true;
+    };
+  }, [props.config]);
+  const transcriptKey = useRef<number>(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const composerRef = useRef<TextareaRenderable | null>(null);
+  // Ctrl-D twice within this window confirms exit. Resets after
+  // the window expires so an accidental single Ctrl-D doesn't arm
+  // the next one minutes later.
+  const exitArmedAt = useRef<number>(0);
+  // Ref to the chat scrollbox. PgUp / PgDn / Home / End hotkeys
+  // call its `scrollBy` method directly because the textarea steals
+  // raw key focus and the scrollbox's built-in handlers never fire.
+  const scrollboxRef = useRef<{
+    scrollBy: (delta: number, unit: 'absolute' | 'viewport' | 'content') => void;
+  } | null>(null);
+
+  const activeAgent = useMemo<Agent | null>(() => {
+    const list = props.agents.list();
+    if (list.length === 0) return null;
+    if (activeAgentName) {
+      const a = props.agents.get(activeAgentName);
+      if (a) return a;
+    }
+    return props.agents.get('atlas') ?? list[0] ?? null;
+  }, [props.agents, activeAgentName]);
+
+  // Switchable agents — mirrors the Ink TUI rule (App.tsx § switchableAgents):
+  // the orchestrator (`atlas`) plus every user-added (non-framework) agent.
+  // Framework specialists (Athena/Prometheus/…) are routed to by `atlas`,
+  // never picked manually — so on a default install only `atlas` is
+  // switchable and Tab is a no-op.
+  const switchableAgents = useMemo<readonly Agent[]>(() => {
+    return props.agents
+      .list()
+      .filter((a) => !isFrameworkAgent(a) || a.name === 'atlas');
+  }, [props.agents]);
+
+  const agentOptions = useMemo<readonly PickerOption[]>(() => {
+    return switchableAgents.map((a) => ({
+      value: a.name,
+      label: a.name,
+      description: a.role ?? ''
+    }));
+  }, [switchableAgents]);
+
+  // Thinking levels filtered to what the active model actually supports.
+  // `thinkingLevelsFor` walks the live catalog first, then falls back to
+  // id-shape heuristics — same source the Ink TUI consumes.
+  const thinkingOptions = useMemo<readonly PickerOption[]>(() => {
+    const allowed = new Set<ThinkingLevel>(
+      thinkingLevelsFor(activeModel, props.modelCatalog ?? [])
+    );
+    return THINKING_OPTIONS_ALL.filter((o) => allowed.has(o.value as ThinkingLevel));
+  }, [activeModel, props.modelCatalog]);
+
+  // Grouped model entries \u2014 mirrors the Ink TUI's `(() => { … })()`
+  // grouped picker (App.tsx, model overlay). Sections in fixed order:
+  // Anthropic, OpenAI (ChatGPT/Codex), then OpenRouter \u2014 with a
+  // "\u2605 Popular" sub-header inside OR seeded by curated patterns. Each
+  // section only appears when its provider runtime is active or when
+  // there's at least one entry to show. Entries surface alongside the
+  // provider's context window in the description column.
+  const modelEntries = useMemo<readonly GroupedPickerEntry[]>(() => {
+    const catalog = catalogOverride ?? props.modelCatalog ?? [];
+    const providers = props.providers ?? {};
+    const customModels = props.config?.providers.openrouter.customModels ?? [];
+    const seedOR = [
+      ...(props.availableModels ?? []),
+      ...(props.fallbackModels ?? []),
+      props.defaultModel
+    ].filter((id): id is string => typeof id === 'string' && id.includes('/'));
+
+    const byProvider = new Map<string, ModelInfo[]>();
+    for (const m of catalog) {
+      const list = byProvider.get(m.provider) ?? [];
+      list.push(m);
+      byProvider.set(m.provider, list);
+    }
+
+    const groupOrder: readonly ('anthropic' | 'openai-codex' | 'openrouter')[] = [
+      'anthropic',
+      'openai-codex',
+      'openrouter'
+    ];
+    const groupLabel = (k: string): string => {
+      if (k === 'anthropic') return '\u2500\u2500 Anthropic \u2500\u2500';
+      if (k === 'openai-codex') return '\u2500\u2500 OpenAI (ChatGPT / Codex) \u2500\u2500';
+      if (k === 'openrouter') return '\u2500\u2500 OpenRouter \u2500\u2500';
+      return `\u2500\u2500 ${k} \u2500\u2500`;
+    };
+
+    const out: GroupedPickerEntry[] = [];
+    const seenValues = new Set<string>();
+    const ctxLabel = (m: ModelInfo): string =>
+      m.contextWindow ? `${m.provider} \u00b7 ${Math.round(m.contextWindow / 1000)}k` : m.provider;
+
+    for (const grp of groupOrder) {
+      // Skip provider sections that have no live runtime AND no
+      // catalog/seed entries. Mirrors Ink's `if (!props.providers?.[grp]) continue;`
+      // guard but with a softer fallback so users can still see a
+      // first-launch model list before any key is configured.
+      const hasRuntime = Boolean(providers[grp]);
+      const catalogList = byProvider.get(grp) ?? [];
+      const customsHere = grp === 'openrouter' ? customModels : [];
+      const seedHere = grp === 'openrouter' ? seedOR : [];
+      // Anthropic OAuth gate: when the Claude Code token expired AND
+      // we don't have a fallback API key, hide the Anthropic models
+      // and surface a refresh hint. Continuing to list models we
+      // can't actually call would let the user pick a dead one and
+      // hit a 401 on the next turn.
+      if (
+        grp === 'anthropic' &&
+        anthropicOAuthExpired &&
+        !props.config?.providers.anthropic.apiKey
+      ) {
+        out.push({
+          kind: 'header',
+          key: 'hdr_anthropic_expired',
+          label: '── Anthropic (OAuth expired) ──'
+        });
+        out.push({
+          kind: 'header',
+          key: 'hdr_anthropic_hint',
+          label:
+            '   ⚠ run `claude` in another terminal to refresh, then /restart models'
+        });
+        continue;
+      }
+      if (
+        !hasRuntime &&
+        catalogList.length === 0 &&
+        customsHere.length === 0 &&
+        seedHere.length === 0
+      ) {
+        continue;
+      }
+      out.push({ kind: 'header', key: `hdr_${grp}`, label: groupLabel(grp) });
+      const groupSeen = new Set<string>();
+      const addItem = (
+        id: string,
+        label: string,
+        description?: string,
+        popular?: boolean
+      ): void => {
+        if (groupSeen.has(id)) return;
+        groupSeen.add(id);
+        const key = `${grp}:${id}`;
+        if (seenValues.has(key)) return;
+        seenValues.add(key);
+        out.push({
+          kind: 'item',
+          key,
+          label,
+          value: id,
+          ...(description ? { description } : {}),
+          ...(popular ? { popular: true } : {})
+        });
+      };
+
+      if (grp === 'openrouter') {
+        // \u2605 Popular pins \u2014 curated, matched against catalog ids by
+        // pattern so slug drift (kimi-2.6 vs kimi-k2.6) still resolves
+        // to the real model and dedups properly.
+        const POPULAR: readonly {
+          desc: string;
+          fallback: string;
+          match: (id: string) => boolean;
+        }[] = [
+          {
+            desc: 'Claude Opus 4.7',
+            fallback: 'anthropic/claude-opus-4.7',
+            match: (id) => /^anthropic\/claude-opus-4[.\-]?7$/i.test(id)
+          },
+          {
+            desc: 'Claude Opus 4.6',
+            fallback: 'anthropic/claude-opus-4.6',
+            match: (id) => /^anthropic\/claude-opus-4[.\-]?6$/i.test(id)
+          },
+          {
+            desc: 'Claude Sonnet 4.6',
+            fallback: 'anthropic/claude-sonnet-4.6',
+            match: (id) => /^anthropic\/claude-sonnet-4[.\-]?6$/i.test(id)
+          },
+          {
+            desc: 'Claude Sonnet 4.5',
+            fallback: 'anthropic/claude-sonnet-4.5',
+            match: (id) => /^anthropic\/claude-sonnet-4[.\-]?5$/i.test(id)
+          },
+          {
+            desc: 'DeepSeek V4',
+            fallback: 'deepseek/deepseek-v4',
+            match: (id) => /^deepseek\/deepseek-v?4$/i.test(id)
+          },
+          {
+            desc: 'Kimi 2.6',
+            fallback: 'moonshotai/kimi-2.6',
+            match: (id) => /^moonshotai\/kimi-?(k)?2[.\-]?6/i.test(id)
+          },
+          {
+            desc: 'GPT-5.5',
+            fallback: 'openai/gpt-5.5',
+            match: (id) => /^openai\/gpt-5[.\-]?5$/i.test(id)
+          },
+          {
+            desc: 'GPT-5',
+            fallback: 'openai/gpt-5',
+            match: (id) => /^openai\/gpt-5$/i.test(id)
+          },
+          {
+            desc: 'Gemini 2.5 Pro',
+            fallback: 'google/gemini-2.5-pro',
+            match: (id) => /^google\/gemini-2\.5-pro$/i.test(id)
+          }
+        ];
+        const popularPicks: { id: string; label: string }[] = [];
+        const usedIds = new Set<string>();
+        for (const pat of POPULAR) {
+          const hit = catalogList.find((m) => pat.match(m.id) && !usedIds.has(m.id));
+          if (hit) {
+            usedIds.add(hit.id);
+            // Picker adds its own "★ " prefix on popular rows; we
+            // just supply the bare model id as the label.
+            popularPicks.push({ id: hit.id, label: hit.id });
+          } else if (!catalogList.some((m) => m.id === pat.fallback)) {
+            popularPicks.push({ id: pat.fallback, label: pat.fallback });
+          }
+        }
+        if (popularPicks.length > 0) {
+          out.push({
+            kind: 'header',
+            key: 'hdr_or_popular',
+            label: '   \u2605 Popular'
+          });
+          for (const p of popularPicks) {
+            const m = catalogList.find((c) => c.id === p.id);
+            addItem(p.id, p.label, m ? ctxLabel(m) : 'popular', true);
+          }
+        }
+        // Rest of OpenRouter \u2014 catalog \u222a seed \u222a customs, alphabetised.
+        const rest = new Map<string, { label: string; desc?: string }>();
+        for (const m of catalogList) {
+          if (groupSeen.has(m.id)) continue;
+          rest.set(m.id, {
+            label: m.label !== m.id ? `${m.id}` : m.id,
+            desc: ctxLabel(m)
+          });
+        }
+        for (const id of seedHere) {
+          if (groupSeen.has(id) || rest.has(id)) continue;
+          rest.set(id, { label: id, desc: 'seed' });
+        }
+        for (const id of customsHere) {
+          if (groupSeen.has(id) || rest.has(id)) continue;
+          rest.set(id, { label: id, desc: 'custom' });
+        }
+        const sorted = [...rest.entries()].sort(([a], [b]) => a.localeCompare(b));
+        for (const [id, meta] of sorted) addItem(id, meta.label, meta.desc);
+      } else {
+        const sorted = [...catalogList].sort((a, b) => a.id.localeCompare(b.id));
+        for (const m of sorted) addItem(m.id, m.id, ctxLabel(m));
+      }
+    }
+
+    if (out.length === 0) {
+      // First-launch / catalog cold \u2014 fall back to a flat seed list so
+      // the user can still pick *something*.
+      out.push({ kind: 'header', key: 'hdr_seed', label: '\u2500\u2500 Available models \u2500\u2500' });
+      const seed = new Set<string>([
+        activeModel,
+        props.defaultModel,
+        ...(props.fallbackModels ?? []),
+        ...customModels,
+        ...STATIC_MODELS
+      ]);
+      for (const id of seed) {
+        if (!id) continue;
+        out.push({ kind: 'item', key: `seed:${id}`, label: id, value: id });
+      }
+    }
+    return out;
+  }, [
+    activeModel,
+    props.defaultModel,
+    props.fallbackModels,
+    props.availableModels,
+    props.config,
+    props.modelCatalog,
+    props.providers,
+    catalogOverride,
+    anthropicOAuthExpired
+  ]);
+
+  // Flat option list \u2014 used by `/model <id>` validation only. The
+  // grouped picker is the visual surface; this set lets us check
+  // whether `/model <arg>` resolves to a known id.
+  const modelOptions = useMemo<readonly PickerOption[]>(() => {
+    const out: PickerOption[] = [];
+    const seen = new Set<string>();
+    for (const e of modelEntries) {
+      if (e.kind !== 'item') continue;
+      if (seen.has(e.value)) continue;
+      seen.add(e.value);
+      out.push({
+        value: e.value,
+        label: e.label,
+        ...(e.description ? { description: e.description } : {})
+      });
+    }
+    return out;
+  }, [modelEntries]);
+
+  // Slash-command autocomplete — when the input begins with `/` and
+  // contains no space yet (i.e. the user is still typing the command
+  // name), filter SLASH_COMMANDS by case-insensitive prefix and show
+  // the dropdown above the composer. Mirrors the Ink TUI's
+  // SlashAutocomplete contract (App.tsx:6908). Returns the empty
+  // array when the popup should be hidden.
+  const slashSuggestions = useMemo<readonly SlashSuggestion[]>(() => {
+    if (overlay !== null) return [];
+    if (!input.startsWith('/')) return [];
+    if (input.includes(' ')) return [];
+    const q = input.slice(1).toLowerCase();
+    const matches = SLASH_COMMANDS.filter((c) =>
+      c.name.toLowerCase().startsWith(q)
+    );
+    return matches.map((c) => ({ name: c.name, summary: c.summary }));
+  }, [input, overlay]);
+
+  // Reset the autocomplete cursor whenever the suggestion list shape
+  // changes (input edited or popup just opened/closed). Keeping it
+  // inside an effect avoids the "highlightIndex out of range" flash
+  // when the user types a non-matching character.
+  useEffect(() => {
+    setSlashCursor((prev) => {
+      if (slashSuggestions.length === 0) return 0;
+      if (prev >= slashSuggestions.length) return 0;
+      return prev;
+    });
+  }, [slashSuggestions]);
+
+  const pushItem = useCallback(
+    (kind: TranscriptItem['kind'], text: string, author?: string): void => {
+      transcriptKey.current += 1;
+      setTranscript((prev) => [
+        ...prev,
+        {
+          key: `t${transcriptKey.current}`,
+          kind,
+          text,
+          ...(author ? { author } : {})
+        }
+      ]);
+    },
+    []
+  );
+
+  /**
+   * Resolve a model id to its provider runtime and switch to it.
+   * Returns true on success. Refuses (with a friendly system message)
+   * when the matching provider isn't connected — picking GPT-5.5 with
+   * only Anthropic configured would otherwise 404 on the next turn.
+   */
+  const switchToModel = useCallback(
+    (id: string): boolean => {
+      const trimmed = id.trim();
+      if (trimmed.length === 0) return false;
+      const kind = providerKindFor(trimmed, props.modelCatalog);
+      const next =
+        kind === 'unknown'
+          ? undefined
+          : props.providers?.[kind];
+      if (!next) {
+        pushItem(
+          'system',
+          kind === 'unknown'
+            ? `Cannot switch to ${trimmed}: no provider matches this model id (try prefixing with vendor/, e.g. openai/gpt-5).`
+            : `Cannot switch to ${trimmed}: ${kind} is not connected. Sign in via /config first, then try again.`
+        );
+        return false;
+      }
+      setActiveProvider(next);
+      setActiveProviderKind(kind);
+      setActiveModel(trimmed);
+      return true;
+    },
+    [props.providers, props.modelCatalog, pushItem]
+  );
+
+  const handleSlash = useCallback(
+    (raw: string): boolean => {
+      // Returns true if the input was handled (consumed) as a slash
+      // command. Falls back to false → caller should send to the model.
+      if (!raw.startsWith('/')) return false;
+      const parts = raw.slice(1).trim().split(/\s+/);
+      const head = parts[0] ?? '';
+      const arg = parts.slice(1).join(' ').trim();
+      const cmd = head.toLowerCase();
+      switch (cmd) {
+        case '':
+          setOverlay('agent');
+          return true;
+        case 'help': {
+          const lines = SLASH_COMMANDS.map(
+            (c) => `/${c.name.padEnd(10)} ${c.summary}`
+          ).join('\n');
+          pushItem('system', `slash commands\n${lines}`);
+          return true;
+        }
+        case 'clear':
+          setTranscript([]);
+          // Also drop the model-facing history. Without this, a
+          // /clear would only wipe the visible scrollback while the
+          // model still saw every prior turn.
+          messagesRef.current = [];
+          return true;
+        case 'history': {
+          const lines = transcript.map((t) => `[${t.kind}] ${t.text}`).join('\n');
+          pushItem('system', lines || '(empty history)');
+          return true;
+        }
+        case 'agents':
+        case 'agent':
+          if (arg) {
+            // `/agent <name> [model]` — switch agents and optionally
+            // bind a model. The Ink TUI does fuzzy resolution on the
+            // model id; here we accept exact ids only and validate
+            // against the catalog (same fall-through warning as
+            // `/model`).
+            const tokens = arg.split(/\s+/).filter((s) => s.length > 0);
+            const nameArg = tokens[0] ?? '';
+            const modelArg = tokens.slice(1).join(' ');
+            const a = props.agents.get(nameArg);
+            if (!a) {
+              pushItem('error', `unknown agent: ${nameArg}`);
+            } else if (isFrameworkAgent(a) && a.name !== 'atlas') {
+              pushItem(
+                'error',
+                `${a.name} is a framework specialist — routed to by atlas. Not switchable.`
+              );
+            } else {
+              setActiveAgentName(a.name);
+              if (modelArg) {
+                const known = modelOptions.some((m) => m.value === modelArg);
+                // Re-route to the matching provider when the model
+                // changes; otherwise the new id will be sent to the
+                // old provider and 404.
+                const swapped = switchToModel(modelArg);
+                if (swapped) {
+                  setAgentModels((prev) => {
+                    const next = new Map(prev);
+                    next.set(a.name, modelArg);
+                    return next;
+                  });
+                  pushItem(
+                    'system',
+                    known
+                      ? `→ agent: ${a.name} with model ${modelArg}`
+                      : `→ agent: ${a.name} with model ${modelArg} (not in catalog — hope you typed it right)`
+                  );
+                }
+              } else {
+                // No model arg → if a binding exists, restore it.
+                const bound = agentModels.get(a.name);
+                if (bound && bound !== activeModel) {
+                  if (switchToModel(bound)) {
+                    pushItem(
+                      'system',
+                      `→ agent: ${a.name} (restored bound model ${bound})`
+                    );
+                  }
+                } else {
+                  pushItem('system', `→ agent: ${a.name}`);
+                }
+              }
+            }
+          } else if (cmd === 'agents') {
+            // `/agents` (plural) lists installed agents. Active agent
+            // is marked with `*`; others with ` `. Bound model (if any)
+            // appended after `→`.
+            const all = props.agents.list();
+            const lines = all
+              .map((a) => {
+                const active = a.name === activeAgent?.name ? '*' : ' ';
+                const tag = isFrameworkAgent(a) && a.name !== 'atlas' ? '[framework]' : '[user]';
+                const bound = agentModels.get(a.name);
+                const suffix = bound ? `  → ${bound}` : '';
+                return `${active} ${tag.padEnd(13)} ${a.name.padEnd(16)} ${a.role ?? ''}${suffix}`.trimEnd();
+              })
+              .join('\n');
+            pushItem('system', `installed agents (${all.length})\n${lines}`);
+          } else if (switchableAgents.length <= 1) {
+            pushItem(
+              'system',
+              switchableAgents.length === 1
+                ? `only ${switchableAgents[0]?.name ?? 'atlas'} is switchable — install custom agents under ~/.atlas/agents/`
+                : 'no agents installed — run `atlas init`'
+            );
+          } else {
+            setOverlay('agent');
+          }
+          return true;
+        case 'model':
+          if (arg) {
+            // `/model + <id>` — add a custom model id to the OpenRouter
+            // catalog (persisted under providers.openrouter.customModels)
+            // and switch to it. Mirrors the Ink TUI's model-freeform
+            // overlay; lets users name a brand-new OR id without
+            // waiting for the catalog cache to refresh.
+            if (arg.startsWith('+')) {
+              const newId = arg.slice(1).trim();
+              if (!newId) {
+                pushItem('error', 'usage: /model + <id>   (e.g. /model + openai/gpt-6)');
+                return true;
+              }
+              const baseCfg = props.config;
+              if (baseCfg) {
+                const customs = baseCfg.providers.openrouter.customModels ?? [];
+                if (!customs.includes(newId)) {
+                  const next: AtlasConfig = {
+                    ...baseCfg,
+                    providers: {
+                      ...baseCfg.providers,
+                      openrouter: {
+                        ...baseCfg.providers.openrouter,
+                        customModels: [...customs, newId]
+                      }
+                    }
+                  };
+                  void saveConfig(next).then((r) => {
+                    if (!r.ok) {
+                      pushItem('error', `save failed: ${r.error.message}`);
+                    }
+                  });
+                }
+              }
+              if (switchToModel(newId)) {
+                pushItem(
+                  'system',
+                  `→ model: ${newId}  (added to custom catalog — persists across launches)`
+                );
+              }
+              return true;
+            }
+            // Validate against the catalog — same gate the Ink TUI
+            // applies. Unknown ids are still accepted (with a hint)
+            // because OpenRouter ships new models faster than the
+            // catalog cache refreshes; warn but don't block.
+            const known = modelOptions.some((m) => m.value === arg);
+            // switchToModel resolves the provider for this model id
+            // and refuses with a friendly message when that provider
+            // isn't connected. Without this guard the old provider
+            // (often Anthropic) would receive an OpenAI / OpenRouter
+            // id and 404.
+            if (switchToModel(arg)) {
+              pushItem(
+                'system',
+                known
+                  ? `→ model: ${arg}`
+                  : `→ model: ${arg} (not in catalog — hope you typed it right; tip: /model + ${arg} pins it)`
+              );
+            }
+          } else {
+            setOverlay('model');
+          }
+          return true;
+        case 'config':
+          setConfigError(null);
+          setOverlay('config');
+          return true;
+        case 'mcps':
+        case 'mcp': {
+          const tokens = arg.split(/\s+/).filter((s) => s.length > 0);
+          const sub = (tokens[0] ?? '').toLowerCase();
+          // /mcps add → open the catalog overlay (the same one /config
+          // routes to). Mirrors the Ink TUI's `mcp-add` overlay.
+          if (sub === 'add') {
+            setOverlay('config-mcp');
+            return true;
+          }
+          // /mcps remove|rm <name> → strip from config.mcp.servers and
+          // persist. Same pattern as Ink's removeMcp helper.
+          if (sub === 'remove' || sub === 'rm' || sub === 'enable' || sub === 'disable') {
+            const target = tokens[1];
+            if (!target) {
+              pushItem('error', `usage: /mcps ${sub} <name>`);
+              return true;
+            }
+            const baseCfg = props.config;
+            if (!baseCfg) {
+              pushItem('error', 'no config loaded — cannot persist change');
+              return true;
+            }
+            const servers = baseCfg.mcp?.servers ?? [];
+            const idx = servers.findIndex((s) => s.name === target);
+            if (idx < 0) {
+              pushItem('error', `no such MCP server in config: ${target}`);
+              return true;
+            }
+            let nextServers = servers;
+            let msg = '';
+            if (sub === 'remove' || sub === 'rm') {
+              // Don't allow removing curated default catalog
+              // entries — they can be turned off via `disable`.
+              if (MCP_CATALOG.some((c) => c.id === target)) {
+                pushItem(
+                  'error',
+                  `'${target}' is a default MCP — disable it instead of removing.`
+                );
+                return true;
+              }
+              nextServers = servers.filter((s) => s.name !== target);
+              msg = `removed '${target}' from config — restart atlas to drop it from the active session.`;
+            } else {
+              const enable = sub === 'enable';
+              const cur = servers[idx];
+              if (!cur) {
+                pushItem('error', `no such MCP server: ${target}`);
+                return true;
+              }
+              if (cur.enabled === enable) {
+                pushItem('system', `'${target}' is already ${enable ? 'enabled' : 'disabled'}.`);
+                return true;
+              }
+              nextServers = servers.map((s, i) =>
+                i === idx ? { ...s, enabled: enable } : s
+              );
+              msg = `'${target}' ${enable ? 'enabled' : 'disabled'} — restart atlas to apply.`;
+            }
+            const next: AtlasConfig = {
+              ...baseCfg,
+              mcp: { ...(baseCfg.mcp ?? { servers: [] }), servers: nextServers }
+            };
+            void saveConfig(next).then((r) => {
+              if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+              else pushItem('system', msg);
+            });
+            return true;
+          }
+          // No sub-command → open the interactive manage overlay
+          // (mirrors Ink's `mcp-list` / `mcp-manage` modal). Click a
+          // row to enable/disable/remove. Default catalog entries
+          // can't be removed, only toggled.
+          setSelectedMcp(null);
+          setOverlay('mcps-manage');
+          return true;
+        }
+        case 'sessions':
+        case 'resume': {
+          const store = props.sessionStore;
+          if (!store) {
+            pushItem('error', 'session store not available');
+            return true;
+          }
+          // `/sessions new` — clear the in-memory transcript and start
+          // fresh. Mirrors Ink's `sessionRef.current = null;
+          // messagesRef.current = []; setTranscript([])` reset.
+          if (arg.toLowerCase() === 'new' && cmd === 'sessions') {
+            setTranscript([]);
+            transcriptKey.current += 1;
+            pushItem('system', '✦ new session — transcript cleared.');
+            return true;
+          }
+          // `/resume <id>` or `/sessions <id>` — load from disk and
+          // hydrate the transcript with prior turns.
+          const target = arg.trim();
+          if (target && target.toLowerCase() !== 'new') {
+            void (async (): Promise<void> => {
+              try {
+                const r = await store.load(target);
+                if (!r.ok) {
+                  pushItem('error', `resume failed: ${r.error.message}`);
+                  return;
+                }
+                const items = r.value.messages.map((m, i) => ({
+                  kind:
+                    m.role === 'user'
+                      ? ('user' as const)
+                      : m.role === 'assistant'
+                        ? ('assistant' as const)
+                        : ('system' as const),
+                  text: m.content,
+                  key: `r${transcriptKey.current}_${i}`
+                }));
+                setTranscript(items);
+                transcriptKey.current += 1;
+                setSessionId(r.value.id);
+                setSessionTitle(r.value.title ?? null);
+                pushItem(
+                  'system',
+                  `✦ resumed session ${target} (${items.length} turns)`
+                );
+              } catch (e) {
+                pushItem('error', `resume failed: ${(e as Error).message}`);
+              }
+            })();
+            return true;
+          }
+          // Best-effort listing — open the interactive sessions
+          // modal. Mirrors Ink's `session-picker` overlay. Click a
+          // row to resume / rename / delete.
+          void (async () => {
+            try {
+              const listRes = await store.list();
+              if (!listRes.ok) {
+                pushItem('error', `sessions: ${listRes.error.message}`);
+                return;
+              }
+              const arr: readonly { id: string; updatedAt?: string; title?: string }[] = listRes.value;
+              if (arr.length === 0) {
+                pushItem('system', 'no saved sessions yet — start chatting and atlas will save one automatically.');
+                return;
+              }
+              setSessionList(arr);
+              setSelectedSession(null);
+              setOverlay('sessions-list');
+            } catch (e) {
+              pushItem('error', `sessions: ${(e as Error).message}`);
+            }
+          })();
+          return true;
+        }
+        case 'tools': {
+          // Open the tools manage modal. Mirrors Ink's
+          // `tools-list` + `tools-manage` overlays. Probes catalog
+          // status (web-search docker container, browser playwright
+          // chromium, etc.) and lets the user enable/disable/install
+          // /start/stop/restart per tool.
+          setSelectedTool(null);
+          void (async () => {
+            try {
+              const registered = new Set(props.tools.list().map((t) => t.name));
+              const list = await resolveCatalogStatus(registered);
+              setToolStatusList(list);
+              setOverlay('tools-list');
+            } catch (e) {
+              pushItem('error', `tools: ${(e as Error).message}`);
+            }
+          })();
+          return true;
+        }
+        case 'skills': {
+          const tokens = arg.split(/\s+/).filter((s) => s.length > 0);
+          const sub = (tokens[0] ?? '').toLowerCase();
+          // /skills enable|disable <name|fuzzy> — toggle the
+          // `disabled:` flag in the SKILL.md frontmatter so the next
+          // session loads/skips it. Mirrors Ink's behavior at
+          // App.tsx:1127.
+          if (sub === 'enable' || sub === 'disable') {
+            const target = tokens.slice(1).join(' ').trim();
+            if (!target) {
+              pushItem('error', `usage: /skills ${sub} <name>`);
+              return true;
+            }
+            const lowered = target.toLowerCase();
+            const all = props.skills.list();
+            const fuzzy =
+              all.find((s) => s.name.toLowerCase() === lowered) ??
+              all.find((s) => s.name.toLowerCase().includes(lowered));
+            if (!fuzzy) {
+              pushItem('error', `no skill matches '${target}'.`);
+              return true;
+            }
+            void setSkillDisabled(fuzzy.path, sub === 'disable').then((r) => {
+              if (!r.ok) {
+                pushItem('error', `failed to ${sub} ${fuzzy.name}: ${r.error.message}`);
+                return;
+              }
+              pushItem(
+                'system',
+                sub === 'disable'
+                  ? `disabled ${fuzzy.name} (${r.value}). Restart atlas to drop it from the active session.`
+                  : `enabled ${fuzzy.name} (${r.value}). Restart atlas to load it into the active session.`
+              );
+            });
+            return true;
+          }
+          if (sub && sub !== 'list') {
+            pushItem('error', 'usage: /skills [list|enable <name>|disable <name>]');
+            return true;
+          }
+          const list = props.skills.list();
+          if (list.length === 0) {
+            pushItem('system', 'no skills installed — add SKILL.md files under ~/.atlas/skills/');
+            return true;
+          }
+          // Open the skills modal. The action picker per row offers
+          // disable + view-description. To re-enable a disabled
+          // skill use `/skills enable <name>` (the on-disk file is
+          // kept but excluded from `props.skills.list()`).
+          setOverlay('skills-list');
+          return true;
+        }
+        case 'status': {
+          const lines = [
+            `model      ${activeModel}`,
+            `agent      ${activeAgent?.name ?? '(none)'}`,
+            `mode       ${mode}`,
+            `thinking   ${thinking}`,
+            `tokens     ${tokensUsed}`,
+            `tools used ${toolCount}`,
+            `streaming  ${streaming ? 'yes' : 'no'}`
+          ];
+          // Workflow phase line — same shape the Ink TUI prints for
+          // `/status`. Async because readSignals() hits the disk; the
+          // base status block flushes immediately.
+          pushItem('system', lines.join('\n'));
+          if (activeTask) {
+            void (async (): Promise<void> => {
+              const signals = await readSignals(activeTask);
+              const head = formatPhaseLine(activeTask, signals);
+              const meta = `task: ${activeTask.id} — ${activeTask.title}`;
+              pushItem('system', `${head}\n${meta}`);
+            })();
+          } else {
+            pushItem('system', formatPhaseLine(null));
+          }
+          return true;
+        }
+        case 'thinking':
+          if (arg && THINKING_OPTIONS_ALL.some((o) => o.value === arg)) {
+            const allowed = thinkingOptions.some((o) => o.value === arg);
+            if (!allowed) {
+              pushItem(
+                'error',
+                `${activeModel} doesn't support thinking=${arg}. Try ${thinkingOptions.map((o) => o.value).join('|')}`
+              );
+            } else {
+              setThinking(arg as ThinkingEffort);
+              pushItem('system', `→ thinking: ${arg}`);
+            }
+          } else {
+            setOverlay('thinking');
+          }
+          return true;
+        case 'mode':
+          if (arg && MODE_OPTIONS.some((o) => o.value === arg)) {
+            if (arg === 'autopilot' && mode !== 'autopilot') {
+              setOverlay('autopilot-confirm');
+            } else {
+              setMode(arg as Mode);
+              pushItem('system', `→ mode: ${arg}`);
+            }
+          } else {
+            setOverlay('mode');
+          }
+          return true;
+        case 'next': {
+          // Stage `*next` in the composer so the next Enter sends it
+          // to the orchestrator (which interprets the leading `*` as
+          // a workflow control message). Mirrors the Ink TUI's
+          // behavior — there it submits inline because submit() is
+          // in scope; here we stage to keep handleSlash decoupled
+          // from the model-loop wiring.
+          const ta = composerRef.current as unknown as {
+            setText?: (s: string) => void;
+          } | null;
+          ta?.setText?.('*next');
+          setInput('*next');
+          pushItem(
+            'system',
+            'staged "*next" — press ↵ to ask the orchestrator what to do next.'
+          );
+          return true;
+        }
+        case 'restart': {
+          if (arg.toLowerCase() !== 'models') {
+            pushItem('error', 'usage: /restart models');
+            return true;
+          }
+          pushItem(
+            'system',
+            'refreshing model catalogs (forcing live fetch)…'
+          );
+          void (async (): Promise<void> => {
+            const cfg = props.config;
+            const tasks: Promise<readonly ModelInfo[]>[] = [];
+            if (cfg?.providers.openrouter.apiKey || props.providers?.openrouter) {
+              tasks.push(
+                fetchOpenRouterModels({ forceRefresh: true }).then((r) =>
+                  r.ok ? r.value : []
+                )
+              );
+            }
+            const anKey = cfg?.providers.anthropic.apiKey;
+            if (anKey) {
+              tasks.push(
+                fetchAnthropicModels(
+                  { kind: 'apiKey', token: anKey },
+                  { forceRefresh: true }
+                ).then((r) => (r.ok ? r.value : []))
+              );
+            } else if (props.providers?.anthropic) {
+              tasks.push(
+                (async (): Promise<readonly ModelInfo[]> => {
+                  const creds = await loadClaudeCodeCredentials({});
+                  if (!creds.ok) return [];
+                  const r = await fetchAnthropicModels(
+                    { kind: 'oauth', token: creds.value.accessToken },
+                    { forceRefresh: true }
+                  );
+                  return r.ok ? r.value : [];
+                })()
+              );
+            }
+            const codexAuth = cfg?.providers.openai?.codex;
+            if (codexAuth?.accessToken) {
+              const opts: {
+                accountId?: string;
+                expiresAt?: number;
+                forceRefresh?: boolean;
+              } = { forceRefresh: true };
+              if (codexAuth.accountId) opts.accountId = codexAuth.accountId;
+              if (typeof codexAuth.expiresAt === 'number') {
+                opts.expiresAt = codexAuth.expiresAt;
+              }
+              tasks.push(
+                fetchCodexModels(codexAuth.accessToken, opts).then((r) =>
+                  r.ok ? r.value : []
+                )
+              );
+            }
+            try {
+              const results = await Promise.all(tasks);
+              const merged: ModelInfo[] = [];
+              const seen = new Set<string>();
+              for (const list of results) {
+                for (const m of list) {
+                  const key = `${m.provider}:${m.id}`;
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+                  merged.push(m);
+                }
+              }
+              setCatalogOverride(merged);
+              pushItem(
+                'system',
+                `model catalog refreshed (${merged.length} model${merged.length === 1 ? '' : 's'} across ${results.length} provider${results.length === 1 ? '' : 's'}).`
+              );
+            } catch (e) {
+              pushItem('error', `refresh failed: ${(e as Error).message}`);
+            }
+          })();
+          return true;
+        }
+        case 'learn': {
+          const sub = arg.toLowerCase().split(/\s+/)[0] ?? '';
+          if (sub === 'on') {
+            learnEnabledRef.current = true;
+            pushItem(
+              'system',
+              'auto-learn is ON — Atlas will offer to distill skills after hard turns.'
+            );
+            return true;
+          }
+          if (sub === 'off') {
+            learnEnabledRef.current = false;
+            pushItem('system', 'auto-learn is OFF.');
+            return true;
+          }
+          if (sub === '' || sub === 'status') {
+            pushItem(
+              'system',
+              `auto-learn: ${learnEnabledRef.current ? 'on' : 'off'}\n\nNote: the reflection loop runs in the Ink variant; the\nOpenTUI variant only exposes the toggle for now.`
+            );
+            return true;
+          }
+          pushItem('error', 'usage: /learn [on|off|status]');
+          return true;
+        }
+        case 'compact': {
+          const tokens = arg.split(/\s+/).filter((s) => s.length > 0);
+          const sub = (tokens[0] ?? '').toLowerCase();
+          if (!sub || sub === 'now') {
+            if (!props.provider) {
+              pushItem('error', 'no provider configured');
+              return true;
+            }
+            if (transcript.length < 2) {
+              pushItem('system', 'nothing to compact yet.');
+              return true;
+            }
+            const summarizerModel = compactModelRef.current ?? activeModel;
+            pushItem('system', `compacting with ${summarizerModel}…`);
+            void (async (): Promise<void> => {
+              // The OpenTUI variant doesn't keep a separate `messagesRef`
+              // (the transcript drives both display and the loop's
+              // history). Reconstruct a minimal Message[] from the
+              // transcript so compactIfNeeded has something to plan on.
+              const msgs = transcript
+                .filter((t) => t.kind === 'user' || t.kind === 'assistant')
+                .map((t) => ({
+                  role: (t.kind === 'user' ? 'user' : 'assistant') as
+                    | 'user'
+                    | 'assistant',
+                  content: t.text
+                }));
+              const r = await compactIfNeeded(msgs, {
+                provider: props.provider!,
+                summarizerModel,
+                limits: {
+                  contextTokens: compactContextTokensRef.current,
+                  compactThreshold: 0
+                }
+              });
+              if (!r.ok) {
+                pushItem('error', `compaction failed: ${r.error.message}`);
+                return;
+              }
+              if (r.value.compacted) {
+                pushItem(
+                  'system',
+                  `compacted ${r.value.summarized} turn${r.value.summarized === 1 ? '' : 's'} (transcript view unchanged in OpenTUI variant).`
+                );
+              } else {
+                pushItem('system', 'nothing eligible to compact.');
+              }
+            })();
+            return true;
+          }
+          if (sub === 'status') {
+            const m =
+              compactModelRef.current ?? `(active model: ${activeModel})`;
+            pushItem(
+              'system',
+              `compaction: ${compactEnabledRef.current ? 'on' : 'off'}\n` +
+                `  model:     ${m}\n` +
+                `  threshold: ${compactThresholdRef.current} of ${compactContextTokensRef.current} tokens`
+            );
+            return true;
+          }
+          if (sub === 'on' || sub === 'off') {
+            const enabled = sub === 'on';
+            compactEnabledRef.current = enabled;
+            const baseCfg = props.config;
+            if (baseCfg) {
+              const next: AtlasConfig = {
+                ...baseCfg,
+                compaction: { ...baseCfg.compaction, enabled }
+              };
+              void saveConfig(next).then((r) => {
+                if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+              });
+            }
+            pushItem(
+              'system',
+              `auto-compaction ${enabled ? 'enabled' : 'disabled'}.`
+            );
+            return true;
+          }
+          if (sub === 'model') {
+            const id = tokens[1];
+            if (!id) {
+              pushItem(
+                'error',
+                'usage: /compact model <id|default>'
+              );
+              return true;
+            }
+            const newModel = id === 'default' ? null : id;
+            compactModelRef.current = newModel;
+            const baseCfg = props.config;
+            if (baseCfg) {
+              const nextCompaction = { ...baseCfg.compaction };
+              if (newModel) nextCompaction.model = newModel;
+              else delete (nextCompaction as { model?: string }).model;
+              const next: AtlasConfig = {
+                ...baseCfg,
+                compaction: nextCompaction
+              };
+              void saveConfig(next).then((r) => {
+                if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+              });
+            }
+            pushItem(
+              'system',
+              newModel
+                ? `compaction model set to ${newModel}.`
+                : 'compaction model cleared (will use active model).'
+            );
+            return true;
+          }
+          if (sub === 'threshold') {
+            const v = Number(tokens[1] ?? '');
+            if (!Number.isFinite(v) || v <= 0 || v > 1) {
+              pushItem(
+                'error',
+                'usage: /compact threshold <fraction 0<v≤1>'
+              );
+              return true;
+            }
+            compactThresholdRef.current = v;
+            const baseCfg = props.config;
+            if (baseCfg) {
+              const next: AtlasConfig = {
+                ...baseCfg,
+                compaction: { ...baseCfg.compaction, threshold: v }
+              };
+              void saveConfig(next).then((r) => {
+                if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+              });
+            }
+            pushItem('system', `compaction threshold set to ${v}.`);
+            return true;
+          }
+          pushItem(
+            'error',
+            'usage: /compact [now|status|on|off|model <id|default>|threshold <0..1>]'
+          );
+          return true;
+        }
+        case 'onboard': {
+          // Brownfield onboarding wizard. Mirrors Ink's
+          // `launchOnboardWizard()` + 6-stage `onboard` overlay.
+          // Sequence: loading → mode → strategy → pick-model →
+          // confirm → running. The running stage calls writeRepoMap
+          // then submits the `*onboard` planning prompt.
+          setOnboardStatus('estimating cost…');
+          setOverlay('onboard-loading');
+          void (async () => {
+            const r = await estimateOnboardCost({ cwd: props.toolContext.cwd });
+            if (!r.ok) {
+              pushItem('error', `onboard preflight failed: ${r.error.message}`);
+              setOverlay(null);
+              return;
+            }
+            // Pick "cheap" / "fallback" model heuristics — prefer
+            // entries the live catalog flags as cheap, then any
+            // configured model. Falls back to the active model.
+            const allModels =
+              props.modelCatalog?.map((m) => m.id) ??
+              props.availableModels ??
+              [];
+            const cheap =
+              allModels.find((id) => /haiku|mini|flash|nano/i.test(id)) ??
+              activeModel;
+            const fallback =
+              allModels.find((id) => /sonnet|gpt-5|opus/i.test(id)) ??
+              activeModel;
+            setOnboardDraft({
+              preflight: r.value,
+              mode: 'full',
+              strategy: 'same-model',
+              sameModel: activeModel,
+              cheapModel: cheap,
+              fallbackModel: fallback,
+              stageModels: {
+                map: cheap,
+                architecture: activeModel,
+                onboarding: activeModel
+              }
+            });
+            setOverlay('onboard-mode');
+          })();
+          return true;
+        }
+        case 'back': {
+          if (!activeTask) {
+            pushItem('error', 'no active task to rewind');
+            return true;
+          }
+          const target = (arg.toLowerCase() as Phase);
+          if (!PHASES.includes(target)) {
+            pushItem(
+              'error',
+              `usage: /back <${PHASES.filter((p) => p !== 'idle').join('|')}>`
+            );
+            return true;
+          }
+          const check = canRewindTo(activeTask, target);
+          if (!check.ok) {
+            pushItem('error', `cannot rewind: ${check.reason}`);
+            return true;
+          }
+          void (async (): Promise<void> => {
+            const u = await updateTask(activeTask, { phase: target });
+            if (u.ok) {
+              setActiveTask(u.value);
+              pushItem(
+                'system',
+                `phase rewound: ${activeTask.phase} → ${target}`
+              );
+            } else {
+              pushItem('error', `failed to update task: ${u.error.message}`);
+            }
+          })();
+          return true;
+        }
+        case 'skip': {
+          if (!activeTask) {
+            pushItem('error', 'no active task');
+            return true;
+          }
+          const idx = PHASES.indexOf(activeTask.phase);
+          const next = PHASES[idx + 1];
+          if (!next) {
+            pushItem(
+              'error',
+              `already at terminal phase: ${activeTask.phase}`
+            );
+            return true;
+          }
+          void (async (): Promise<void> => {
+            const u = await updateTask(activeTask, { phase: next });
+            if (u.ok) {
+              setActiveTask(u.value);
+              pushItem(
+                'system',
+                `phase skipped: ${activeTask.phase} → ${next}`
+              );
+            } else {
+              pushItem('error', `failed to update task: ${u.error.message}`);
+            }
+          })();
+          return true;
+        }
+        case 'abort': {
+          if (!activeTask) {
+            pushItem('error', 'no active task to abort');
+            return true;
+          }
+          const taskId = activeTask.id;
+          void (async (): Promise<void> => {
+            const r = await clearActiveTask(props.toolContext.cwd);
+            if (r.ok) {
+              setActiveTask(null);
+              pushItem(
+                'system',
+                `task aborted (state preserved at .atlas/tasks/${taskId}/)`
+              );
+            } else {
+              pushItem('error', `failed to abort: ${r.error.message}`);
+            }
+          })();
+          return true;
+        }
+        case 'quit':
+        case 'exit':
+          props.onExit?.();
+          return true;
+        default:
+          if (NOT_YET_PORTED.has(cmd)) {
+            pushItem(
+              'system',
+              `/${cmd} is not yet ported in the OpenTUI variant — use --ui=ink for now`
+            );
+            return true;
+          }
+          pushItem('error', `unknown command: /${cmd} — try /help`);
+          return true;
+      }
+    },
+    [
+      pushItem,
+      transcript,
+      props,
+      mode,
+      switchableAgents,
+      thinkingOptions,
+      activeModel,
+      activeAgent,
+      thinking,
+      tokensUsed,
+      toolCount,
+      streaming,
+      modelOptions,
+      activeTask
+    ]
+  );
+
+  const submit = useCallback(async (): Promise<void> => {
+    const buffered = composerRef.current?.plainText ?? input;
+    let text = buffered.trim();
+    if (!text || streaming) return;
+
+    const clearComposer = (): void => {
+      setInput('');
+      // Drain the textarea's internal buffer so the prompt visually
+      // resets after submit. `setText` exists on EditBufferRenderable.
+      const ta = composerRef.current as unknown as { setText?: (s: string) => void } | null;
+      ta?.setText?.('');
+    };
+
+    // When the slash autocomplete popup has matches, Enter picks the
+    // highlighted command (and ignores any partial typing). Mirrors
+    // the Ink TUI's behavior where `/he<Enter>` runs `/help` if it's
+    // the highlighted suggestion.
+    if (slashSuggestions.length > 0 && text.startsWith('/')) {
+      const pick = slashSuggestions[slashCursor] ?? slashSuggestions[0];
+      if (pick) text = `/${pick.name}`;
+    }
+
+    if (handleSlash(text)) {
+      clearComposer();
+      return;
+    }
+
+    if (!activeProvider) {
+      setError('No provider configured. Set OPENROUTER_API_KEY or run `atlas init`.');
+      return;
+    }
+    if (!activeAgent) {
+      setError('No agents installed. Run `atlas init` first.');
+      return;
+    }
+
+    clearComposer();
+    setError(null);
+    pushItem('user', text);
+
+    // Per-agent override takes precedence over the global model.
+    const effectiveModel =
+      agentModels.get(activeAgent.name) ?? activeModel;
+
+    // Background phase classifier — runs in parallel with the model
+    // turn so a slow disk write never blocks chat. The router only
+    // advances *forward*; `/back`, `/skip`, `/abort` are explicit user
+    // overrides. Mirrors App.tsx § classifyIntent integration.
+    void (async (): Promise<void> => {
+      try {
+        const cwd = props.toolContext.cwd;
+        const current = activeTaskRef.current;
+        const signals = current
+          ? await readSignals(current)
+          : {
+              hasContextDoc: false,
+              hasPlanDoc: false,
+              allTasksCommitted: false,
+              allVerifyPassed: false
+            };
+        const decision = classifyIntent({
+          state: current,
+          userMessage: text,
+          signals
+        });
+        if (decision.startsNewTask) {
+          const created = await startTask({
+            cwd,
+            title: titleFromMessage(text)
+          });
+          if (created.ok) setActiveTask(created.value);
+        } else if (current && decision.nextPhase !== current.phase) {
+          const updated = await updateTask(current, {
+            phase: decision.nextPhase
+          });
+          if (updated.ok) setActiveTask(updated.value);
+        }
+      } catch {
+        // Workflow tracking is observational — never block chat on it.
+      }
+    })();
+
+    // Build the Atlas system prompt — without this the model has no
+    // self-knowledge ("I am Claude / GPT / …" instead of "I am
+    // Atlas") and no awareness of the registered tools, skills, or
+    // active agent persona. This is what gives the model its Atlas
+    // identity and the ability to follow Atlas commands.
+    const skillsList = props.skills.list();
+    // Six-File Context Pack — best-effort load on every turn (file
+    // reads only). Absence (no `context/` scaffolded yet) is normal;
+    // the orchestrator already routes to Athena `*scaffold-context-pack`
+    // when the project is ripe for it. Without this, the model has no
+    // awareness of the local repo's standards, ARCHITECTURE.md, etc.
+    let packContent: string | undefined;
+    try {
+      const pack = await loadContextPack({ cwd: props.toolContext.cwd });
+      if (pack.content && pack.content.trim().length > 0) {
+        packContent = pack.content;
+      }
+    } catch {
+      // Best-effort — never block a turn on a bad context pack.
+    }
+    const baseSystem = buildSystemPrompt(activeAgent, skillsList, {
+      model: effectiveModel,
+      providerLabel: providerLongLabel(activeProviderKind),
+      atlasVersion: ATLAS_VERSION,
+      ...(packContent ? { contextPack: packContent } : {})
+    });
+    // Phase-aware addendum — pushes the model toward structured
+    // discovery (slot tools + clarify-with-options for vague answers)
+    // and toward stopWhen budgets in the plan phase. We use the
+    // current task's phase as a proxy; if no task is active yet,
+    // treat the very first turn as `discover` so the addendum fires
+    // on the user's opening message too.
+    const predictedPhase: Phase =
+      activeTaskRef.current?.phase ?? 'discover';
+    const addendum = phasePromptAddendum(predictedPhase);
+    // Drain any pending discover-phase warnings (multi-question
+    // detector etc.) so the next system prompt sees them once and the
+    // buffer is cleared.
+    let pendingWarnings: readonly string[] = [];
+    const taskForWarnings = activeTaskRef.current;
+    if (taskForWarnings && predictedPhase === 'discover') {
+      try {
+        pendingWarnings = await consumeDiscoverWarnings(taskForWarnings);
+      } catch {
+        // observational; never break the loop on a warnings-file glitch
+      }
+    }
+    const warningsBlock =
+      pendingWarnings.length > 0
+        ? `\n\n## Discover-phase reminders\n\n${pendingWarnings.map((w) => `- ${w}`).join('\n')}`
+        : '';
+    const systemContent =
+      (addendum ? `${baseSystem}\n\n${addendum}` : baseSystem) +
+      warningsBlock +
+      // House style: forbid emoji output. The OpenTUI variant uses
+      // its own ASCII tool icons / status glyphs and emojis render
+      // inconsistently across terminals (some skip width, some
+      // double-render, some show tofu). Sticking to plain ASCII
+      // keeps the chrome scannable for everyone.
+      '\n\n## Output style\n\n- Do NOT use emoji or pictographic Unicode in your replies. Use plain ASCII (e.g. `[ok]`, `->`, `*`, `-`) and Markdown (**bold**, `code`) only. The renderer will style them.';
+
+    // Append the user turn to the persistent history. The model
+    // sees every prior turn so the conversation has continuity.
+    messagesRef.current = [
+      ...messagesRef.current,
+      { role: 'user', content: text }
+    ];
+
+    const ac = new AbortController();
+    abortRef.current = ac;
+    setStreaming(true);
+    setThinkingLine(null);
+    setThinkingRevealedLines(0);
+    // Fresh turn — drop the previous turn's live steps so the strip
+    // above the composer starts empty. The previous turn (if any)
+    // is already frozen into the transcript as a 'timeline' card.
+    setCurrentTurnSteps([]);
+    // Pre-seed an empty `kind:'timeline'` transcript item right
+    // after the user message. We update the same item's `steps`
+    // array as events stream in. This puts the activity list ABOVE
+    // the assistant reply (matching VS Code chat ordering: user →
+    // activity → answer) instead of being appended after.
+    transcriptKey.current += 1;
+    const timelineKey = `t${transcriptKey.current}`;
+    liveTimelineKey.current = timelineKey;
+    setTranscript((prev) => [
+      ...prev,
+      { key: timelineKey, kind: 'timeline', text: '', steps: [] }
+    ]);
+    let assistantBuffer = '';
+    const author = activeAgent.name;
+    // Per-tool-call start timestamps so we can show elapsed time on
+    // completion in the sidebar.
+    const toolStartedAt = new Map<string, number>();
+    // Reasoning option built from the user's `/thinking` pick. Off
+    // means we omit the field entirely so the provider uses its
+    // default; xhigh maps to `effort: high` plus a generous max-tokens
+    // budget. Mirrors App.tsx (§ reasoningOpt).
+    const reasoningOpt = buildReasoning(thinking as ThinkingLevel);
+
+    // Auto-compaction — if enabled and the running message count is
+    // above the configured threshold, fold older turns into a single
+    // summary system message *before* sending. Without this, long
+    // sessions slowly hit the context window and the provider 400s.
+    if (
+      compactEnabledRef.current &&
+      messagesRef.current.length >= 6 &&
+      activeProvider
+    ) {
+      const summarizerModel = compactModelRef.current ?? effectiveModel;
+      try {
+        const compRes = await compactIfNeeded(messagesRef.current, {
+          provider: activeProvider,
+          summarizerModel,
+          limits: {
+            contextTokens: compactContextTokensRef.current,
+            compactThreshold: compactThresholdRef.current
+          },
+          signal: ac.signal
+        });
+        if (compRes.ok && compRes.value.compacted) {
+          messagesRef.current = [...compRes.value.messages];
+          pushItem(
+            'system',
+            `(auto-compacted ${compRes.value.summarized} older turn${
+              compRes.value.summarized === 1 ? '' : 's'
+            } using ${summarizerModel})`
+          );
+        }
+      } catch {
+        // Best-effort — never let a flaky summariser break the chat turn.
+      }
+    }
+
+    // After a `turn_end`, the next delta starts a NEW assistant
+    // entry instead of overwriting the just-committed one. This is
+    // critical for multi-round responses: round 1 produces text,
+    // round 2 (post-tool-call) produces more text — both must
+    // appear, not the second replacing the first.
+    const turnBoundary = { current: false };
+
+    const flushAssistant = (): void => {
+      setTranscript((prev) => {
+        const last = prev[prev.length - 1];
+        if (
+          last &&
+          last.kind === 'assistant' &&
+          last.author === author &&
+          !turnBoundary.current
+        ) {
+          if (last.text === assistantBuffer) return prev;
+          return [...prev.slice(0, -1), { ...last, text: assistantBuffer }];
+        }
+        if (assistantBuffer.length === 0) return prev;
+        // Crossing a turn boundary clears the flag — subsequent
+        // deltas in the *same* round will keep updating this new
+        // entry until the next `turn_end`.
+        turnBoundary.current = false;
+        transcriptKey.current += 1;
+        return [
+          ...prev,
+          {
+            key: `t${transcriptKey.current}`,
+            kind: 'assistant',
+            text: assistantBuffer,
+            author
+          }
+        ];
+      });
+    };
+
+    // ----- per-turn timeline helpers (declared BEFORE the try so
+    // they're out of the TDZ when handleEvent runs inside it).
+    // The id of the currently-open `Thinking…` step, if any. We
+    // collapse contiguous reasoning into one row (so the strip
+    // doesn't fill with 50× `Thinking…` rows on chatty providers)
+    // and close it as soon as a tool call or assistant text
+    // arrives — that's the natural "transition" point.
+    let currentThinkingStepId: string | null = null;
+    // Per-step accumulator. Reset every time a thinking step
+    // closes, so a second round of reasoning in the same turn
+    // gets its own buffer instead of inheriting the first.
+    let thinkingAccum = '';
+    const finishThinking = (): void => {
+      if (!currentThinkingStepId) return;
+      const id = currentThinkingStepId;
+      currentThinkingStepId = null;
+      thinkingAccum = '';
+      setCurrentTurnSteps((prev) =>
+        prev.map((s) =>
+          s.id === id && s.status === 'running'
+            ? { ...s, status: 'ok', finishedAt: Date.now() }
+            : s
+        )
+      );
+    };
+
+    try {
+      for await (const ev of runAgentLoop({
+        provider: activeProvider,
+        model: effectiveModel,
+        ...(props.fallbackModels ? { fallbackModels: props.fallbackModels } : {}),
+        tools: props.tools,
+        ...(props.hooks ? { hooks: props.hooks } : {}),
+        toolContext: {
+          ...props.toolContext,
+          // Mode-driven approval policy: plan = read-only, build /
+          // autopilot = let tools run. Without the per-mode swap, /mode
+          // plan was a no-op (writes still happened) and users lost the
+          // "safe to read" guardrail they expected.
+          approve: mode === 'plan' ? denyAllPolicy : allowAllPolicy,
+          shipDefaults: {
+            autoResolve: shipAutoResolveRef.current,
+            promptOnConflict: shipPromptOnConflictRef.current
+          },
+          // Conflict callback — the OpenTUI variant doesn't pop the
+          // overlay yet, so we just resolve to the configured default.
+          // This keeps `ship_apply` from blocking when it expects the
+          // host to ask the user.
+          shipResolveAsk: async () => ({
+            strategy: shipAutoResolveRef.current,
+            persist: false
+          }),
+          callingAgent: { name: activeAgent.name },
+          signal: ac.signal
+        },
+        // Seed with the system prompt + full prior history so the
+        // model sees Atlas identity, the registered tool inventory,
+        // skill index, and every earlier turn of this session.
+        initialMessages: [
+          { role: 'system', content: systemContent },
+          ...messagesRef.current
+        ],
+        ...(reasoningOpt ? { reasoning: reasoningOpt } : {}),
+        signal: ac.signal
+      })) {
+        handleEvent(ev);
+      }
+    } catch (e) {
+      pushItem('error', `loop crashed: ${(e as Error).message}`);
+    } finally {
+      flushAssistant();
+      abortRef.current = null;
+      setStreaming(false);
+      // Live ephemeral lines belong to the previous turn only.
+      // Clear them so they don't linger as ghost rows above the
+      // composer between turns.
+      setActiveTool(null);
+      setThinkingLine(null);
+      // Close out any still-running thinking step (model exited
+      // mid-thought after an abort, etc.) so the frozen card
+      // doesn't show a perpetual `..` glyph.
+      if (currentThinkingStepId) {
+        const id = currentThinkingStepId;
+        currentThinkingStepId = null;
+        setCurrentTurnSteps((prev) =>
+          prev.map((s) =>
+            s.id === id && s.status === 'running'
+              ? { ...s, status: 'ok', finishedAt: Date.now() }
+              : s
+          )
+        );
+      }
+      // Detach the live timeline key so the mirroring effect
+      // stops touching the (now frozen) card on the next turn,
+      // and reset the typewriter cursor so the next turn's
+      // thinking text starts revealing from char 0.
+      liveTimelineKey.current = null;
+      setThinkingRevealedLines(0);
+    }
+
+    function handleEvent(ev: LoopEvent): void {
+      switch (ev.type) {
+        case 'delta':
+          // First visible text means the model is replying — close
+          // any open thinking step so the strip flips from `.. Thinking…`
+          // to the next phase (or the frozen card is consistent).
+          finishThinking();
+          assistantBuffer += ev.text;
+          flushAssistant();
+          break;
+        case 'turn_end': {
+          // Use the model's final committed message as the source of
+          // truth — some providers don't emit deltas for short
+          // responses, others batch the whole reply into a single
+          // chunk after `tool_call_done`. Mirrors the Ink TUI's
+          // safety net at App.tsx:2103.
+          const finalText =
+            typeof ev.assistantMessage.content === 'string'
+              ? ev.assistantMessage.content
+              : '';
+          // Try to extract a structured-question block. When found:
+          // (a) pop the option-picker overlay so the user picks one
+          // of the suggested answers; (b) rewrite the visible
+          // transcript to show the surrounding narrative without the
+          // raw `<atlas:question>` noise. The model history already
+          // gets sanitised by the loop's `done` event because we
+          // replace messagesRef from ev.messages there.
+          const found = finalText ? tryExtractInteraction(finalText) : null;
+          if (found) {
+            const cleaned = found.remaining.trim();
+            assistantBuffer = cleaned;
+            flushAssistant();
+            setInteractionRequest(found.request);
+            setOverlay('option-picker');
+          } else if (finalText.length > 0) {
+            // Non-question turn — commit the safe rendering (which also
+            // hides any in-progress `<atlas:question>` opener if the
+            // closing tag never arrived).
+            assistantBuffer = renderVisibleAssistant(finalText);
+            flushAssistant();
+          } else {
+            // Tool-only turn — drop the buffer so the next turn
+            // starts a fresh assistant entry instead of overwriting
+            // this one's text.
+            flushAssistant();
+          }
+          assistantBuffer = '';
+          // NOTE: we used to append `ev.assistantMessage` here, but
+          // that left orphaned `tool_use` blocks in history when the
+          // turn included tool calls (the matching `tool_result`
+          // messages only land after `tool_call_done`). Anthropic
+          // then 400'd the next request. The canonical history is
+          // now installed in `case 'done':` from `ev.messages`.
+          // Force the *next* delta to begin a new transcript entry
+          // (not replace the just-committed one).
+          turnBoundary.current = true;
+          break;
+        }
+        case 'done':
+          // Finalise the live timeline that's already pinned in
+          // the transcript at submit-time: flip running steps to
+          // ok, prune the card if the turn produced zero activity
+          // (so a plain text reply doesn't carry an empty header),
+          // and detach the live key so the mirroring effect stops
+          // touching the frozen card on subsequent turns.
+          finishThinking();
+          {
+            const liveKey = liveTimelineKey.current;
+            const frozen: readonly TurnStep[] = currentTurnSteps.map((s) =>
+              s.status === 'running'
+                ? { ...s, status: 'ok', finishedAt: Date.now() }
+                : s
+            );
+            setTranscript((prev) => {
+              if (frozen.length === 0) {
+                // Drop the empty placeholder card.
+                return prev.filter((it) => it.key !== liveKey);
+              }
+              return prev.map((it) =>
+                it.key === liveKey && it.kind === 'timeline'
+                  ? { ...it, steps: frozen }
+                  : it
+              );
+            });
+            liveTimelineKey.current = null;
+            setCurrentTurnSteps([]);
+          }
+          // Replace history with the loop's canonical message list —
+          // it already contains the assistant's tool_use blocks AND
+          // the matching tool_result messages. Without this the next
+          // turn's request would have unmatched tool_use ids and
+          // Anthropic returns HTTP 400 ("tool_use ids were found
+          // without tool_result blocks").
+          //
+          // Sanitise out any `<atlas:question>` blocks before
+          // persisting so subsequent turns don't quote a stale
+          // prompt back at the model.
+          messagesRef.current = ev.messages.map((m) => {
+            if (m.role !== 'assistant' || typeof m.content !== 'string') {
+              return m;
+            }
+            const cleaned = stripInteractionBlocks(m.content);
+            if (cleaned === m.content) return m;
+            return { ...m, content: cleaned };
+          });
+          if (ev.usage) {
+            const u = ev.usage;
+            const prompt = u.promptTokens ?? 0;
+            const completion = u.completionTokens ?? 0;
+            setTokensUsed((prev) => prev + prompt + completion);
+            // Update spend — best effort: returns undefined when the
+            // model isn't in our pricing table (custom OR ids etc.).
+            const spent = estimateCost(effectiveModel, prompt, completion);
+            if (spent !== undefined) {
+              setCostUsd((prev) => prev + spent);
+            }
+          }
+          break;
+        case 'tool_call_start': {
+          finishThinking();
+          const id = ev.call.id ?? `tc-${Date.now()}-${currentTurnSteps.length}`;
+          setToolCount((n) => n + 1);
+          toolStartedAt.set(id, Date.now());
+          setActiveTool({ name: ev.call.name, startedAt: Date.now() });
+          setRecentTools((prev) => [
+            ...prev.slice(-9),
+            {
+              key: id,
+              name: ev.call.name,
+              status: 'running'
+            }
+          ]);
+          // Push the matching timeline step. We key it on the same
+          // call id so `tool_call_done` can flip it to past tense
+          // without a second lookup.
+          setCurrentTurnSteps((prev) => [
+            ...prev,
+            {
+              id: `step-${id}`,
+              kind: 'tool',
+              label: labelForToolCall(ev.call.name, ev.call.arguments, false),
+              status: 'running',
+              startedAt: Date.now(),
+              toolName: ev.call.name
+            }
+          ]);
+          break;
+        }
+        case 'tool_call_done': {
+          const status: SidebarToolEvent['status'] =
+            ev.outcome.type === 'error' ? 'error' : 'done';
+          const id = ev.call.id ?? '';
+          const startedAt = toolStartedAt.get(id);
+          const elapsedMs =
+            startedAt !== undefined ? Date.now() - startedAt : undefined;
+          setActiveTool(null);
+          setRecentTools((prev) =>
+            prev.map((t) =>
+              t.key === id || t.name === ev.call.name
+                ? {
+                    ...t,
+                    status,
+                    ...(elapsedMs !== undefined ? { elapsedMs } : {})
+                  }
+                : t
+            )
+          );
+          // Flip the matching timeline step to past tense + ok/error,
+          // and surface the first line of the result/error as the
+          // step's secondary detail line. This is what gives the
+          // strip the "Read App.tsx · 1.2s · 142 lines" feel.
+          const stepId = `step-${id}`;
+          const detailRaw =
+            ev.outcome.type === 'error'
+              ? (ev.outcome.error as { message?: string } | undefined)?.message ?? 'error'
+              : (ev.outcome as { result?: unknown }).result;
+          const detail = firstLineOf(detailRaw);
+          setCurrentTurnSteps((prev) =>
+            prev.map((s) =>
+              s.id === stepId
+                ? {
+                    ...s,
+                    status: status === 'error' ? 'error' : 'ok',
+                    label: labelForToolCall(ev.call.name, ev.call.arguments, true),
+                    finishedAt: Date.now(),
+                    ...(detail ? { detail } : {})
+                  }
+                : s
+            )
+          );
+          break;
+        }
+        case 'thinking': {
+          // Accumulate the model's reasoning. `thinkingLine` holds
+          // the full buffer for the typewriter ticker; `thinkingAccum`
+          // is the per-step copy so the frozen card still has the
+          // text after the live state is cleared.
+          setThinkingLine((prev) => (prev ?? '') + ev.text);
+          thinkingAccum += ev.text;
+          // Mirror VS Code's reasoning panel: open a single
+          // Thinking step on the first fragment, then keep
+          // overwriting its detail with the full accumulated
+          // buffer. The step closes when a tool call or assistant
+          // text arrives.
+          if (!currentThinkingStepId) {
+            const id = `step-think-${Date.now()}-${currentTurnSteps.length}`;
+            currentThinkingStepId = id;
+            setCurrentTurnSteps((prev) => [
+              ...prev,
+              {
+                id,
+                kind: 'thinking',
+                label: 'Thinking',
+                status: 'running',
+                startedAt: Date.now(),
+                detail: thinkingAccum
+              }
+            ]);
+          } else {
+            const id = currentThinkingStepId;
+            const detail = thinkingAccum;
+            setCurrentTurnSteps((prev) =>
+              prev.map((s) => (s.id === id ? { ...s, detail } : s))
+            );
+          }
+          break;
+        }
+        case 'error':
+          pushItem('error', ev.error.message);
+          break;
+        default:
+          break;
+      }
+    }
+  }, [
+    input,
+    streaming,
+    props,
+    activeAgent,
+    activeModel,
+    activeProvider,
+    activeProviderKind,
+    agentModels,
+    mode,
+    thinking,
+    pushItem,
+    handleSlash,
+    slashSuggestions,
+    slashCursor
+  ]);
+
+  // Global hotkeys. Composer-local keys (Enter, Ctrl-J, Backspace,
+  // arrows, paste) are handled by the focused `<textarea>`.
+  useKeyboard((key) => {
+    if (overlay) {
+      if (key.name === 'escape') {
+        setOverlay(null);
+        return;
+      }
+      if (key.ctrl && key.name === 'c') {
+        setOverlay(null);
+        return;
+      }
+      return;
+    }
+
+    if (key.ctrl && key.name === 'c') {
+      // Ctrl-C ONLY aborts the in-flight model turn. We never exit
+      // on Ctrl-C — many users rely on it for terminal copy
+      // (especially with selection-on-copy enabled). The dedicated
+      // exit hotkey is Ctrl-D pressed twice in a row.
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+      return;
+    }
+    if (key.ctrl && key.name === 'd') {
+      // Two-stage exit: first Ctrl-D arms the latch (with a 2s
+      // window) and surfaces a hint, second Ctrl-D within the
+      // window exits. Mirrors the standard REPL exit etiquette.
+      const now = Date.now();
+      if (now - exitArmedAt.current < 2000) {
+        exitArmedAt.current = 0;
+        props.onExit?.();
+        return;
+      }
+      exitArmedAt.current = now;
+      pushItem('system', '(press Ctrl-D again within 2s to exit)');
+      return;
+    }
+    if (key.ctrl && key.name === 'l') {
+      setTranscript([]);
+      messagesRef.current = [];
+      return;
+    }
+    if (key.ctrl && key.name === 'x') {
+      // Open the copy picker so the user can choose any message in
+      // the transcript and copy its full text to the system
+      // clipboard via OSC 52. Works in iTerm2, kitty, WezTerm,
+      // Alacritty, foot, Windows Terminal, and tmux (when
+      // `set-clipboard on` is set in tmux.conf). We can't read the
+      // terminal's mouse selection from inside the alt-screen
+      // renderer, so the picker is the in-app equivalent.
+      const copyable = transcript.filter(
+        (t) => t.kind === 'assistant' || t.kind === 'user' || t.kind === 'thinking'
+      );
+      if (copyable.length === 0) {
+        pushItem('system', '(no messages to copy yet)');
+        return;
+      }
+      setOverlay('copy-picker');
+      return;
+    }
+    // Scrollback — PgUp / PgDn / Home / End. The chat scrollbox is
+    // not focused (the textarea is) so its built-in handlers never
+    // fire; we forward the key to the underlying renderable's
+    // `scrollBy` instead. Half-viewport per page like a terminal
+    // pager.
+    if (key.name === 'pageup') {
+      scrollboxRef.current?.scrollBy(-0.5, 'viewport');
+      return;
+    }
+    if (key.name === 'pagedown') {
+      scrollboxRef.current?.scrollBy(0.5, 'viewport');
+      return;
+    }
+    if (key.name === 'home' && !composerFocused) {
+      scrollboxRef.current?.scrollBy(-1, 'content');
+      return;
+    }
+    if (key.name === 'end' && !composerFocused) {
+      scrollboxRef.current?.scrollBy(1, 'content');
+      return;
+    }
+    // Slash autocomplete navigation — only active when the popup
+    // has matches. ↑/↓ cycle, Tab autocompletes the highlighted
+    // command name into the composer (so the user can keep typing
+    // arguments).
+    if (slashSuggestions.length > 0) {
+      if (key.name === 'up') {
+        setSlashCursor((i) =>
+          i <= 0 ? slashSuggestions.length - 1 : i - 1
+        );
+        return;
+      }
+      if (key.name === 'down') {
+        setSlashCursor((i) =>
+          i >= slashSuggestions.length - 1 ? 0 : i + 1
+        );
+        return;
+      }
+      if (key.name === 'tab' && !key.shift) {
+        const pick =
+          slashSuggestions[slashCursor] ?? slashSuggestions[0];
+        if (pick) {
+          const next = `/${pick.name} `;
+          setInput(next);
+          const ta = composerRef.current as unknown as {
+            setText?: (s: string) => void;
+          } | null;
+          ta?.setText?.(next);
+        }
+        return;
+      }
+    }
+    if (key.name === 'tab' && !key.shift) {
+      // Only open the picker when there's something to pick. On a
+      // default install (orchestrator-only) Tab is a no-op — the
+      // statusbar surfaces the hotkey but pressing it does nothing
+      // until the user installs a custom agent under ~/.atlas/agents/.
+      if (switchableAgents.length > 1) setOverlay('agent');
+      return;
+    }
+    if (key.ctrl && key.name === 'o') {
+      setOverlay('model');
+      return;
+    }
+    if (key.ctrl && key.name === 't') {
+      setOverlay('thinking');
+      return;
+    }
+    if (key.ctrl && key.name === 'p') {
+      setOverlay('mode');
+      return;
+    }
+  });
+
+  useEffect(() => {
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
+    };
+  }, []);
+
+  const showSidebar = width >= SIDEBAR_MIN_COLS;
+  const composerFocused = overlay === null;
+
+  return (
+    <box
+      style={{
+        width,
+        height,
+        flexDirection: 'column',
+        backgroundColor: palette.background
+      }}
+    >
+      <Header
+        agentName={activeAgent?.name ?? 'atlas'}
+        agentRole={
+          activeAgent
+            ? `${activeAgent.role ?? 'Agent'} (${activeAgent.name})`
+            : 'Atlas'
+        }
+        model={activeModel}
+        providerTag={providerTagFor(activeModel, props.modelCatalog)}
+        mode={mode}
+        thinking={thinking}
+        streaming={streaming}
+        sessionTitle={sessionTitle ?? (sessionId ? sessionId.slice(0, 8) : null)}
+      />
+
+      {/* Body: chat column + optional right sidebar */}
+      <box
+        style={{
+          width: '100%',
+          flexGrow: 1,
+          flexDirection: 'row',
+          backgroundColor: palette.background,
+          position: 'relative'
+        }}
+      >
+        <box
+          style={{
+            flexGrow: 1,
+            flexDirection: 'column',
+            backgroundColor: palette.backgroundPanel
+          }}
+        >
+          <scrollbox
+            ref={scrollboxRef as never}
+            style={{
+              width: '100%',
+              flexGrow: 1,
+              backgroundColor: palette.backgroundPanel,
+              paddingLeft: 1,
+              paddingRight: 1
+            }}
+            rootOptions={{ backgroundColor: palette.backgroundPanel }}
+            wrapperOptions={{ backgroundColor: palette.backgroundPanel }}
+            viewportOptions={{ backgroundColor: palette.backgroundPanel }}
+            contentOptions={{ backgroundColor: palette.backgroundPanel }}
+            stickyScroll
+            stickyStart="bottom"
+          >
+            {transcript.length === 0 ? (
+              <Splash defaultModel={activeModel} />
+            ) : (
+              transcript.map((item) => {
+                const color =
+                  item.kind === 'user'
+                    ? palette.text
+                    : item.kind === 'assistant'
+                      ? palette.primary
+                      : item.kind === 'error'
+                        ? palette.error
+                        : item.kind === 'system'
+                          ? palette.textMuted
+                          : palette.textDim;
+                // Assistant turns get full inline-markdown rendering
+                // (**bold**, *italic*, `code`, ~~strike~~, headings).
+                // Without this the model's emphasis markers leak
+                // through as literal `**` characters and the chat
+                // looks like raw text. User turns and system lines
+                // stay verbatim.
+                if (item.kind === 'assistant') {
+                  // ATLAS replies wear the accent (purple) so they
+                  // contrast clearly against the user's primary-blue
+                  // prompt — same role-color convention as VS Code
+                  // Copilot Chat. Author label is uppercased for
+                  // brand consistency.
+                  const authorLabel = (item.author ?? 'atlas').toUpperCase();
+                  return (
+                    <box
+                      key={item.key}
+                      style={{
+                        width: '100%',
+                        flexDirection: 'column',
+                        marginBottom: 1,
+                        backgroundColor: palette.backgroundPanel
+                      }}
+                    >
+                      <box
+                        style={{
+                          flexDirection: 'row',
+                          backgroundColor: palette.backgroundPanel
+                        }}
+                      >
+                        <text fg={palette.accent} attributes={BOLD_ATTR}>
+                          {`${authorLabel}  `}
+                        </text>
+                      </box>
+                      {renderMarkdownBlock(
+                        item.text,
+                        palette.text,
+                        `md_${item.key}`
+                      )}
+                    </box>
+                  );
+                }
+                if (item.kind === 'timeline' && item.steps) {
+                  // Live items get the typewriter-gated reveal so
+                  // the in-flight thinking text scrolls in at a
+                  // readable pace; frozen items show everything.
+                  const isLive = item.key === liveTimelineKey.current;
+                  const reveal = isLive ? thinkingRevealedLines : Infinity;
+                  return (
+                    <box
+                      key={item.key}
+                      style={{
+                        width: '100%',
+                        flexDirection: 'column',
+                        marginBottom: 1,
+                        backgroundColor: palette.backgroundPanel
+                      }}
+                    >
+                      {renderTimelineCard(item.steps, item.key, reveal)}
+                    </box>
+                  );
+                }
+                // User turns get a bold primary-blue label so the
+                // eye can hop between USER → ATLAS rows without
+                // re-reading. Errors and system lines keep their
+                // single-color compact format.
+                if (item.kind === 'user') {
+                  return (
+                    <box
+                      key={item.key}
+                      style={{
+                        width: '100%',
+                        flexDirection: 'column',
+                        marginBottom: 1,
+                        backgroundColor: palette.backgroundPanel
+                      }}
+                    >
+                      <box
+                        style={{
+                          flexDirection: 'row',
+                          backgroundColor: palette.backgroundPanel
+                        }}
+                      >
+                        <text fg={palette.primaryBright} attributes={BOLD_ATTR}>
+                          {'YOU  '}
+                        </text>
+                      </box>
+                      <box
+                        style={{
+                          flexDirection: 'row',
+                          backgroundColor: palette.backgroundPanel
+                        }}
+                      >
+                        <text fg={palette.text}>{item.text}</text>
+                      </box>
+                    </box>
+                  );
+                }
+                const prefix =
+                  item.kind === 'error'
+                    ? '! '
+                    : '';
+                return (
+                  <box
+                    key={item.key}
+                    style={{
+                      width: '100%',
+                      flexDirection: 'column',
+                      marginBottom: 1,
+                      backgroundColor: palette.backgroundPanel
+                    }}
+                  >
+                    <text fg={color}>{prefix + item.text}</text>
+                  </box>
+                );
+              })
+            )}
+          </scrollbox>
+
+          {/* The activity timeline now lives directly in the
+              transcript scrollback above the assistant reply (see
+              the `kind === 'timeline'` branch in the renderer
+              above), matching VS Code Copilot's user → activity →
+              answer ordering. No ephemeral strip above the
+              composer — that broke the panel background and
+              forced the user's eye to ping-pong between two
+              places to follow the model. */}
+
+          {/* Composer — multi-line. Enter sends; Shift-Enter,
+              Alt-Enter, and Ctrl-J insert newlines. The outer box
+              auto-grows upward as the user adds rows (the
+              scrollbox above has flexGrow:1 and shrinks to make
+              room) — same UX VS Code's chat input has when lines
+              break. Border turns bright yellow while the model is
+              streaming so the user can see "I'm working" at a
+              glance — mirrors the Ink TUI.
+
+              Note on Shift-Enter: most terminals collapse Shift
+              modifiers on Return into a bare CR, so the
+              `{ name:'return', shift:true }` binding only fires in
+              terminals that enable the Kitty keyboard protocol or
+              `modifyOtherKeys` (Kitty, WezTerm, recent iTerm2).
+              The Alt-Enter and Ctrl-J bindings are the universal
+              fallbacks. */}
+          {(() => {
+            // Compute a wrap-aware row count so the box also grows
+            // when a single long line wraps (not just on explicit
+            // newlines). We approximate the available width as the
+            // chat-column width minus the border (2) and padding
+            // (2). For the very first render we don't know the
+            // terminal width yet — fall back to 80 cols.
+            const innerCols =
+              Math.max(20, width - (showSidebar ? 38 : 0) - 4);
+            const lines = input.length === 0 ? [''] : input.split('\n');
+            const wrappedRows = lines.reduce(
+              (acc, l) => acc + Math.max(1, Math.ceil(l.length / innerCols)),
+              0
+            );
+            // 1 row min, cap at 12 so a paste doesn't eat the chat.
+            const rows = Math.min(12, Math.max(1, wrappedRows));
+            return (
+              <box
+                style={{
+                  width: '100%',
+                  // The +2 accounts for the single-row borders top &
+                  // bottom that wrap the textarea inside this box.
+                  height: rows + 2,
+                  backgroundColor: palette.backgroundPanel,
+                  borderColor: streaming
+                    ? palette.warning
+                    : composerFocused
+                      ? palette.primary
+                      : palette.border,
+                  borderStyle: 'single',
+                  paddingLeft: 1,
+                  paddingRight: 1
+                }}
+              >
+                <textarea
+                  ref={composerRef}
+                  focused={composerFocused}
+                  placeholder={
+                    streaming
+                      ? '… streaming — Ctrl-C to abort'
+                      : 'Message Atlas (↵ send · Shift-↵ / Alt-↵ / Ctrl-J newline · / for commands)'
+                  }
+                  placeholderColor={palette.textDim}
+                  backgroundColor={palette.backgroundPanel}
+                  focusedBackgroundColor={palette.backgroundPanel}
+                  textColor={palette.text}
+                  focusedTextColor={palette.text}
+                  cursorColor={palette.primaryBright}
+                  wrapMode="word"
+                  keyBindings={[
+                    { name: 'return', action: 'submit' },
+                    // Shift-Enter — only delivered by terminals with
+                    // the Kitty keyboard protocol / CSI-u / modifyOtherKeys.
+                    { name: 'return', shift: true, action: 'newline' },
+                    // Alt-Enter — universal fallback that works in
+                    // gnome-terminal, xterm, Windows Terminal, etc.
+                    { name: 'return', meta: true, action: 'newline' },
+                    // Ctrl-J — IEEE-1003 line feed, works everywhere.
+                    { name: 'j', ctrl: true, action: 'newline' }
+                  ]}
+                  onContentChange={() => {
+                    const t = composerRef.current?.plainText ?? '';
+                    setInput(t);
+                  }}
+                  onSubmit={() => {
+                    void submit();
+                  }}
+                  style={{
+                    width: '100%',
+                    height: rows
+                  }}
+                />
+              </box>
+            );
+          })()}
+        </box>
+
+        {showSidebar ? (
+          <Sidebar
+            tokensUsed={tokensUsed}
+            contextWindow={contextWindowFor(activeModel, props.modelCatalog)}
+            streaming={streaming}
+            toolCount={toolCount}
+            recentTools={recentTools}
+            thinkingLine={thinkingLine}
+            costUsd={costUsd}
+            phaseLine={activeTask ? formatPhaseLine(activeTask) : null}
+          />
+        ) : null}
+
+        {/* Slash command autocomplete — opens *from* the chat bar
+            (full chat-column width, anchored just above the
+            composer). The popup is non-modal: the composer stays
+            focused and the global useKeyboard listener handles
+            ↑/↓/Tab. Enter is intercepted in `submit()` to expand
+            the highlighted command before dispatch. */}
+        {slashSuggestions.length > 0 ? (
+          <SlashAutocomplete
+            suggestions={slashSuggestions}
+            highlightIndex={slashCursor}
+            // Match the composer's footprint: full chat-column width
+            // (terminal width minus the sidebar when shown), flush to
+            // the left edge, anchored at bottom = composer (3 rows)
+            // + status bar (1 row).
+            left={0}
+            width={Math.max(40, width - (showSidebar ? 38 : 0))}
+            bottom={4}
+          />
+        ) : null}
+
+        {overlay === 'agent' && agentOptions.length > 0 ? (
+          <Picker
+            title="select agent"
+            options={agentOptions}
+            initialValue={activeAgent?.name}
+            onChoose={(v) => {
+              setActiveAgentName(v);
+              pushItem('system', `→ agent: ${v}`);
+              setOverlay(null);
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'model' ? (
+          <ColoredGroupedPicker
+            title="select model"
+            entries={modelEntries}
+            initialValue={activeModel}
+            hint="↑/↓ navigate · ★ popular · ↵ choose · Esc cancel"
+            onChoose={(v) => {
+              if (switchToModel(v)) {
+                pushItem('system', `→ model: ${v}`);
+              }
+              setOverlay(null);
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'thinking' ? (
+          <Picker
+            title="thinking effort"
+            options={thinkingOptions.length > 0 ? thinkingOptions : THINKING_OPTIONS_ALL}
+            initialValue={thinking}
+            hint={
+              thinkingOptions.length === 0
+                ? `↑/↓ navigate · ↵ choose · Esc cancel — ${activeModel} reports no thinking metadata`
+                : undefined
+            }
+            onChoose={(v) => {
+              setThinking(v as ThinkingEffort);
+              pushItem('system', `→ thinking: ${v}`);
+              setOverlay(null);
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'mode' ? (
+          <Picker
+            title="permission mode"
+            options={MODE_OPTIONS}
+            initialValue={mode}
+            onChoose={(v) => {
+              if (v === 'autopilot' && mode !== 'autopilot') {
+                setOverlay('autopilot-confirm');
+                return;
+              }
+              setMode(v as Mode);
+              pushItem('system', `→ mode: ${v}`);
+              setOverlay(null);
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'autopilot-confirm' ? (
+          <Confirm
+            title="enable autopilot?"
+            message="Autopilot auto-approves every tool call — file writes, shell commands, network access — with no confirmation. Use only when you trust the current task."
+            confirmLabel="Enable autopilot"
+            cancelLabel="Stay in build"
+            tone="warn"
+            onConfirm={() => {
+              setMode('autopilot');
+              pushItem('system', '→ mode: autopilot');
+              setOverlay(null);
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {/* Structured-question option picker — pops when the model
+            emits an `<atlas:question>` block. The user picks one of
+            the suggestions (or "type freeform answer"); the choice
+            is sent as the next user turn so the model continues. */}
+        {overlay === 'option-picker' && interactionRequest ? (
+          <Picker
+            title={interactionRequest.prompt}
+            options={(() => {
+              const opts: PickerOption[] = interactionRequest.options.map((o) => ({
+                value: o.value,
+                label: o.label
+              }));
+              if (interactionRequest.allowFreeform) {
+                opts.push({
+                  value: '__freeform__',
+                  label: '✎ Type freeform answer…',
+                  description: 'open a text box to write your own answer'
+                });
+              }
+              return opts;
+            })()}
+            hint="↑/↓ navigate · ↵ choose · Esc dismiss"
+            onChoose={(v) => {
+              if (v === '__freeform__') {
+                setOverlay('option-freeform');
+                return;
+              }
+              setOverlay(null);
+              setInteractionRequest(null);
+              setInput(v);
+              const ta = composerRef.current as unknown as {
+                setText?: (s: string) => void;
+              } | null;
+              ta?.setText?.(v);
+              void submit();
+            }}
+            onCancel={() => {
+              setOverlay(null);
+              setInteractionRequest(null);
+            }}
+          />
+        ) : null}
+        {overlay === 'option-freeform' && interactionRequest ? (
+          <KeyEntry
+            title={interactionRequest.prompt}
+            help="Type your answer. ↵ to send · Esc to cancel."
+            placeholder="your answer…"
+            onSubmit={(v) => {
+              const value = v.trim();
+              setOverlay(null);
+              setInteractionRequest(null);
+              if (!value) return;
+              setInput(value);
+              const ta = composerRef.current as unknown as {
+                setText?: (s: string) => void;
+              } | null;
+              ta?.setText?.(value);
+              void submit();
+            }}
+            onCancel={() => {
+              setOverlay(null);
+              setInteractionRequest(null);
+            }}
+          />
+        ) : null}
+        {overlay === 'config' ? (
+          <Picker
+            title="⚙  Atlas setup — choose what to configure"
+            descriptionColor={palette.success}
+            options={(() => {
+              const cfg = props.config;
+              const hasOR = Boolean(props.providers?.openrouter);
+              const hasAnthKey = Boolean(cfg?.providers.anthropic.apiKey);
+              const hasClaudeCode = Boolean(props.providers?.anthropic) && !hasAnthKey;
+              const hasChatGpt = Boolean(props.providers?.['openai-codex']);
+              const hasGithub = Boolean(cfg?.github?.token);
+              const mcpCount = cfg?.mcp?.servers?.length ?? 0;
+              // Only show a description when the slot is connected;
+              // disconnected items render with no badge so the green
+              // ● connected reads cleanly. Mirrors the Ink TUI's
+              // /config palette (App.tsx — `tag()` returns ''  for
+              // disconnected).
+              const tag = (on: boolean, note = 'connected'): string =>
+                on ? `● ${note}` : '';
+              const opts: PickerOption[] = [
+                {
+                  value: 'openrouter',
+                  label: 'OpenRouter API key  (sk-or-…)',
+                  description: tag(hasOR)
+                },
+                {
+                  value: 'anthropic',
+                  label: 'Anthropic API key   (sk-ant-…)',
+                  description: tag(hasAnthKey)
+                },
+                {
+                  value: 'claude-code',
+                  label: 'Claude Code OAuth   (auto-detected)',
+                  description: tag(hasClaudeCode, 'detected')
+                },
+                {
+                  value: 'chatgpt',
+                  label: 'Sign in with ChatGPT (browser, Codex)',
+                  description: tag(hasChatGpt)
+                },
+                {
+                  value: 'github',
+                  label: 'GitHub token        (gh integration)',
+                  description: tag(hasGithub)
+                },
+                {
+                  value: 'mcp',
+                  label: 'MCP server          (model context protocol)',
+                  description: mcpCount > 0 ? `● ${mcpCount} configured` : ''
+                }
+              ];
+              return opts;
+            })()}
+            hint="↑/↓ navigate · ↵ choose · Esc cancel"
+            onChoose={(v) => {
+              setConfigError(null);
+              if (v === 'openrouter') {
+                const hasOR = Boolean(props.providers?.openrouter);
+                setOverlay(hasOR ? 'config-action-openrouter' : 'config-key-openrouter');
+                return;
+              }
+              if (v === 'anthropic') {
+                const hasAnthKey = Boolean(props.config?.providers.anthropic.apiKey);
+                setOverlay(hasAnthKey ? 'config-action-anthropic' : 'config-key-anthropic');
+                return;
+              }
+              if (v === 'claude-code') {
+                setInfoOverlay({
+                  title: 'Claude Code OAuth',
+                  body: props.providers?.anthropic && !props.config?.providers.anthropic.apiKey
+                    ? 'Claude Code OAuth detected.\n\nAtlas uses it automatically when the Anthropic\nprovider is selected and no API key is configured.'
+                    : 'No Claude Code credentials found.\n\nInstall Claude Code, sign in, then re-open this menu.\nAtlas reads ~/.claude/credentials.json on each launch.',
+                  tone: 'info'
+                });
+                setOverlay('config-info');
+                return;
+              }
+              if (v === 'chatgpt') {
+                setInfoOverlay({
+                  title: 'Sign in with ChatGPT',
+                  body: 'Browser-based PKCE login is not yet ported in the\nOpenTUI variant.\n\nFor now: launch with --ui=ink and use /config from\nthere to complete the ChatGPT OAuth flow. The saved\ntokens at ~/.atlas/config.yaml will work in either UI.',
+                  tone: 'warn'
+                });
+                setOverlay('config-info');
+                return;
+              }
+              if (v === 'github') {
+                setInfoOverlay({
+                  title: 'GitHub token',
+                  body: 'Use the gh CLI to authenticate:\n\n  1. Install:  brew install gh   (or apt/dnf/winget)\n  2. Sign in:  gh auth login\n\nAtlas picks up the token from `gh auth token` when\nthe GitHub tools are invoked.',
+                  tone: 'info'
+                });
+                setOverlay('config-info');
+                return;
+              }
+              if (v === 'mcp') {
+                setOverlay('config-mcp');
+                return;
+              }
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'config-action-openrouter' ? (
+          <Picker
+            title="⚙  OpenRouter — already connected"
+            descriptionColor={palette.success}
+            options={[
+              {
+                value: 'replace',
+                label: 'set new key',
+                description: 'replace the saved OpenRouter key'
+              },
+              {
+                value: 'remove',
+                label: 'disconnect / remove key',
+                description: 'wipe the saved key from ~/.atlas/config.yaml'
+              },
+              { value: '__cancel', label: 'cancel', description: '' }
+            ]}
+            hint="↵ apply · Esc back"
+            onChoose={(action) => {
+              if (action === '__cancel') {
+                setOverlay('config');
+                return;
+              }
+              if (action === 'replace') {
+                setOverlay('config-key-openrouter');
+                return;
+              }
+              if (action === 'remove') {
+                setOverlay(null);
+                void (async () => {
+                  const r = await removeProviderKey('openrouter', props.config);
+                  if (!r.ok) {
+                    pushItem('error', `disconnect failed: ${r.error}`);
+                    return;
+                  }
+                  pushItem(
+                    'system',
+                    `✓ removed OpenRouter key from ${r.path}. Restart atlas to apply.`
+                  );
+                })();
+                return;
+              }
+            }}
+            onCancel={() => setOverlay('config')}
+          />
+        ) : null}
+        {overlay === 'config-action-anthropic' ? (
+          <Picker
+            title="⚙  Anthropic — already connected"
+            descriptionColor={palette.success}
+            options={[
+              {
+                value: 'replace',
+                label: 'set new key',
+                description: 'replace the saved Anthropic key'
+              },
+              {
+                value: 'remove',
+                label: 'disconnect / remove key',
+                description: 'wipe the saved key (falls back to Claude Code OAuth if available)'
+              },
+              { value: '__cancel', label: 'cancel', description: '' }
+            ]}
+            hint="↵ apply · Esc back"
+            onChoose={(action) => {
+              if (action === '__cancel') {
+                setOverlay('config');
+                return;
+              }
+              if (action === 'replace') {
+                setOverlay('config-key-anthropic');
+                return;
+              }
+              if (action === 'remove') {
+                setOverlay(null);
+                void (async () => {
+                  const r = await removeProviderKey('anthropic', props.config);
+                  if (!r.ok) {
+                    pushItem('error', `disconnect failed: ${r.error}`);
+                    return;
+                  }
+                  pushItem(
+                    'system',
+                    `✓ removed Anthropic key from ${r.path}. Restart atlas to apply.`
+                  );
+                })();
+                return;
+              }
+            }}
+            onCancel={() => setOverlay('config')}
+          />
+        ) : null}
+        {overlay === 'config-key-openrouter' ? (
+          <KeyEntry
+            title="⚙  OpenRouter API key"
+            help={
+              'Paste your key. Saved to ~/.atlas/config.yaml.\n' +
+              'Get a key at https://openrouter.ai/keys\n' +
+              'Tip: comma-separated keys = primary + fallback rotation on 401/429.'
+            }
+            placeholder="sk-or-…"
+            mask
+            {...(configError ? { errorMessage: configError } : {})}
+            onSubmit={(v) => {
+              void (async () => {
+                const result = await saveProviderKey('openrouter', v, props.config);
+                if (!result.ok) {
+                  setConfigError(result.error);
+                  return;
+                }
+                setConfigError(null);
+                pushItem(
+                  'system',
+                  `✓ saved OpenRouter key to ${result.path}. Restart atlas to activate.`
+                );
+                setOverlay(null);
+              })();
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'config-key-anthropic' ? (
+          <KeyEntry
+            title="⚙  Anthropic API key"
+            help={
+              'Paste your key. Saved to ~/.atlas/config.yaml.\n' +
+              'Get a key at https://console.anthropic.com/settings/keys'
+            }
+            placeholder="sk-ant-…"
+            mask
+            {...(configError ? { errorMessage: configError } : {})}
+            onSubmit={(v) => {
+              void (async () => {
+                const result = await saveProviderKey('anthropic', v, props.config);
+                if (!result.ok) {
+                  setConfigError(result.error);
+                  return;
+                }
+                setConfigError(null);
+                pushItem(
+                  'system',
+                  `✓ saved Anthropic key to ${result.path}. Restart atlas to activate.`
+                );
+                setOverlay(null);
+              })();
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'config-info' && infoOverlay ? (
+          <InfoOverlay
+            title={infoOverlay.title}
+            body={infoOverlay.body}
+            {...(infoOverlay.tone ? { tone: infoOverlay.tone } : {})}
+            onClose={() => {
+              setOverlay(null);
+              setInfoOverlay(null);
+            }}
+          />
+        ) : null}
+        {overlay === 'config-mcp' ? (
+          <Picker
+            title="MCP servers — pick one to learn how to enable"
+            descriptionColor={palette.success}
+            options={(() => {
+              const configured = new Set(
+                (props.config?.mcp?.servers ?? []).map((s) => s.name)
+              );
+              return MCP_CATALOG.map((s) => ({
+                value: s.id,
+                label: `${s.id.padEnd(12)} (${s.pricing})  ${s.summary}`,
+                description: configured.has(s.id) ? '● configured' : ''
+              }));
+            })()}
+            hint="↑/↓ navigate · ↵ details · Esc back"
+            onChoose={(id) => {
+              const entry = MCP_CATALOG.find((s) => s.id === id);
+              if (!entry) {
+                setOverlay(null);
+                return;
+              }
+              const lines: string[] = [
+                entry.summary,
+                '',
+                `transport: ${entry.transport}`
+              ];
+              if (entry.url) lines.push(`url:       ${entry.url}`);
+              if (entry.envKey) {
+                lines.push(
+                  '',
+                  `env var:   ${entry.envKey}=${entry.envPlaceholder ?? '…'}`
+                );
+              }
+              lines.push(
+                '',
+                'Add under `mcp.servers` in ~/.atlas/config.yaml.',
+                'Then re-launch Atlas. The interactive add wizard is',
+                'not yet ported in the OpenTUI variant — use --ui=ink',
+                'for the guided flow.'
+              );
+              if (entry.docs) lines.push('', `docs: ${entry.docs}`);
+              setInfoOverlay({
+                title: `MCP · ${entry.id}`,
+                body: lines.join('\n'),
+                tone: entry.pricing === 'paid' ? 'warn' : 'info'
+              });
+              setOverlay('config-info');
+            }}
+            onCancel={() => setOverlay('config')}
+          />
+        ) : null}
+        {overlay === 'mcps-manage' ? (
+          <Picker
+            title="MCP servers — pick one to manage"
+            descriptionColor={palette.success}
+            options={(() => {
+              const configured = props.config?.mcp?.servers ?? [];
+              const running = new Set(
+                (props.mcpStatus?.running ?? []).map((r) => r.name)
+              );
+              const failed = new Map(
+                (props.mcpStatus?.failed ?? []).map((f) => [f.name, f.error])
+              );
+              const configuredOpts = configured.map((s) => {
+                const isCatalog = MCP_CATALOG.some((c) => c.id === s.name);
+                let badge = '';
+                if (s.enabled === false) badge = '○ disabled';
+                else if (failed.has(s.name)) badge = '✗ failed';
+                else if (running.has(s.name)) badge = '● running';
+                else badge = '◐ ready';
+                const lock = isCatalog ? ' (default)' : '';
+                return {
+                  value: s.name,
+                  label: `${s.name.padEnd(18)}${lock}`,
+                  description: badge
+                };
+              });
+              // Catalog entries that aren't configured — surfaced
+              // as "+ add filesystem" rows for one-click access to
+              // the same info-card the catalog overlay shows.
+              const seen = new Set(configured.map((s) => s.name));
+              const catalogOpts = MCP_CATALOG.filter((c) => !seen.has(c.id)).map(
+                (c) => ({
+                  value: `__add_${c.id}`,
+                  label: `+ add ${c.id.padEnd(14)} (${c.pricing})`,
+                  description: c.summary
+                })
+              );
+              const browseAll = [
+                { value: '__browse__', label: '↗ browse full catalog', description: '' }
+              ];
+              return [...configuredOpts, ...catalogOpts, ...browseAll];
+            })()}
+            hint="↵ pick · Esc back"
+            onChoose={(value) => {
+              if (value === '__browse__') {
+                setOverlay('config-mcp');
+                return;
+              }
+              if (value.startsWith('__add_')) {
+                const id = value.slice('__add_'.length);
+                const entry = MCP_CATALOG.find((s) => s.id === id);
+                if (entry) {
+                  const lines: string[] = [
+                    entry.summary,
+                    '',
+                    `transport: ${entry.transport}`
+                  ];
+                  if (entry.url) lines.push(`url:       ${entry.url}`);
+                  if (entry.envKey) {
+                    lines.push('', `env var:   ${entry.envKey}=${entry.envPlaceholder ?? '…'}`);
+                  }
+                  lines.push(
+                    '',
+                    'Add under `mcp.servers` in ~/.atlas/config.yaml.',
+                    'Then re-launch Atlas.'
+                  );
+                  if (entry.docs) lines.push('', `docs: ${entry.docs}`);
+                  setInfoOverlay({
+                    title: `MCP · ${entry.id}`,
+                    body: lines.join('\n'),
+                    tone: entry.pricing === 'paid' ? 'warn' : 'info'
+                  });
+                  setOverlay('config-info');
+                }
+                return;
+              }
+              setSelectedMcp(value);
+              setOverlay('mcps-actions');
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'mcps-actions' && selectedMcp ? (
+          <Picker
+            title={`MCP · ${selectedMcp}`}
+            options={(() => {
+              const cur = (props.config?.mcp?.servers ?? []).find(
+                (s) => s.name === selectedMcp
+              );
+              const isCatalog = MCP_CATALOG.some((c) => c.id === selectedMcp);
+              const enabled = cur?.enabled !== false;
+              const opts: PickerOption[] = [
+                enabled
+                  ? { value: 'disable', label: 'disable', description: 'turn off (kept in config)' }
+                  : { value: 'enable', label: 'enable', description: 'turn back on' }
+              ];
+              if (!isCatalog) {
+                opts.push({
+                  value: 'remove',
+                  label: 'remove',
+                  description: 'strip from config'
+                });
+              } else {
+                opts.push({
+                  value: '__locked',
+                  label: '(remove disabled — default MCP)',
+                  description: 'use disable to turn off'
+                });
+              }
+              opts.push({ value: '__cancel', label: 'cancel', description: '' });
+              return opts;
+            })()}
+            hint="↵ apply · Esc back"
+            onChoose={(action) => {
+              if (action === '__cancel' || action === '__locked') {
+                setOverlay('mcps-manage');
+                return;
+              }
+              const baseCfg = props.config;
+              if (!baseCfg) {
+                pushItem('error', 'no config loaded — cannot persist change');
+                setOverlay(null);
+                return;
+              }
+              const servers = baseCfg.mcp?.servers ?? [];
+              const idx = servers.findIndex((s) => s.name === selectedMcp);
+              if (idx < 0) {
+                setOverlay('mcps-manage');
+                return;
+              }
+              let nextServers = servers;
+              let msg = '';
+              if (action === 'remove') {
+                if (MCP_CATALOG.some((c) => c.id === selectedMcp)) {
+                  pushItem('error', `'${selectedMcp}' is a default MCP — disable instead.`);
+                  setOverlay('mcps-manage');
+                  return;
+                }
+                nextServers = servers.filter((s) => s.name !== selectedMcp);
+                msg = `removed '${selectedMcp}' — restart atlas to apply.`;
+              } else {
+                const enable = action === 'enable';
+                nextServers = servers.map((s, i) =>
+                  i === idx ? { ...s, enabled: enable } : s
+                );
+                msg = `'${selectedMcp}' ${enable ? 'enabled' : 'disabled'} — restart atlas to apply.`;
+              }
+              const next: AtlasConfig = {
+                ...baseCfg,
+                mcp: { ...(baseCfg.mcp ?? { servers: [] }), servers: nextServers }
+              };
+              void saveConfig(next).then((r) => {
+                if (!r.ok) pushItem('error', `save failed: ${r.error.message}`);
+                else pushItem('system', msg);
+              });
+              setOverlay(null);
+              setSelectedMcp(null);
+            }}
+            onCancel={() => setOverlay('mcps-manage')}
+          />
+        ) : null}
+        {overlay === 'sessions-list' ? (
+          <Picker
+            title={`sessions (${sessionList.length})`}
+            options={(() => {
+              const opts: PickerOption[] = sessionList.slice(0, 50).map((s) => {
+                const when =
+                  typeof s.updatedAt === 'string'
+                    ? s.updatedAt.slice(0, 19).replace('T', ' ')
+                    : '';
+                return {
+                  value: s.id,
+                  label: `${(s.title ?? s.id).padEnd(28)}`,
+                  description: when
+                };
+              });
+              opts.push({
+                value: '__new__',
+                label: '+ new session',
+                description: 'clear transcript and start fresh'
+              });
+              return opts;
+            })()}
+            hint="↵ pick · Esc back"
+            onChoose={(value) => {
+              if (value === '__new__') {
+                setTranscript([]);
+                transcriptKey.current += 1;
+                pushItem('system', '✦ new session — transcript cleared.');
+                setOverlay(null);
+                return;
+              }
+              setSelectedSession(value);
+              setOverlay('sessions-actions');
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'sessions-actions' && selectedSession ? (
+          <Picker
+            title={`session · ${(() => {
+              const e = sessionList.find((s) => s.id === selectedSession);
+              return e?.title ? `${e.title} (${selectedSession.slice(0, 8)})` : selectedSession;
+            })()}`}
+            options={[
+              { value: 'resume', label: 'resume', description: 'load this session' },
+              { value: 'rename', label: 'rename', description: 'edit the session title' },
+              { value: 'delete', label: 'delete', description: 'remove from disk' },
+              { value: '__cancel', label: 'cancel', description: '' }
+            ]}
+            hint="↵ apply · Esc back"
+            onChoose={(action) => {
+              const store = props.sessionStore;
+              const target = selectedSession;
+              if (!store || !target) {
+                setOverlay(null);
+                return;
+              }
+              if (action === '__cancel') {
+                setOverlay('sessions-list');
+                return;
+              }
+              if (action === 'resume') {
+                setOverlay(null);
+                void (async () => {
+                  try {
+                    const r = await store.load(target);
+                    if (!r.ok) {
+                      pushItem('error', `resume failed: ${r.error.message}`);
+                      return;
+                    }
+                    const items = r.value.messages.map((m, i) => ({
+                      kind:
+                        m.role === 'user'
+                          ? ('user' as const)
+                          : m.role === 'assistant'
+                            ? ('assistant' as const)
+                            : ('system' as const),
+                      text: m.content,
+                      key: `r${transcriptKey.current}_${i}`
+                    }));
+                    setTranscript(items);
+                    transcriptKey.current += 1;
+                    setSessionId(r.value.id);
+                    setSessionTitle(r.value.title ?? null);
+                    pushItem('system', `✦ resumed session ${target} (${items.length} turns)`);
+                  } catch (e) {
+                    pushItem('error', `resume failed: ${(e as Error).message}`);
+                  }
+                })();
+                return;
+              }
+              if (action === 'rename') {
+                const cur = sessionList.find((s) => s.id === target);
+                setRenameDraft(cur?.title ?? '');
+                setOverlay('sessions-rename');
+                return;
+              }
+              if (action === 'delete') {
+                setOverlay(null);
+                void (async () => {
+                  try {
+                    const r = await store.remove(target);
+                    if (!r.ok) {
+                      pushItem('error', `delete failed: ${r.error.message}`);
+                      return;
+                    }
+                    setSessionList((prev) => prev.filter((s) => s.id !== target));
+                    pushItem('system', `✦ deleted session ${target}`);
+                  } catch (e) {
+                    pushItem('error', `delete failed: ${(e as Error).message}`);
+                  }
+                })();
+                return;
+              }
+            }}
+            onCancel={() => setOverlay('sessions-list')}
+          />
+        ) : null}
+        {overlay === 'sessions-rename' && selectedSession ? (
+          <KeyEntry
+            title={`✎  rename session · ${selectedSession.slice(0, 8)}`}
+            help={
+              `current: ${renameDraft || '(untitled)'}\n` +
+              'Type a new title and press ↵. Empty input = no change.\n' +
+              'The renamed session reflects on the header session chip.'
+            }
+            placeholder="new session title…"
+            onSubmit={(v) => {
+              const target = selectedSession;
+              const store = props.sessionStore;
+              if (!store || !target) {
+                setOverlay(null);
+                return;
+              }
+              const trimmed = v.trim();
+              setOverlay(null);
+              void (async () => {
+                try {
+                  const r = await store.rename(target, trimmed);
+                  if (!r.ok) {
+                    pushItem('error', `rename failed: ${r.error.message}`);
+                    return;
+                  }
+                  setSessionList((prev) =>
+                    prev.map((s) =>
+                      s.id === target ? { ...s, title: r.value.title ?? '' } : s
+                    )
+                  );
+                  // If the renamed session is the active one, reflect
+                  // the new title in the header immediately.
+                  if (sessionId === target) {
+                    setSessionTitle(r.value.title ?? null);
+                  }
+                  pushItem(
+                    'system',
+                    `✎ renamed session ${target.slice(0, 8)} → "${r.value.title ?? ''}"`
+                  );
+                } catch (e) {
+                  pushItem('error', `rename failed: ${(e as Error).message}`);
+                }
+              })();
+            }}
+            onCancel={() => setOverlay('sessions-actions')}
+          />
+        ) : null}
+        {overlay === 'tools-list' ? (
+          <Picker
+            title={`tools (${toolStatusList.length})`}
+            descriptionColor={palette.success}
+            options={toolStatusList.map((t) => {
+              const dot =
+                t.status.state === 'connected'
+                  ? '●'
+                  : t.status.state === 'degraded'
+                    ? '◐'
+                    : t.status.state === 'disconnected'
+                      ? '○'
+                      : t.status.state === 'disabled'
+                        ? '✗'
+                        : '·';
+              const badge = `${dot} ${t.status.state}`;
+              return {
+                value: t.entry.name,
+                label: `${t.entry.name.padEnd(20)} ${t.entry.title ?? ''}`.trimEnd(),
+                description: badge
+              };
+            })}
+            hint="↵ pick · Esc close"
+            onChoose={(name) => {
+              setSelectedTool(name);
+              setOverlay('tools-actions');
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'tools-actions' && selectedTool ? (
+          <Picker
+            title={`tool · ${selectedTool}`}
+            options={(() => {
+              const t = toolStatusList.find((x) => x.entry.name === selectedTool);
+              if (!t) return [{ value: '__cancel', label: 'cancel', description: '' }];
+              const opts: PickerOption[] = [];
+              // Every tool gets enable/disable. We pick the opposite
+              // of the current state so the picker reads as a toggle.
+              const isDisabled = t.status.state === 'disabled';
+              if (isDisabled) {
+                opts.push({ value: 'enable', label: 'enable', description: 'turn this tool on' });
+              } else {
+                const warn = t.entry.essential
+                  ? 'WARNING: essential tool — disabling may break workflows'
+                  : 'turn this tool off';
+                opts.push({ value: 'disable', label: 'disable', description: warn });
+              }
+              for (const a of t.entry.extraActions ?? []) {
+                opts.push({
+                  value: a.id,
+                  label: a.id,
+                  description: a.warning ?? a.label
+                });
+              }
+              opts.push({ value: '__cancel', label: 'cancel', description: '' });
+              return opts;
+            })()}
+            hint="↵ apply · Esc back"
+            onChoose={(action) => {
+              if (action === '__cancel') {
+                setOverlay('tools-list');
+                return;
+              }
+              const target = selectedTool;
+              setOverlay(null);
+              void (async () => {
+                pushItem('system', `tool action: ${target} ${action}…`);
+                try {
+                  const result = await runToolAction(
+                    target,
+                    action as 'enable' | 'disable' | 'install' | 'start' | 'stop' | 'restart' | 'remove',
+                    (line) => pushItem('system', `  ${line}`)
+                  );
+                  pushItem(
+                    result.ok ? 'system' : 'error',
+                    result.message
+                  );
+                  // Refresh catalog status so the next /tools open is fresh.
+                  const registered = new Set(props.tools.list().map((x) => x.name));
+                  const next = await resolveCatalogStatus(registered);
+                  setToolStatusList(next);
+                } catch (e) {
+                  pushItem('error', `tool action failed: ${(e as Error).message}`);
+                }
+              })();
+            }}
+            onCancel={() => setOverlay('tools-list')}
+          />
+        ) : null}
+        {overlay === 'onboard-loading' ? (
+          <InfoOverlay
+            title="onboarding · scanning repo"
+            body={onboardStatus || 'estimating cost…'}
+            tone="info"
+            onClose={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'onboard-mode' && onboardDraft ? (
+          <Picker
+            title="onboarding mode"
+            descriptionColor={palette.textMuted}
+            options={[
+              {
+                value: 'full',
+                label: 'full',
+                description: 'repo map + brownfield-architecture.md + onboarding.md'
+              },
+              {
+                value: 'cost-reduction',
+                label: 'cost-reduction',
+                description: 'split work between cheap + strong models'
+              },
+              {
+                value: 'map-only',
+                label: 'map-only',
+                description: 'just write docs/repo-map.md and stop'
+              }
+            ]}
+            hint="↵ pick · Esc cancel"
+            onChoose={(value) => {
+              const mode = value as OnboardMode;
+              const draft: OnboardDraft = { ...onboardDraft, mode };
+              if (mode === 'map-only') {
+                setOnboardDraft(draft);
+                setOverlay('onboard-confirm');
+                return;
+              }
+              if (mode === 'full') {
+                setOnboardDraft({ ...draft, strategy: 'same-model' });
+                setOverlay('onboard-confirm');
+                return;
+              }
+              setOnboardDraft(draft);
+              setOverlay('onboard-strategy');
+            }}
+            onCancel={() => {
+              setOverlay(null);
+              setOnboardDraft(null);
+            }}
+          />
+        ) : null}
+        {overlay === 'onboard-strategy' && onboardDraft ? (
+          <Picker
+            title="cost-reduction strategy"
+            descriptionColor={palette.textMuted}
+            options={[
+              { value: 'same-model', label: 'same-model', description: 'use one model for everything' },
+              {
+                value: 'cheap-fallback',
+                label: 'cheap-fallback',
+                description: 'cheap by default, escalate to fallback on hard sections'
+              },
+              {
+                value: 'manual',
+                label: 'manual',
+                description: 'pick a model per stage (map / architecture / onboarding)'
+              }
+            ]}
+            hint="↵ pick · Esc back"
+            onChoose={(value) => {
+              const strategy = value as OnboardStrategy;
+              const draft: OnboardDraft = { ...onboardDraft, strategy };
+              setOnboardDraft(draft);
+              if (strategy === 'same-model') {
+                setOnboardTarget('same');
+              } else if (strategy === 'cheap-fallback') {
+                setOnboardTarget('cheap');
+              } else {
+                setOnboardTarget('map');
+              }
+              setOverlay('onboard-pick-model');
+            }}
+            onCancel={() => setOverlay('onboard-mode')}
+          />
+        ) : null}
+        {overlay === 'onboard-pick-model' && onboardDraft && onboardTarget ? (
+          <Picker
+            title={(() => {
+              switch (onboardTarget) {
+                case 'same':
+                  return 'pick model (single)';
+                case 'cheap':
+                  return 'pick cheap model';
+                case 'fallback':
+                  return 'pick fallback model';
+                case 'map':
+                  return 'pick model for repo-map stage';
+                case 'arch':
+                  return 'pick model for architecture stage';
+                case 'onboard':
+                  return 'pick model for onboarding stage';
+              }
+            })()}
+            options={modelOptions}
+            initialValue={(() => {
+              const d = onboardDraft;
+              switch (onboardTarget) {
+                case 'same':
+                  return d.sameModel;
+                case 'cheap':
+                  return d.cheapModel;
+                case 'fallback':
+                  return d.fallbackModel;
+                case 'map':
+                  return d.stageModels?.map;
+                case 'arch':
+                  return d.stageModels?.architecture;
+                case 'onboard':
+                  return d.stageModels?.onboarding;
+              }
+            })()}
+            hint="↵ pick · Esc back"
+            onChoose={(chosen) => {
+              const d = onboardDraft;
+              if (onboardTarget === 'same') {
+                setOnboardDraft({ ...d, sameModel: chosen });
+                setOverlay('onboard-confirm');
+                return;
+              }
+              if (onboardTarget === 'cheap') {
+                setOnboardDraft({ ...d, cheapModel: chosen });
+                setOnboardTarget('fallback');
+                return;
+              }
+              if (onboardTarget === 'fallback') {
+                setOnboardDraft({ ...d, fallbackModel: chosen });
+                setOverlay('onboard-confirm');
+                return;
+              }
+              if (onboardTarget === 'map') {
+                setOnboardDraft({
+                  ...d,
+                  stageModels: {
+                    ...(d.stageModels ?? {}),
+                    map: chosen
+                  }
+                });
+                setOnboardTarget('arch');
+                return;
+              }
+              if (onboardTarget === 'arch') {
+                setOnboardDraft({
+                  ...d,
+                  stageModels: {
+                    ...(d.stageModels ?? {}),
+                    architecture: chosen
+                  }
+                });
+                setOnboardTarget('onboard');
+                return;
+              }
+              if (onboardTarget === 'onboard') {
+                setOnboardDraft({
+                  ...d,
+                  stageModels: {
+                    ...(d.stageModels ?? {}),
+                    onboarding: chosen
+                  }
+                });
+                setOverlay('onboard-confirm');
+                return;
+              }
+            }}
+            onCancel={() => setOverlay('onboard-strategy')}
+          />
+        ) : null}
+        {overlay === 'onboard-confirm' && onboardDraft ? (
+          <Picker
+            title={(() => {
+              const p = onboardDraft.preflight;
+              const cost = `${p.costBand.toUpperCase()} · in ~${p.estimatedInputTokens} tok · out ~${p.estimatedOutputTokensMin}-${p.estimatedOutputTokensMax}`;
+              const plan =
+                onboardDraft.strategy === 'same-model'
+                  ? `single-model: ${onboardDraft.sameModel ?? activeModel}`
+                  : onboardDraft.strategy === 'cheap-fallback'
+                    ? `cheap+fallback: ${onboardDraft.cheapModel ?? activeModel} → ${onboardDraft.fallbackModel ?? activeModel}`
+                    : `manual: map=${onboardDraft.stageModels?.map ?? activeModel}, arch=${onboardDraft.stageModels?.architecture ?? activeModel}, onb=${onboardDraft.stageModels?.onboarding ?? activeModel}`;
+              return `confirm onboard · mode=${onboardDraft.mode} · ${cost} · ${plan}`;
+            })()}
+            options={[
+              { value: 'start', label: 'start', description: 'write repo map + run onboarding' },
+              { value: 'back', label: 'back', description: 'change something' },
+              { value: 'cancel', label: 'cancel', description: '' }
+            ]}
+            hint="↵ apply · Esc cancel"
+            onChoose={(value) => {
+              if (value === 'cancel') {
+                setOverlay(null);
+                setOnboardDraft(null);
+                return;
+              }
+              if (value === 'back') {
+                setOverlay('onboard-mode');
+                return;
+              }
+              // start → run onboard pipeline
+              const draft = onboardDraft;
+              setOnboardStatus('writing repo map…');
+              setOverlay('onboard-running');
+              void (async () => {
+                const mapR = await writeRepoMap({ cwd: props.toolContext.cwd });
+                if (!mapR.ok) {
+                  pushItem('error', `onboard failed: ${mapR.error.message}`);
+                  setOverlay(null);
+                  setOnboardDraft(null);
+                  return;
+                }
+                pushItem('system', `repo map written → ${mapR.value.path}`);
+                if (draft.mode === 'map-only') {
+                  pushItem('system', 'map-only complete. Use /next to continue orchestration.');
+                  setOverlay(null);
+                  setOnboardDraft(null);
+                  return;
+                }
+                // Switch model if the plan picks a different one.
+                const pickModel =
+                  draft.strategy === 'same-model'
+                    ? draft.sameModel
+                    : draft.strategy === 'cheap-fallback'
+                      ? draft.cheapModel
+                      : draft.stageModels?.architecture;
+                if (pickModel && pickModel !== activeModel) {
+                  if (switchToModel(pickModel)) {
+                    pushItem('system', `model → ${pickModel} (onboard plan)`);
+                  }
+                }
+                const planLine =
+                  draft.strategy === 'same-model'
+                    ? `single-model: ${draft.sameModel ?? activeModel}`
+                    : draft.strategy === 'cheap-fallback'
+                      ? `cheap+fallback: ${draft.cheapModel ?? activeModel} -> ${draft.fallbackModel ?? activeModel}`
+                      : `manual per-stage: map=${draft.stageModels?.map ?? activeModel}, architecture=${draft.stageModels?.architecture ?? activeModel}, onboarding=${draft.stageModels?.onboarding ?? activeModel}`;
+                const prompt = [
+                  '*onboard',
+                  `Mode: ${draft.mode}`,
+                  `Strategy: ${planLine}`,
+                  `Estimated tokens: input~${draft.preflight.estimatedInputTokens}, output~${draft.preflight.estimatedOutputTokensMin}-${draft.preflight.estimatedOutputTokensMax}, band=${draft.preflight.costBand}`,
+                  'Use docs/repo-map.md as source-of-truth and produce:',
+                  '- docs/brownfield-architecture.md',
+                  '- docs/onboarding.md',
+                  'Also seed .atlas/state.yaml artifacts when confidently inferable.',
+                  'If confidence is low in any section, explicitly mark assumptions.'
+                ].join('\n');
+                setOverlay(null);
+                setOnboardDraft(null);
+                // Inject prompt into composer and submit. Same
+                // pattern as `/next` and the option-picker.
+                setInput(prompt);
+                const ta = composerRef.current as unknown as {
+                  setText?: (s: string) => void;
+                } | null;
+                ta?.setText?.(prompt);
+                void submit();
+              })();
+            }}
+            onCancel={() => {
+              setOverlay(null);
+              setOnboardDraft(null);
+            }}
+          />
+        ) : null}
+        {overlay === 'onboard-running' ? (
+          <InfoOverlay
+            title="onboarding · running"
+            body={onboardStatus || 'working…'}
+            tone="info"
+            onClose={() => {}}
+          />
+        ) : null}
+        {overlay === 'copy-picker' ? (
+          <Picker
+            title="copy message · pick one"
+            descriptionColor={palette.textMuted}
+            options={(() => {
+              // Most recent first — newest is what people usually
+              // want to copy. Filter to user/assistant/thinking;
+              // system + error rows are noise here.
+              const items = transcript.filter(
+                (t) =>
+                  t.kind === 'assistant' ||
+                  t.kind === 'user' ||
+                  t.kind === 'thinking'
+              );
+              return [...items].reverse().map((t, i) => {
+                const preview = t.text
+                  .replace(/\s+/g, ' ')
+                  .trim()
+                  .slice(0, 70);
+                const tag =
+                  t.kind === 'assistant'
+                    ? 'assistant'
+                    : t.kind === 'user'
+                      ? 'you'
+                      : 'thinking';
+                return {
+                  value: t.key,
+                  label: `[${String(items.length - i).padStart(3, ' ')}] ${tag.padEnd(9)} ${preview}`,
+                  description: `${t.text.length} chars`
+                };
+              });
+            })()}
+            hint="↵ copy via OSC 52 · Esc cancel"
+            onChoose={(messageKey) => {
+              const item = transcript.find((t) => t.key === messageKey);
+              if (!item) {
+                setOverlay(null);
+                return;
+              }
+              const payload = Buffer.from(item.text, 'utf8').toString('base64');
+              // OSC 52 ; c (clipboard buffer) ; <base64> BEL.
+              process.stdout.write(`\x1b]52;c;${payload}\x07`);
+              pushItem(
+                'system',
+                `✦ copied ${item.kind} message (${item.text.length} chars) to clipboard`
+              );
+              setOverlay(null);
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'skills-list' ? (
+          <Picker
+            title={`skills (${props.skills.list().length})`}
+            descriptionColor={palette.success}
+            options={props.skills.list().map((s) => {
+              const kindBadge =
+                s.kind === 'builtin'
+                  ? '[builtin]'
+                  : s.kind === 'learned'
+                    ? '[learned]'
+                    : '[user]';
+              return {
+                value: s.name,
+                label: `● ${s.name.padEnd(22)} ${s.description ?? ''}`.trimEnd(),
+                description: kindBadge
+              };
+            })}
+            hint="↵ pick · Esc close · /skills enable <name> to re-enable"
+            onChoose={(name) => {
+              setSelectedSkill(name);
+              setOverlay('skills-actions');
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'skills-actions' && selectedSkill ? (
+          <Picker
+            title={`skill · ${selectedSkill}`}
+            options={(() => {
+              const s = props.skills.list().find((x) => x.name === selectedSkill);
+              const opts: PickerOption[] = [
+                {
+                  value: 'view',
+                  label: 'view description',
+                  description: s?.description ?? ''
+                },
+                {
+                  value: 'disable',
+                  label: 'disable',
+                  description: 'mute this skill for next session'
+                },
+                { value: '__cancel', label: 'cancel', description: '' }
+              ];
+              return opts;
+            })()}
+            hint="↵ apply · Esc back"
+            onChoose={(action) => {
+              const target = props.skills.list().find((x) => x.name === selectedSkill);
+              if (!target) {
+                setOverlay('skills-list');
+                return;
+              }
+              if (action === '__cancel') {
+                setOverlay('skills-list');
+                return;
+              }
+              if (action === 'view') {
+                const triggers =
+                  target.triggers.length > 0
+                    ? `\n  triggers: ${target.triggers.join(', ')}`
+                    : '';
+                pushItem(
+                  'system',
+                  `skill · ${target.name} [${target.kind}] v${target.version}\n  ${target.description}${triggers}\n  path: ${target.path}`
+                );
+                setOverlay(null);
+                return;
+              }
+              if (action === 'disable') {
+                setOverlay(null);
+                void setSkillDisabled(target.path, true).then((r) => {
+                  if (!r.ok) {
+                    pushItem(
+                      'error',
+                      `failed to disable ${target.name}: ${r.error.message}`
+                    );
+                    return;
+                  }
+                  pushItem(
+                    'system',
+                    `disabled ${target.name} (${r.value}). Restart atlas to drop it from the active session.`
+                  );
+                });
+                return;
+              }
+            }}
+            onCancel={() => setOverlay('skills-list')}
+          />
+        ) : null}
+      </box>
+
+      {/* Statusbar */}
+      <box
+        style={{
+          width: '100%',
+          height: 1,
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundPanel,
+          paddingLeft: 1,
+          paddingRight: 1
+        }}
+      >
+        <box style={{ flexGrow: 1, flexDirection: 'row', backgroundColor: palette.backgroundPanel }}>
+          <text fg={error ? palette.error : palette.textMuted}>
+            {error
+              ? `error: ${error}`
+              : `${input.length > 0 ? `${input.length} chars · ` : ''}${STATUSBAR}`}
+          </text>
+        </box>
+        <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundPanel }}>
+          <text fg={palette.textDim}>cwd: </text>
+          <text fg={palette.secondary}>{shortenCwd(props.toolContext.cwd)}</text>
+        </box>
+      </box>
+    </box>
+  );
+};

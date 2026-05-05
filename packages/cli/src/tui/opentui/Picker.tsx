@@ -1,0 +1,918 @@
+/** @jsxImportSource @opentui/react */
+/**
+ * Picker — generic centered overlay with a `<select>` list.
+ *
+ * Used by the Tab agent picker, Ctrl-O model picker, Ctrl-T thinking
+ * picker, and Ctrl-P mode picker. Mirrors the Ink TUI's overlay
+ * convention: single bordered box, accent border, title, hint line at
+ * the bottom. Submitting (`enter`) calls `onChoose`; `escape` calls
+ * `onCancel`.
+ *
+ * Positioning: rendered with absolute layout coordinates so it floats
+ * over the chat without re-flowing it. The parent sets `zIndex` high
+ * via stack order — OpenTUI doesn't have a true z-index, so the
+ * picker is mounted last in the tree, after the chat layout.
+ */
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { TextareaRenderable } from '@opentui/core';
+import { useKeyboard, useTerminalDimensions } from '@opentui/react';
+import { palette } from './palette.js';
+
+/**
+ * Compute a centered, narrow overlay box position. Mirrors the Ink
+ * TUI convention of *not* spanning the full terminal width — popups
+ * read as modals, not as full-screen takeovers. Width caps at 72
+ * cols (slightly wider than a typical email-line) and the box is
+ * horizontally centered. When `rows` is supplied AND `height` is
+ * set, the box is **vertically centered** as well; otherwise `top`
+ * defaults to 2 to leave the header visible.
+ */
+const centeredOverlayStyle = (
+  cols: number,
+  opts?: {
+    readonly top?: number;
+    readonly maxWidth?: number;
+    readonly rows?: number;
+    readonly height?: number;
+  }
+): {
+  readonly top: number;
+  readonly left: number;
+  readonly width: number;
+} => {
+  const max = opts?.maxWidth ?? 72;
+  const width = Math.min(max, Math.max(40, cols - 4));
+  const left = Math.max(2, Math.floor((cols - width) / 2));
+  let top = opts?.top ?? 2;
+  if (
+    opts?.rows !== undefined &&
+    opts?.height !== undefined &&
+    opts.rows > opts.height
+  ) {
+    // Reserve 3 rows for the header + 1 for status bar.
+    top = Math.max(3, Math.floor((opts.rows - opts.height) / 2));
+  }
+  return { top, left, width };
+};
+
+export interface PickerOption {
+  readonly value: string;
+  readonly label: string;
+  readonly description?: string;
+}
+
+/**
+ * GroupedPickerEntry — either a non-selectable section header or an
+ * actual picker item. Headers are rendered in-list (the OpenTUI
+ * `<select>` widget has no native disabled/separator support, so we
+ * include them as visually distinct items prefixed with `──`; on
+ * Enter, the picker no-ops if the chosen value starts with `__hdr_`).
+ */
+export type GroupedPickerEntry =
+  | { readonly kind: 'header'; readonly key: string; readonly label: string }
+  | {
+      readonly kind: 'item';
+      readonly key: string;
+      readonly label: string;
+      readonly value: string;
+      readonly description?: string;
+      /**
+       * When true, the row is highlighted as a "★ Popular" pick
+       * (warning color when not selected). Mirrors the Ink TUI's
+       * yellow tint on curated popular models.
+       */
+      readonly popular?: boolean;
+    };
+
+export interface PickerProps {
+  readonly title: string;
+  readonly options: readonly PickerOption[];
+  readonly initialValue?: string;
+  readonly onChoose: (value: string) => void;
+  readonly onCancel: () => void;
+  readonly hint?: string;
+  /**
+   * Optional override for the description column color. Defaults to
+   * `palette.textMuted`. Pass `palette.success` for `• connected`
+   * style status badges in /config.
+   */
+  readonly descriptionColor?: string;
+}
+
+export const Picker = (props: PickerProps) => {
+  const { width: cols } = useTerminalDimensions();
+  const pos = centeredOverlayStyle(cols);
+  const items = useMemo(
+    () =>
+      props.options.map((o) => ({
+        name: o.label,
+        description: o.description ?? '',
+        value: o.value
+      })),
+    [props.options]
+  );
+  const initialIndex = useMemo(() => {
+    if (!props.initialValue) return 0;
+    const i = props.options.findIndex((o) => o.value === props.initialValue);
+    return i < 0 ? 0 : i;
+  }, [props.options, props.initialValue]);
+
+  // Cap height so the overlay never grows past ~half the screen even
+  // for large model lists. The select component scrolls internally.
+  const visibleRows = Math.min(items.length, 12);
+  const showDescriptions = items.some((it) => it.description.length > 0);
+  const rowHeight = showDescriptions ? 2 : 1;
+  const selectHeight = Math.max(1, visibleRows * rowHeight);
+
+  return (
+    <box
+      style={{
+        position: 'absolute',
+        top: pos.top,
+        left: pos.left,
+        width: pos.width,
+        flexDirection: 'column',
+        borderStyle: 'single',
+        borderColor: palette.primary,
+        backgroundColor: palette.backgroundElement,
+        paddingLeft: 1,
+        paddingRight: 1,
+        paddingTop: 0,
+        paddingBottom: 0
+      }}
+    >
+      <box
+        style={{
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundElement
+        }}
+      >
+        <text fg={palette.primaryBright}>{props.title}</text>
+      </box>
+
+      <select
+        focused
+        options={items}
+        selectedIndex={initialIndex}
+        showDescription={showDescriptions}
+        wrapSelection
+        style={{
+          width: '100%',
+          height: selectHeight,
+          backgroundColor: palette.backgroundElement,
+          focusedBackgroundColor: palette.backgroundElement,
+          textColor: palette.text,
+          focusedTextColor: palette.text,
+          selectedBackgroundColor: palette.primary,
+          selectedTextColor: palette.background,
+          descriptionColor: props.descriptionColor ?? palette.textMuted,
+          selectedDescriptionColor: palette.text
+        }}
+        onSelect={(_idx, opt) => {
+          if (!opt) return;
+          // SelectOption stores the label as `name`; we tucked the
+          // real picker value into `value` via the items map above.
+          const v = (opt as unknown as { value?: string }).value;
+          if (typeof v === 'string') props.onChoose(v);
+        }}
+      />
+
+      <box
+        style={{
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundElement,
+          marginTop: 0
+        }}
+      >
+        <text fg={palette.textMuted}>
+          {props.hint ?? '↑/↓ navigate · ↵ choose · Esc cancel'}
+        </text>
+      </box>
+    </box>
+  );
+};
+
+export interface ConfirmProps {
+  readonly title: string;
+  readonly message: string;
+  readonly confirmLabel?: string;
+  readonly cancelLabel?: string;
+  readonly onConfirm: () => void;
+  readonly onCancel: () => void;
+  readonly tone?: 'warn' | 'info';
+}
+
+/**
+ * Confirm — small two-button overlay used for destructive or
+ * elevated-permission flows (e.g. switching into autopilot). The
+ * focused `<select>` exposes the two choices so the user can navigate
+ * with arrow keys and confirm with Enter, mirroring the Ink TUI's
+ * autopilot prompt UX.
+ */
+export const Confirm = (props: ConfirmProps) => {
+  const { width: cols } = useTerminalDimensions();
+  const pos = centeredOverlayStyle(cols, { maxWidth: 60 });
+  const accent = props.tone === 'warn' ? palette.warning : palette.primary;
+  return (
+    <box
+      style={{
+        position: 'absolute',
+        top: pos.top,
+        left: pos.left,
+        width: pos.width,
+        flexDirection: 'column',
+        borderStyle: 'single',
+        borderColor: accent,
+        backgroundColor: palette.backgroundElement,
+        paddingLeft: 1,
+        paddingRight: 1
+      }}
+    >
+      <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}>
+        <text fg={accent}>{props.title}</text>
+      </box>
+      <box
+        style={{
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundElement,
+          marginTop: 1,
+          marginBottom: 1
+        }}
+      >
+        <text fg={palette.text}>{props.message}</text>
+      </box>
+      <select
+        focused
+        options={[
+          { name: props.cancelLabel ?? 'Cancel', description: 'Esc' },
+          { name: props.confirmLabel ?? 'Continue', description: 'this is intentional' }
+        ]}
+        selectedIndex={0}
+        showDescription
+        style={{
+          width: '100%',
+          height: 4,
+          backgroundColor: palette.backgroundElement,
+          focusedBackgroundColor: palette.backgroundElement,
+          textColor: palette.text,
+          focusedTextColor: palette.text,
+          selectedBackgroundColor: accent,
+          selectedTextColor: palette.background,
+          descriptionColor: palette.textMuted,
+          selectedDescriptionColor: palette.text
+        }}
+        onSelect={(idx) => {
+          if (idx === 1) props.onConfirm();
+          else props.onCancel();
+        }}
+      />
+    </box>
+  );
+};
+
+export interface GroupedPickerProps {
+  readonly title: string;
+  readonly entries: readonly GroupedPickerEntry[];
+  readonly initialValue?: string;
+  readonly onChoose: (value: string) => void;
+  readonly onCancel: () => void;
+  readonly hint?: string;
+}
+
+/**
+ * GroupedPicker — list with section headers. Mirrors the Ink TUI's
+ * grouped model picker (Anthropic / OpenAI Codex / OpenRouter
+ * sections, with a "★ Popular" sub-header inside OpenRouter).
+ *
+ * Headers are rendered in-line with `──` markers and the focused
+ * `<select>` will land on them, but pressing Enter on a header is a
+ * no-op — the user just keeps arrowing. There is no native
+ * disabled/separator support in OpenTUI's `<select>`.
+ */
+export const GroupedPicker = (props: GroupedPickerProps) => {
+  const { width: cols } = useTerminalDimensions();
+  const pos = centeredOverlayStyle(cols, { top: 1, maxWidth: 80 });
+  const items = useMemo(
+    () =>
+      props.entries.map((e) => {
+        if (e.kind === 'header') {
+          return {
+            name: e.label,
+            description: '',
+            value: `__hdr_${e.key}`
+          };
+        }
+        return {
+          name: e.label,
+          description: e.description ?? '',
+          value: e.value
+        };
+      }),
+    [props.entries]
+  );
+  const initialIndex = useMemo(() => {
+    if (!props.initialValue) {
+      const i = props.entries.findIndex((e) => e.kind === 'item');
+      return i < 0 ? 0 : i;
+    }
+    const i = props.entries.findIndex(
+      (e) => e.kind === 'item' && e.value === props.initialValue
+    );
+    return i < 0 ? 0 : i;
+  }, [props.entries, props.initialValue]);
+
+  const visibleRows = Math.min(items.length, 16);
+  const showDescriptions = items.some((it) => it.description.length > 0);
+  const rowHeight = showDescriptions ? 2 : 1;
+  const selectHeight = Math.max(1, visibleRows * rowHeight);
+
+  return (
+    <box
+      style={{
+        position: 'absolute',
+        top: pos.top,
+        left: pos.left,
+        width: pos.width,
+        flexDirection: 'column',
+        borderStyle: 'single',
+        borderColor: palette.primary,
+        backgroundColor: palette.backgroundElement,
+        paddingLeft: 1,
+        paddingRight: 1
+      }}
+    >
+      <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}>
+        <text fg={palette.primaryBright}>{props.title}</text>
+      </box>
+      <select
+        focused
+        options={items}
+        selectedIndex={initialIndex}
+        showDescription={showDescriptions}
+        showScrollIndicator
+        wrapSelection
+        style={{
+          width: '100%',
+          height: selectHeight,
+          backgroundColor: palette.backgroundElement,
+          focusedBackgroundColor: palette.backgroundElement,
+          textColor: palette.text,
+          focusedTextColor: palette.text,
+          selectedBackgroundColor: palette.primary,
+          selectedTextColor: palette.background,
+          descriptionColor: palette.textMuted,
+          selectedDescriptionColor: palette.text
+        }}
+        onSelect={(_idx, opt) => {
+          if (!opt) return;
+          const v = (opt as unknown as { value?: string }).value;
+          if (typeof v !== 'string') return;
+          if (v.startsWith('__hdr_')) return;
+          props.onChoose(v);
+        }}
+      />
+      <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}>
+        <text fg={palette.textMuted}>
+          {props.hint ?? '↑/↓ navigate · ↵ choose · Esc cancel'}
+        </text>
+      </box>
+    </box>
+  );
+};
+
+export interface KeyEntryProps {
+  readonly title: string;
+  readonly help: string;
+  readonly placeholder?: string;
+  readonly mask?: boolean;
+  readonly onSubmit: (value: string) => void;
+  readonly onCancel: () => void;
+  readonly errorMessage?: string;
+}
+
+/**
+ * KeyEntry — single-line text input overlay used by /config for API
+ * key entry. Enter submits, Esc cancels at the parent layer.
+ */
+export const KeyEntry = (props: KeyEntryProps) => {
+  const { width: cols } = useTerminalDimensions();
+  const pos = centeredOverlayStyle(cols, { maxWidth: 64 });
+  const ref = useRef<TextareaRenderable | null>(null);
+  return (
+    <box
+      style={{
+        position: 'absolute',
+        top: pos.top,
+        left: pos.left,
+        width: pos.width,
+        flexDirection: 'column',
+        borderStyle: 'double',
+        borderColor: palette.primary,
+        backgroundColor: palette.backgroundElement,
+        paddingLeft: 1,
+        paddingRight: 1
+      }}
+    >
+      <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}>
+        <text fg={palette.primaryBright}>{props.title}</text>
+      </box>
+      <box
+        style={{
+          flexDirection: 'column',
+          marginTop: 1,
+          marginBottom: 1,
+          backgroundColor: palette.backgroundElement
+        }}
+      >
+        {props.help.split('\n').map((ln, i) => (
+          <text key={`h${i}`} fg={palette.textMuted}>{ln}</text>
+        ))}
+      </box>
+      {props.errorMessage ? (
+        <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}>
+          <text fg={palette.error}>{`error: ${props.errorMessage}`}</text>
+        </box>
+      ) : null}
+      <box
+        style={{
+          flexDirection: 'row',
+          marginTop: 1,
+          backgroundColor: palette.backgroundElement,
+          borderColor: palette.primary,
+          borderStyle: 'single',
+          paddingLeft: 1,
+          paddingRight: 1
+        }}
+      >
+        <textarea
+          ref={ref}
+          focused
+          placeholder={props.placeholder ?? ''}
+          placeholderColor={palette.textDim}
+          backgroundColor={palette.backgroundElement}
+          focusedBackgroundColor={palette.backgroundElement}
+          textColor={props.mask ? palette.backgroundElement : palette.text}
+          focusedTextColor={props.mask ? palette.backgroundElement : palette.text}
+          cursorColor={palette.primaryBright}
+          wrapMode="char"
+          keyBindings={[{ name: 'return', action: 'submit' }]}
+          onSubmit={() => {
+            const v = (ref.current?.plainText ?? '').trim();
+            if (v.length > 0) props.onSubmit(v);
+          }}
+          style={{ width: '100%', height: 1 }}
+        />
+      </box>
+      <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}>
+        <text fg={palette.textMuted}>
+          {props.mask
+            ? '↵ save (your input is hidden) · Esc cancel'
+            : '↵ save · Esc cancel'}
+        </text>
+      </box>
+    </box>
+  );
+};
+
+export interface InfoOverlayProps {
+  readonly title: string;
+  readonly body: string;
+  readonly onClose: () => void;
+  readonly tone?: 'info' | 'warn' | 'error';
+}
+
+/**
+ * InfoOverlay — read-only modal used by /config branches that don't
+ * need user input. Press Enter / Esc to dismiss.
+ */
+export const InfoOverlay = (props: InfoOverlayProps) => {
+  const { width: cols } = useTerminalDimensions();
+  const pos = centeredOverlayStyle(cols, { maxWidth: 64 });
+  const accent =
+    props.tone === 'warn'
+      ? palette.warning
+      : props.tone === 'error'
+        ? palette.error
+        : palette.primary;
+  const lines = props.body.split('\n');
+  return (
+    <box
+      style={{
+        position: 'absolute',
+        top: pos.top,
+        left: pos.left,
+        width: pos.width,
+        flexDirection: 'column',
+        borderStyle: 'single',
+        borderColor: accent,
+        backgroundColor: palette.backgroundElement,
+        paddingLeft: 1,
+        paddingRight: 1
+      }}
+    >
+      <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}>
+        <text fg={accent}>{props.title}</text>
+      </box>
+      <box
+        style={{
+          flexDirection: 'column',
+          marginTop: 1,
+          marginBottom: 1,
+          backgroundColor: palette.backgroundElement
+        }}
+      >
+        {lines.map((ln, i) => (
+          <text key={`l${i}`} fg={palette.text}>{ln}</text>
+        ))}
+      </box>
+      <select
+        focused
+        options={[{ name: 'OK', description: '↵ / Esc to close' }]}
+        selectedIndex={0}
+        showDescription
+        style={{
+          width: '100%',
+          height: 2,
+          backgroundColor: palette.backgroundElement,
+          focusedBackgroundColor: palette.backgroundElement,
+          textColor: palette.text,
+          focusedTextColor: palette.text,
+          selectedBackgroundColor: accent,
+          selectedTextColor: palette.background,
+          descriptionColor: palette.textMuted,
+          selectedDescriptionColor: palette.text
+        }}
+        onSelect={() => props.onClose()}
+      />
+    </box>
+  );
+};
+
+export interface SlashSuggestion {
+  readonly name: string;
+  readonly summary: string;
+}
+
+export interface SlashAutocompleteProps {
+  readonly suggestions: readonly SlashSuggestion[];
+  readonly highlightIndex: number;
+  /**
+   * If we have more matches than visible rows, the popup scrolls
+   * to keep the highlighted row in view. Caller passes the offset.
+   */
+  readonly scrollOffset?: number;
+  readonly maxVisible?: number;
+  /**
+   * Anchor row from the bottom of the screen. The popup floats just
+   * above the composer (which sits at `bottom: 1` for the status
+   * bar + `height: 3` for itself + 1 row gap).
+   */
+  readonly bottom?: number;
+  /**
+   * Left offset relative to the parent (Body). Defaults to 0 so the
+   * popup sits flush with the chat column's left edge — same as the
+   * composer it's anchored above.
+   */
+  readonly left?: number;
+  /**
+   * Width override. When supplied, the popup matches the composer
+   * width exactly (the user wants the autocomplete to read like a
+   * dropdown that opens *from* the chat bar).
+   */
+  readonly width?: number;
+}
+
+/**
+ * SlashAutocomplete — inline command-name dropdown that appears above
+ * the composer when the user types `/` (no space yet). Mirrors the
+ * Ink TUI's SlashAutocomplete component (App.tsx:6908). The rendering
+ * is non-interactive (no focus stolen from the composer); the parent
+ * App handles ↑/↓ Tab Enter via the global keyboard listener and
+ * passes back `highlightIndex`.
+ */
+export const SlashAutocomplete = (props: SlashAutocompleteProps) => {
+  const { width: cols } = useTerminalDimensions();
+  const max = props.maxVisible ?? 8;
+  const total = props.suggestions.length;
+  if (total === 0) return null;
+  // Auto-scroll: keep highlightIndex within [offset, offset+max).
+  const auto =
+    props.scrollOffset ??
+    (props.highlightIndex < max
+      ? 0
+      : Math.min(total - max, props.highlightIndex - max + 1));
+  const offset = Math.max(0, Math.min(Math.max(0, total - max), auto));
+  const visible = props.suggestions.slice(offset, offset + max);
+  // Default: anchor above composer (3 rows for composer + 1 for status bar).
+  const bottom = props.bottom ?? 4;
+  const width = Math.max(40, props.width ?? Math.min(cols - 4, 80));
+  const left = props.left ?? Math.max(0, Math.floor((cols - width) / 2));
+  const longestName = visible.reduce(
+    (acc, s) => Math.max(acc, s.name.length + 1),
+    0
+  );
+  return (
+    <box
+      style={{
+        position: 'absolute',
+        bottom,
+        left,
+        width,
+        flexDirection: 'column',
+        borderStyle: 'single',
+        borderColor: palette.primary,
+        backgroundColor: palette.backgroundPanel,
+        paddingLeft: 1,
+        paddingRight: 1
+      }}
+    >
+      {visible.map((s, idx) => {
+        const realIdx = offset + idx;
+        const active = realIdx === props.highlightIndex;
+        const prefix = active ? '❯ ' : '  ';
+        const nameColor = active ? palette.primaryBright : palette.primary;
+        const descColor = active ? palette.text : palette.textMuted;
+        // Pad the slash command name so descriptions line up across
+        // rows, mirroring the Ink TUI's column alignment.
+        const padded = `/${s.name}`.padEnd(longestName + 1);
+        return (
+          <box
+            key={`s-${s.name}`}
+            style={{
+              flexDirection: 'row',
+              backgroundColor: palette.backgroundPanel
+            }}
+          >
+            <text fg={nameColor}>{prefix + padded}</text>
+            <text fg={descColor}>{s.summary}</text>
+          </box>
+        );
+      })}
+      <box
+        style={{
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundPanel,
+          marginTop: 0
+        }}
+      >
+        <text fg={palette.textDim}>
+          {`↑↓ select · Tab complete · ↵ run${total > max ? `  ·  ${props.highlightIndex + 1}/${total}` : ''}`}
+        </text>
+      </box>
+    </box>
+  );
+};
+
+
+export interface ColoredGroupedPickerProps {
+  readonly title: string;
+  readonly entries: readonly GroupedPickerEntry[];
+  readonly initialValue?: string;
+  readonly onChoose: (value: string) => void;
+  readonly onCancel: () => void;
+  readonly hint?: string;
+  /**
+   * Optional max visible rows (default 14). Lists longer than this
+   * scroll to keep the cursor in view.
+   */
+  readonly maxVisible?: number;
+}
+
+/**
+ * ColoredGroupedPicker — like GroupedPicker but renders each row
+ * with explicit per-row foreground colors so we can mirror the Ink
+ * TUI's palette:
+ *   - Headers (Anthropic / OpenAI / OpenRouter / ★ Popular):
+ *       palette.accent (magenta)  bold
+ *   - Popular items (unselected):     palette.warning (yellow)  ★
+ *   - Selected row:                   palette.success (green)   ❯
+ *       (or palette.primaryBright when selected on a popular row)
+ *   - Normal items:                   palette.text
+ *
+ * The OpenTUI `<select>` renderer applies a single foreground color
+ * to every row, so we can't get this look from `<select>`. We render
+ * a vertical stack of `<text>` rows ourselves, track the cursor with
+ * `useState`, and listen to ↑/↓/PgUp/PgDn/Home/End/Enter/Esc via
+ * `useKeyboard`. ↑/↓ skip header rows automatically.
+ */
+export const ColoredGroupedPicker = (props: ColoredGroupedPickerProps) => {
+  const { width: cols, height: termRows } = useTerminalDimensions();
+  const max = props.maxVisible ?? 14;
+  // Box height = title (1) + visible rows + hint (1) + border/pad (4).
+  const boxHeight = max + 6;
+  const pos = centeredOverlayStyle(cols, {
+    top: 1,
+    maxWidth: 84,
+    rows: termRows,
+    height: boxHeight
+  });
+
+  // Pre-compute a flat row list (headers + items, preserving order)
+  // and an index of selectable items so navigation can skip headers.
+  const rows = props.entries;
+  const itemIndices = useMemo(
+    () =>
+      rows
+        .map((r, i) => (r.kind === 'item' ? i : -1))
+        .filter((i) => i >= 0),
+    [rows]
+  );
+  const initialItemIdx = useMemo(() => {
+    if (itemIndices.length === 0) return 0;
+    if (!props.initialValue) return itemIndices[0] ?? 0;
+    const found = rows.findIndex(
+      (r) => r.kind === 'item' && r.value === props.initialValue
+    );
+    return found >= 0 ? found : (itemIndices[0] ?? 0);
+  }, [rows, itemIndices, props.initialValue]);
+
+  const [cursor, setCursor] = useState<number>(initialItemIdx);
+  const [scrollOffset, setScrollOffset] = useState<number>(0);
+
+  // Keep cursor in sync if entries change shape (rare).
+  useEffect(() => {
+    setCursor((c) => {
+      if (rows[c]?.kind === 'item') return c;
+      return initialItemIdx;
+    });
+  }, [rows, initialItemIdx]);
+
+  // Auto-scroll: keep the visible window covering the cursor. We
+  // also clamp generously when wrapping (cursor jumped from end →
+  // start), pinning the window to either start or end. When the
+  // cursor lands on the first item of a section, walk back to
+  // include the section header so the user always sees which group
+  // they're in.
+  useEffect(() => {
+    setScrollOffset((off) => {
+      let next = off;
+      if (cursor < next) next = cursor;
+      else if (cursor >= next + max) next = Math.max(0, cursor - max + 1);
+      // Pull in preceding headers so the section title stays visible.
+      while (next > 0 && rows[next - 1]?.kind === 'header') next -= 1;
+      return next;
+    });
+  }, [cursor, max, rows]);
+
+  // Wrap-aware item navigation. Direction +1 (down) wraps from the
+  // last item back to the first; -1 (up) wraps from the first item
+  // back to the last. Headers are skipped automatically because the
+  // wrap target is always an item index from `itemIndices`.
+  const stepItem = (dir: 1 | -1): void => {
+    if (itemIndices.length === 0) return;
+    // Find current cursor's index in itemIndices (or nearest).
+    let pos = itemIndices.indexOf(cursor);
+    if (pos < 0) {
+      // Cursor is on a header — find the next item in the requested
+      // direction, no wrap needed for that first hop.
+      pos = dir === 1
+        ? itemIndices.findIndex((i) => i > cursor)
+        : (() => {
+            for (let k = itemIndices.length - 1; k >= 0; k -= 1) {
+              const v = itemIndices[k];
+              if (v !== undefined && v < cursor) return k;
+            }
+            return -1;
+          })();
+      if (pos < 0) pos = dir === 1 ? 0 : itemIndices.length - 1;
+      const next = itemIndices[pos];
+      if (typeof next === 'number') setCursor(next);
+      return;
+    }
+    const nextPos = (pos + dir + itemIndices.length) % itemIndices.length;
+    const next = itemIndices[nextPos];
+    if (typeof next === 'number') setCursor(next);
+  };
+
+  useKeyboard((key) => {
+    if (key.name === 'escape') {
+      props.onCancel();
+      return;
+    }
+    if (key.name === 'return') {
+      const r = rows[cursor];
+      if (r && r.kind === 'item') props.onChoose(r.value);
+      return;
+    }
+    if (key.name === 'up') {
+      stepItem(-1);
+      return;
+    }
+    if (key.name === 'down') {
+      stepItem(1);
+      return;
+    }
+    if (key.name === 'pageup') {
+      // Page up = N steps; wrap-aware via stepItem.
+      for (let i = 0; i < max; i += 1) stepItem(-1);
+      return;
+    }
+    if (key.name === 'pagedown') {
+      for (let i = 0; i < max; i += 1) stepItem(1);
+      return;
+    }
+    if (key.name === 'home') {
+      const first = itemIndices[0];
+      if (typeof first === 'number') setCursor(first);
+      return;
+    }
+    if (key.name === 'end') {
+      const last = itemIndices[itemIndices.length - 1];
+      if (typeof last === 'number') setCursor(last);
+      return;
+    }
+  });
+
+  const visible = rows.slice(scrollOffset, scrollOffset + max);
+  const totalItems = itemIndices.length;
+  const itemPosition =
+    rows[cursor]?.kind === 'item'
+      ? itemIndices.indexOf(cursor) + 1
+      : 0;
+
+  return (
+    <box
+      style={{
+        position: 'absolute',
+        top: pos.top,
+        left: pos.left,
+        width: pos.width,
+        flexDirection: 'column',
+        borderStyle: 'single',
+        borderColor: palette.primary,
+        backgroundColor: palette.backgroundElement,
+        paddingLeft: 1,
+        paddingRight: 1
+      }}
+    >
+      <box
+        style={{
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundElement
+        }}
+      >
+        <text fg={palette.primaryBright}>{props.title}</text>
+      </box>
+      {visible.map((row, i) => {
+        const realIdx = scrollOffset + i;
+        const active = realIdx === cursor;
+        if (row.kind === 'header') {
+          return (
+            <box
+              key={`h-${row.key}-${realIdx}`}
+              style={{
+                flexDirection: 'row',
+                backgroundColor: palette.backgroundElement,
+                marginTop: realIdx === 0 ? 0 : 1
+              }}
+            >
+              <text fg={palette.accent}>{`── ${row.label} ──`}</text>
+            </box>
+          );
+        }
+        const popular = row.popular === true;
+        const prefix = active ? '❯ ' : popular ? '★ ' : '  ';
+        const baseColor = popular ? palette.warning : palette.text;
+        const fg = active ? palette.success : baseColor;
+        const descFg = active ? palette.text : palette.textMuted;
+        const desc = row.description ?? '';
+        // Truncate the visible row to the inner width so long ids
+        // don't wrap (which would break our 1-row-per-entry math).
+        const inner = Math.max(20, pos.width - 4);
+        const labelMax = Math.max(10, inner - desc.length - 3);
+        const label =
+          row.label.length > labelMax
+            ? row.label.slice(0, labelMax - 1) + '…'
+            : row.label;
+        return (
+          <box
+            key={`i-${row.key}-${realIdx}`}
+            style={{
+              flexDirection: 'row',
+              backgroundColor: active
+                ? palette.backgroundPanel
+                : palette.backgroundElement
+            }}
+          >
+            <text fg={fg}>{prefix + label}</text>
+            {desc.length > 0 ? (
+              <text fg={descFg}>{`  ${desc}`}</text>
+            ) : null}
+          </box>
+        );
+      })}
+      <box
+        style={{
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundElement,
+          marginTop: 1
+        }}
+      >
+        <text fg={palette.textMuted}>
+          {props.hint ??
+            `↑/↓ navigate · ↵ choose · Esc cancel${totalItems > 0 ? `  ·  ${itemPosition}/${totalItems}` : ''}`}
+        </text>
+      </box>
+    </box>
+  );
+};

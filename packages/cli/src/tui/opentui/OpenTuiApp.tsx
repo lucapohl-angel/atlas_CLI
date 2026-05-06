@@ -4159,6 +4159,42 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         }
         return;
       }
+      if (overlay === 'sessions-list') {
+        if (key.sequence === 'd') {
+          setMarkedSessionIds([]);
+          setPendingDeleteSessionIds([]);
+          setOverlay('sessions-delete-select');
+          return;
+        }
+        if (key.sequence === 'D' || (key.shift && key.name === 'd')) {
+          if (sessionList.length === 0) {
+            pushItem('system', '(no saved sessions to delete)');
+            return;
+          }
+          setPendingDeleteSessionIds(sessionList.map((s) => s.id));
+          setOverlay('sessions-delete-confirm');
+          return;
+        }
+      }
+      if (overlay === 'sessions-delete-select') {
+        if (key.sequence === 'a') {
+          setMarkedSessionIds(sessionList.map((s) => s.id));
+          return;
+        }
+        if (key.sequence === 'c') {
+          setMarkedSessionIds([]);
+          return;
+        }
+        if (key.sequence === 'd') {
+          if (markedSessionIds.length === 0) {
+            pushItem('error', 'mark one or more sessions before deleting');
+            return;
+          }
+          setPendingDeleteSessionIds(markedSessionIds);
+          setOverlay('sessions-delete-confirm');
+          return;
+        }
+      }
       if (key.name === 'escape') {
         if (overlay === 'learn-confirm' && learnConfirm?.stage === 'change' && learnConfirm.draft) {
           setLearnConfirm({
@@ -5929,19 +5965,9 @@ Config file: ~/.atlas/config.yaml
                 label: '+ new session',
                 description: 'clear transcript and start fresh'
               });
-              opts.push({
-                value: '__delete_select__',
-                label: 'select sessions to delete',
-                description: 'mark multiple saved sessions, then delete together'
-              });
-              opts.push({
-                value: '__delete_all__',
-                label: 'delete all sessions',
-                description: `remove all ${sessionList.length} saved session${sessionList.length === 1 ? '' : 's'}`
-              });
               return opts;
             })()}
-            hint="↵ pick · Esc back"
+            hint="↵ pick · d select-delete · D delete-all · Esc back"
             onChoose={(value) => {
               if (value === '__new__') {
                 setTranscript([]);
@@ -5952,17 +5978,6 @@ Config file: ~/.atlas/config.yaml
                 transcriptKey.current += 1;
                 pushItem('system', '✦ new session — transcript cleared.');
                 setOverlay(null);
-                return;
-              }
-              if (value === '__delete_select__') {
-                setMarkedSessionIds([]);
-                setPendingDeleteSessionIds([]);
-                setOverlay('sessions-delete-select');
-                return;
-              }
-              if (value === '__delete_all__') {
-                setPendingDeleteSessionIds(sessionList.map((s) => s.id));
-                setOverlay('sessions-delete-confirm');
                 return;
               }
               setSelectedSession(value);
@@ -6085,7 +6100,7 @@ Config file: ~/.atlas/config.yaml
               opts.push({ value: '__back__', label: 'back to sessions', description: '' });
               return opts;
             })()}
-            hint="↵ toggle/apply · Esc back"
+            hint="↵ toggle/apply · a select-all · c clear · d delete selected · Esc back"
             onChoose={(value) => {
               if (value === '__back__') {
                 setOverlay('sessions-list');

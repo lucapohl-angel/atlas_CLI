@@ -128,9 +128,12 @@ Never fail silently.
 - select all saved sessions for deletion with confirmation;
 - start a fresh unsaved session via `new` / `+ new session`.
 
-OpenTUI may implement multi-select as a picker with `[ ]` / `[x]` rows plus
-`select all` and `delete selected`; Ink uses Space to mark, `a` for all, `d` to
-delete marked/current, and `D` for delete-all.
+OpenTUI exposes bulk cleanup as keybindings from the main `/sessions` picker so
+long session lists do not require scrolling to action rows: `d` opens the
+multi-delete picker and `D` opens delete-all confirmation. The multi-delete
+picker uses `[ ]` / `[x]` rows, with `a` for select-all, `c` for clear, and `d`
+to delete selected. Ink uses Space to mark, `a` for all, `d` to delete
+marked/current, and `D` for delete-all.
 
 ## `/config` menu (post-setup runtime)
 

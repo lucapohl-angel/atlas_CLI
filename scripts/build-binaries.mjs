@@ -98,7 +98,12 @@ async function compileFor(slug) {
   console.log(`\n→ compiling ${slug} (${target}) → ${outFile}`);
   const result = await Bun.build({
     entrypoints: [bundle],
-    minify: true,
+    // Keep minification off: Bun's minifier renames imported bindings
+    // (e.g. `throttle` from es-toolkit/compat → `US`) in a way that
+    // breaks the link to the original export, producing runtime
+    // ReferenceErrors like "US is not defined" inside Ink. The size
+    // cost is negligible compared to the embedded Bun runtime.
+    minify: false,
     sourcemap: 'linked',
     plugins: [stubPlugin],
     compile: {

@@ -21,8 +21,13 @@ const { run } = await import('../app.js');
 
 run(process.argv).catch((err: unknown) => {
   // Top-level error boundary: log and exit non-zero so shells/CI see the failure.
-  // Detailed diagnostics already went through the structured logger.
+  // Detailed diagnostics already went through the structured logger. Set
+  // ATLAS_DEBUG=1 to also print the stack — invaluable when an early
+  // ReferenceError swallows itself with just "X is not defined".
   const message = err instanceof Error ? err.message : String(err);
   process.stderr.write(`atlas: fatal error: ${message}\n`);
+  if (process.env['ATLAS_DEBUG'] === '1' && err instanceof Error && err.stack) {
+    process.stderr.write(`${err.stack}\n`);
+  }
   process.exit(1);
 });

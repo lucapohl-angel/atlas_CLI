@@ -13,7 +13,15 @@ const LEVEL = process.env['ATLAS_LOG_LEVEL'] ?? 'info';
 // Set ATLAS_TUI=1 to silence the logger; fatal errors are still surfaced
 // to the user via the transcript.
 const SILENT = process.env['ATLAS_TUI'] === '1';
-const PRETTY = !SILENT && process.stderr.isTTY && process.env['ATLAS_LOG_JSON'] !== '1';
+// pino-pretty runs in a worker thread that does a dynamic require, which
+// Bun's --compile binaries can't resolve (the dep isn't embedded). Detect
+// the Bun runtime and skip pretty mode there. Users on Node who want
+// colorized logs can set ATLAS_LOG_PRETTY=1 explicitly.
+const IS_BUN = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
+const PRETTY_REQUESTED =
+  process.env['ATLAS_LOG_PRETTY'] === '1' ||
+  (!IS_BUN && process.stderr.isTTY && process.env['ATLAS_LOG_JSON'] !== '1');
+const PRETTY = !SILENT && PRETTY_REQUESTED;
 
 export const logger: Logger = pino(
   {

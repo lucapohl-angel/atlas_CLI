@@ -22,10 +22,33 @@ const corePkg = JSON.parse(
 
 // Anything declared as a runtime dep stays external; everything else
 // (incl. @atlas/core via workspace) gets bundled inline.
+//
+// Exception: a small allow-list of deps gets bundled inline EVEN
+// THOUGH they're declared as runtime deps. These are packages whose
+// re-export shape (`export { x } from '…'`) confuses Bun's
+// `bun build --compile` resolver, producing runtime
+// `ReferenceError: <name> is not defined` once the binary boots.
+// esbuild handles those re-exports correctly, so by inlining them
+// here we hand Bun an opaque pre-resolved blob instead of letting
+// it walk the import graph.
+const FORCE_INLINE = new Set([
+  'ink',
+  'ink-select-input',
+  'ink-spinner',
+  'ink-text-input',
+  'es-toolkit',
+  'es-toolkit/compat',
+  // React is pulled in transitively by ink (and by @opentui/react in
+  // the OpenTUI variant). Once we inline ink we have to inline react
+  // too, otherwise the bundled ink does `import 'react'` which Bun
+  // tries to resolve from the embedded fs root and fails.
+  'react',
+  'react-reconciler',
+]);
 const externals = [
   ...Object.keys(pkg.dependencies ?? {}),
   ...Object.keys(pkg.optionalDependencies ?? {}),
-];
+].filter((d) => !FORCE_INLINE.has(d));
 
 // Replace @atlas/core's version.ts (which uses createRequire to read
 // package.json at runtime — fine in dev, broken when bundled) with a

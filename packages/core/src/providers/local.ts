@@ -105,6 +105,11 @@ const SSE_DONE = '[DONE]';
 const DEFAULT_BASE_URL = 'http://localhost:11434/v1';
 /** Characters kept from the system prompt when liteMode is active (~375 tokens). */
 const LITE_SYSTEM_MAX_CHARS = 1_500;
+/** How many recent non-system messages to keep when liteMode is active. */
+const LITE_HISTORY_KEEP = 4;
+/** The replacement system prompt used in liteMode — small, neutral, no tool refs. */
+const LITE_SYSTEM_PROMPT =
+  'You are a helpful coding assistant running locally via Ollama. Keep responses short and direct. You do not have access to tools or files — answer from the conversation alone.';
 
 export const createLocalProvider = (options: LocalProviderOptions = {}): Provider => {
   const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
@@ -125,24 +130,41 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
 
       const isLite = options.liteMode ?? false;
 
-      // In liteMode: drop tool-result messages and bare tool-call assistant
-      // turns, then truncate the system prompt. This shrinks the payload
-      // from ~30 k tokens to ~2 k so small local models can respond.
-      const effectiveMessages = isLite
-        ? request.messages
-            .filter((m) => {
-              if (m.role === 'tool') return false; // tool results reference calls we won't send
-              if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0 && !m.content)
-                return false; // assistant turn with only tool calls — nothing to keep
-              return true;
-            })
-            .map((m) => {
-              if (m.role === 'system' && m.content.length > LITE_SYSTEM_MAX_CHARS) {
-                return { ...m, content: m.content.slice(0, LITE_SYSTEM_MAX_CHARS) + '\n[prompt trimmed — liteMode active]' };
-              }
-              return m;
-            })
-        : request.messages;
+      // In liteMode: collapse the entire orchestrator system stack into a
+      // single tiny prompt, drop tool-result/tool-call turns, and keep
+      // only the last few non-system messages. This shrinks the payload
+      // from ~30 k tokens to <500 so small local models can respond.
+      let effectiveMessages: readonly typeof request.messages[number][];
+      if (isLite) {
+        const nonSystem = request.messages.filter((m) => {
+          if (m.role === 'system') return false;
+          if (m.role === 'tool') return false;
+          if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0 && !m.content)
+            return false;
+          return true;
+        });
+        const recent = nonSystem.slice(-LITE_HISTORY_KEEP);
+        // Truncate any individual message that's still huge (e.g. a pasted file).
+        const trimmed = recent.map((m) =>
+          m.content.length > LITE_SYSTEM_MAX_CHARS
+            ? { ...m, content: m.content.slice(0, LITE_SYSTEM_MAX_CHARS) + '\n…[truncated]' }
+            : m
+        );
+        effectiveMessages = [
+          { role: 'system' as const, content: LITE_SYSTEM_PROMPT },
+          ...trimmed
+        ];
+      } else {
+        effectiveMessages = request.messages;
+      }
+
+      if (isLite) {
+        const totalChars = effectiveMessages.reduce((n, m) => n + m.content.length, 0);
+        log.debug(
+          { model: request.model, msgCount: effectiveMessages.length, totalChars },
+          'liteMode payload built'
+        );
+      }
 
       const body = JSON.stringify({
         model: request.model,

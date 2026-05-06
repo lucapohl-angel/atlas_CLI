@@ -77,7 +77,9 @@ export const providerFromConfig = (cfg: AtlasConfig): Result<Provider, AtlasErro
         createLocalProvider({
           baseUrl: lo.baseUrl,
           ...(lo.apiKey ? { apiKey: lo.apiKey } : {}),
-          ...(Object.keys(lo.headers).length > 0 ? { headers: lo.headers } : {})
+          ...(Object.keys(lo.headers).length > 0 ? { headers: lo.headers } : {}),
+          liteMode: lo.liteMode,
+          requestTimeoutMs: lo.requestTimeoutMs
         })
       );
     }

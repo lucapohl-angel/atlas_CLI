@@ -3864,7 +3864,9 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               baseUrl: 'http://localhost:11434/v1',
               headers: {},
               autoDetect: true,
-              customModels: []
+              customModels: [],
+              liteMode: false,
+              requestTimeoutMs: 120_000
             }
           },
           mcp: { servers: [], builtinsSeeded: false },
@@ -3968,7 +3970,9 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           baseUrl: 'http://localhost:11434/v1',
           headers: {},
           autoDetect: true,
-          customModels: []
+          customModels: [],
+          liteMode: false,
+          requestTimeoutMs: 120_000
         }
       },
       mcp: { servers: [], builtinsSeeded: false },

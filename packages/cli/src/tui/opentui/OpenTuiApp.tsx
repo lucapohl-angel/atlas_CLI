@@ -646,6 +646,7 @@ type OverlayKind =
   | 'sessions-rename'
   | 'config-action-openrouter'
   | 'config-action-anthropic'
+  | 'config-local'
   | 'learn-confirm'
   | 'ship-conflict';
 
@@ -1193,7 +1194,9 @@ const saveProviderKey = async (
         baseUrl: 'http://localhost:11434/v1',
         headers: {},
         autoDetect: true,
-        customModels: []
+        customModels: [],
+        liteMode: false,
+        requestTimeoutMs: 120_000
       }
     },
     mcp: { servers: [], builtinsSeeded: false },
@@ -4907,15 +4910,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                 return;
               }
               if (v === 'local') {
-                const detected = Boolean(props.providers?.local);
-                setInfoOverlay({
-                  title: 'Local models (Ollama / LM Studio)',
-                  body: detected
-                    ? 'Local server detected at http://localhost:11434/v1 \u2014 Atlas auto-uses it when no cloud key is configured.\n\nPick any pulled model from /models. To add more:\n  ollama pull qwen2.5-coder:7b\n  ollama pull deepseek-r1:7b\n\nLM Studio / vLLM users: point providers.local.baseUrl in ~/.atlas/config.yaml at your server.'
-                    : 'No local server detected at http://localhost:11434/v1.\n\nInstall Ollama: https://ollama.com/download\nThen pull a model and restart atlas:\n  ollama pull qwen2.5-coder:7b\n\nAtlas auto-detects on startup \u2014 no config edit needed.',
-                  tone: detected ? 'info' : 'warn'
-                });
-                setOverlay('config-info');
+                setOverlay('config-local');
                 return;
               }
               if (v === 'github') {
@@ -4985,6 +4980,80 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             onCancel={() => setOverlay('config')}
           />
         ) : null}
+        {overlay === 'config-local' ? (() => {
+          const detected = Boolean(props.providers?.local);
+          const currentLite = props.config?.providers?.local?.liteMode ?? false;
+          const currentTimeout = props.config?.providers?.local?.requestTimeoutMs ?? 120_000;
+          return (
+            <Picker
+              title={`⚙  Local models (Ollama / LM Studio)${detected ? '  ✓ connected' : '  ✗ not detected'}`}
+              descriptionColor={detected ? palette.success : palette.warning}
+              options={[
+                {
+                  value: 'lite-toggle',
+                  label: `${currentLite ? '[ON] ' : '[OFF]'} liteMode — strip tools & trim system prompt`,
+                  description: currentLite
+                    ? 'ON: payload ~2 k tokens — best for 7 b / 8 b models on slow hardware'
+                    : 'OFF: full tool set sent — enable this if Atlas times out on your machine'
+                },
+                {
+                  value: 'info',
+                  label: 'setup info',
+                  description: detected
+                    ? `connected at ${props.config?.providers?.local?.baseUrl ?? 'http://localhost:11434/v1'} · timeout ${Math.round(currentTimeout / 1000)}s`
+                    : 'install Ollama or point baseUrl at your local server'
+                },
+                { value: '__cancel', label: 'back', description: '' }
+              ]}
+              hint="↵ select · Esc back"
+              onChoose={(action) => {
+                if (action === '__cancel') {
+                  setOverlay('config');
+                  return;
+                }
+                if (action === 'info') {
+                  setInfoOverlay({
+                    title: 'Local models — setup',
+                    body: detected
+                      ? `Connected at ${props.config?.providers?.local?.baseUrl ?? 'http://localhost:11434/v1'}.\n\nPull models with:\n  ollama pull qwen2.5-coder:1.5b   ← fast on low-RAM\n  ollama pull qwen2.5-coder:7b\n  ollama pull deepseek-r1:7b\n\nEnable liteMode if Atlas times out (strips tool schemas to ~2 k tokens).\n\nConfig file: ~/.atlas/config.yaml\n  providers:\n    local:\n      liteMode: true\n      requestTimeoutMs: 180000`
+                      : 'No local server at http://localhost:11434/v1.\n\nInstall Ollama: https://ollama.com/download\nThen pull a model and restart Atlas:\n  ollama pull qwen2.5-coder:1.5b\n\nAtlas auto-detects on startup — no config edit needed.',
+                    tone: detected ? 'info' : 'warn'
+                  });
+                  setOverlay('config-info');
+                  return;
+                }
+                if (action === 'lite-toggle') {
+                  void (async () => {
+                    const current = props.config;
+                    if (!current) {
+                      pushItem('error', 'no config loaded — cannot toggle liteMode');
+                      return;
+                    }
+                    const next: AtlasConfig = {
+                      ...current,
+                      providers: {
+                        ...current.providers,
+                        local: { ...current.providers.local, liteMode: !currentLite }
+                      }
+                    };
+                    const r = await saveConfig(next);
+                    if (!r.ok) {
+                      pushItem('error', `save failed: ${r.error.message}`);
+                      return;
+                    }
+                    pushItem(
+                      'system',
+                      `✓ liteMode ${!currentLite ? 'enabled' : 'disabled'} — restart Atlas to apply (saved to ~/.atlas/config.yaml)`
+                    );
+                    setOverlay(null);
+                  })();
+                  return;
+                }
+              }}
+              onCancel={() => setOverlay('config')}
+            />
+          );
+        })() : null}
         {overlay === 'config-action-anthropic' ? (
           <Picker
             title="⚙  Anthropic — already connected"

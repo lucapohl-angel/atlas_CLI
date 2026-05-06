@@ -174,7 +174,23 @@ export const LocalProviderConfigSchema = z
      * Model ids the user has added via the in-TUI "+ Add custom model id…"
      * picker entry. Surfaced at the top of the local section.
      */
-    customModels: z.array(z.string().min(1)).default([])
+    customModels: z.array(z.string().min(1)).default([]),
+    /**
+     * Lite mode — strips all tool schemas and truncates the system prompt
+     * before sending to the local server. This shrinks the payload from
+     * ~30 k tokens down to ~2 k, letting 7 b / 8 b models respond without
+     * timing out on low-RAM machines.
+     *
+     * Set `providers.local.liteMode: true` in ~/.atlas/config.yaml, or
+     * toggle it from the `/config` → Local models menu inside Atlas.
+     */
+    liteMode: z.boolean().default(false),
+    /**
+     * Hard timeout for each local model request in milliseconds.
+     * Defaults to 120 000 (2 minutes). Raise for very slow hardware;
+     * lower for faster failure detection.
+     */
+    requestTimeoutMs: z.number().int().positive().default(120_000)
   })
   .default({});
 

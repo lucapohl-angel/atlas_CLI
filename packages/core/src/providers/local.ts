@@ -51,6 +51,18 @@ export interface LocalProviderOptions {
   readonly headers?: Readonly<Record<string, string>>;
   /** Override fetch (testing). Defaults to global `fetch`. */
   readonly fetch?: typeof fetch;
+  /**
+   * Lite mode — strip all tool schemas and truncate the system prompt
+   * before sending. Reduces payload from ~30 k tokens to ~2 k so small
+   * local models (7 b / 8 b) can respond without timing out.
+   * Mirror of `providers.local.liteMode` in config.
+   */
+  readonly liteMode?: boolean;
+  /**
+   * Hard timeout per request in milliseconds. Defaults to 120 000 (2 min).
+   * After this delay the fetch is aborted and a friendly error is shown.
+   */
+  readonly requestTimeoutMs?: number;
 }
 
 interface OpenAIStreamToolCallDelta {
@@ -91,6 +103,8 @@ const SSE_DATA_PREFIX = 'data:';
 const SSE_DONE = '[DONE]';
 
 const DEFAULT_BASE_URL = 'http://localhost:11434/v1';
+/** Characters kept from the system prompt when liteMode is active (~375 tokens). */
+const LITE_SYSTEM_MAX_CHARS = 1_500;
 
 export const createLocalProvider = (options: LocalProviderOptions = {}): Provider => {
   const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
@@ -109,13 +123,34 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
         headers['authorization'] = `Bearer ${options.apiKey}`;
       }
 
+      const isLite = options.liteMode ?? false;
+
+      // In liteMode: drop tool-result messages and bare tool-call assistant
+      // turns, then truncate the system prompt. This shrinks the payload
+      // from ~30 k tokens to ~2 k so small local models can respond.
+      const effectiveMessages = isLite
+        ? request.messages
+            .filter((m) => {
+              if (m.role === 'tool') return false; // tool results reference calls we won't send
+              if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0 && !m.content)
+                return false; // assistant turn with only tool calls — nothing to keep
+              return true;
+            })
+            .map((m) => {
+              if (m.role === 'system' && m.content.length > LITE_SYSTEM_MAX_CHARS) {
+                return { ...m, content: m.content.slice(0, LITE_SYSTEM_MAX_CHARS) + '\n[prompt trimmed — liteMode active]' };
+              }
+              return m;
+            })
+        : request.messages;
+
       const body = JSON.stringify({
         model: request.model,
-        messages: request.messages.map((m) => {
+        messages: effectiveMessages.map((m) => {
           const base: Record<string, unknown> = { role: m.role, content: m.content };
           if (m.toolCallId) base['tool_call_id'] = m.toolCallId;
           if (m.name) base['name'] = m.name;
-          if (m.toolCalls && m.toolCalls.length > 0) {
+          if (!isLite && m.toolCalls && m.toolCalls.length > 0) {
             base['tool_calls'] = m.toolCalls.map((tc) => ({
               id: tc.id,
               type: 'function',
@@ -127,7 +162,7 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
         stream: true,
         ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
         ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
-        ...(request.tools && request.tools.length > 0
+        ...(!isLite && request.tools && request.tools.length > 0
           ? {
               tools: request.tools.map((t) => ({
                 type: 'function',
@@ -142,17 +177,30 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
           : {})
       });
 
+      // Combine a hard timeout with any caller-supplied AbortSignal so the
+      // request always resolves, even when Ollama is slow to load/prefill.
+      const timeoutMs = options.requestTimeoutMs ?? 120_000;
+      const fetchSignal = request.signal
+        ? AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs);
+
       let response: Response;
       try {
-        response = await doFetch(url, {
-          method: 'POST',
-          headers,
-          body,
-          ...(request.signal ? { signal: request.signal } : {})
-        });
+        response = await doFetch(url, { method: 'POST', headers, body, signal: fetchSignal });
       } catch (e) {
         if (request.signal?.aborted) {
           yield { type: 'error', error: atlasError('CANCELLED', 'request cancelled') };
+          return;
+        }
+        if (e instanceof Error && e.name === 'TimeoutError') {
+          yield {
+            type: 'error',
+            error: atlasError(
+              'PROVIDER_NETWORK',
+              `local model did not respond within ${Math.round(timeoutMs / 1000)}s — try enabling liteMode in ~/.atlas/config.yaml (providers.local.liteMode: true) to reduce prompt size`,
+              { cause: e }
+            )
+          };
           return;
         }
         // Most common case: the daemon isn't running. Surface a friendly
@@ -258,6 +306,17 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
       } catch (e) {
         if (request.signal?.aborted) {
           yield { type: 'error', error: atlasError('CANCELLED', 'request cancelled') };
+          return;
+        }
+        if (e instanceof Error && e.name === 'TimeoutError') {
+          yield {
+            type: 'error',
+            error: atlasError(
+              'PROVIDER_NETWORK',
+              `local model stream timed out after ${Math.round(timeoutMs / 1000)}s`,
+              { cause: e }
+            )
+          };
           return;
         }
         yield {

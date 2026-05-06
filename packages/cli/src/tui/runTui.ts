@@ -48,6 +48,7 @@ import {
   type SessionRecord
 } from '@atlas/core';
 import { TuiApp } from './App.js';
+import { printAtlasExitSplash } from './exit-splash.js';
 
 export interface RunTuiOptions {
   readonly model?: string;
@@ -677,25 +678,30 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
   // runtime is double-mounted. Same `props` object — the OpenTUI
   // variant accepts a strict subset (chat-only) and ignores the rest.
   if (opts.ui === 'opentui') {
+    let result: RunTuiResult | undefined;
     try {
       const { runOpenTui } = await import('./opentui/runOpenTui.js');
-      const result = await runOpenTui(props);
-      return result;
+      result = await runOpenTui(props);
     } finally {
       process.off('exit', restore);
       restore();
     }
+    if (result?.exitCode === 0) printAtlasExitSplash();
+    return result ?? { exitCode: 1 };
   }
 
+  let exitedCleanly = false;
   try {
     const { waitUntilExit } = render(React.createElement(TuiApp, props), {
       exitOnCtrlC: false
     });
     await waitUntilExit();
+    exitedCleanly = true;
   } finally {
     process.off('exit', restore);
     restore();
   }
+  if (exitedCleanly) printAtlasExitSplash();
   return { exitCode: 0 };
 };
 

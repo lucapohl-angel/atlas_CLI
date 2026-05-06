@@ -3309,7 +3309,11 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       // Drain the textarea's internal buffer so the prompt visually
       // resets after submit. `setText` exists on EditBufferRenderable.
       const ta = composerRef.current as unknown as { setText?: (s: string) => void } | null;
-      ta?.setText?.('');
+      try {
+        ta?.setText?.('');
+      } catch (e) {
+        if (!/EditBuffer is destroyed/i.test((e as Error).message)) throw e;
+      }
     };
 
     // When the slash autocomplete popup has matches, Enter picks the

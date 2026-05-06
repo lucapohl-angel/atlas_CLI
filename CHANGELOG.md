@@ -24,6 +24,10 @@ semantic versioning.
 ### Changed
 - Package metadata is prepared for the `atlas-os@1.7.2` release line.
 
+### Fixed
+- Exiting the TUI now restores the terminal cleanly, prints the Atlas OS
+  wordmark, and avoids OpenTUI `EditBuffer is destroyed` teardown stacks.
+
 ## [1.7.1] - 2026-05-06
 
 ### Added

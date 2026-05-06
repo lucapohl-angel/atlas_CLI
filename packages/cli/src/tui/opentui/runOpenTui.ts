@@ -120,12 +120,10 @@ export const runOpenTui = async (
   const exited = new Promise<void>((res) => {
     resolveExit = res;
   });
+  let exitResolved = false;
   const onExit = (): void => {
-    try {
-      renderer.destroy?.();
-    } catch {
-      /* noop */
-    }
+    if (exitResolved) return;
+    exitResolved = true;
     resolveExit();
   };
 
@@ -135,6 +133,11 @@ export const runOpenTui = async (
   try {
     await exited;
   } finally {
+    try {
+      renderer.destroy?.();
+    } catch {
+      /* noop */
+    }
     process.off('exit', restoreBg);
     restoreBg();
   }

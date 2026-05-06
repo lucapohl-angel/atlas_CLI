@@ -64,6 +64,14 @@ inline `palette` near line 69).
 - **Esc** always closes the topmost overlay and resets any transient
   error state.
 
+## Exit Behavior
+
+`/exit`, `/quit`, and Ctrl-D twice leave the full-screen UI cleanly: restore the
+user's terminal, suppress renderer teardown stack traces, and print the `ATLAS
+OS` wordmark in the normal scrollback. Do not destroy the OpenTUI renderer from
+inside the same key/submit handler that requested exit; resolve the exit request
+first, then destroy the renderer during shutdown cleanup.
+
 ## Slash command system
 
 When the user types `/` at the start of the input (no space yet), an

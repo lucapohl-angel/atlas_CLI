@@ -1,9 +1,9 @@
 /**
  * Built-in tool: `delegate` — fan out one or more goals to child agents.
  *
- * Mirrors Hermes' `delegate_task`: single mode (`{goal, ...}`) drives one
- * child; batch mode (`{tasks: [...]}`) runs up to N tasks concurrently
- * (capped by `maxConcurrent`).
+ * Single mode (`{goal, ...}`) drives one child; batch mode
+ * (`{tasks: [...]}`) runs up to N tasks concurrently (capped by
+ * `maxConcurrent`).
  *
  * The host wires a `delegateRun` into `ToolContext` via
  * `createDelegateRunner`. Without that wiring the tool returns a clear

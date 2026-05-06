@@ -9,8 +9,8 @@
  * This keeps model output focused on what the agent is *doing* rather
  * than on ornamental persona language.
  *
- * Each agent advertises a `*command` palette mirroring the AIOX/SDD
- * convention so users can drive the agent precisely.
+ * Each agent advertises a `*command` palette so users can drive the
+ * agent precisely.
  */
 
 import { BUILTIN_TEMPLATES } from './templates.js';

@@ -8,7 +8,7 @@
  * (the #1 SSRF target — http://169.254.169.254 returns IAM creds on
  * AWS, GCP, Azure, DigitalOcean, Oracle and Alibaba).
  *
- * Inspired by Hermes' `url_safety.py`. Coverage:
+ * Coverage:
  *   - Cloud metadata IPs (always blocked, no override): 169.254.169.254,
  *     169.254.170.2 (ECS task), 169.254.169.253 (Azure IMDS),
  *     fd00:ec2::254 (IPv6), 100.100.100.200 (Alibaba)

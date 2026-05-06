@@ -1,7 +1,7 @@
 /**
  * In-memory task list backing the `todo` tool. One instance per
  * session, lives on the host (TUI / CLI runner) and is passed into
- * `ToolContext`. Mirrors the design from Hermes' `TodoStore`:
+ * `ToolContext`:
  *   - list order is priority
  *   - items have id, content, status
  *   - `write` either replaces (default) or merges by id

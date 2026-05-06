@@ -1,9 +1,8 @@
 /**
  * PLAN.xml — structured execution plan emitted by the planner during
- * the `plan` phase. The XML form is deliberate: GSD-style plans are
- * what the orchestrator (slice 3) will execute wave by wave, and an
- * XML schema is rigid enough to validate without ambiguity while
- * still being human-readable/editable.
+ * the `plan` phase. The XML form is deliberate: the orchestrator can
+ * execute it wave by wave, and an XML schema is rigid enough to validate
+ * without ambiguity while still being human-readable/editable.
  *
  * Schema:
  *   <plan version="1">

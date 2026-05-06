@@ -11,9 +11,9 @@ Atlas is a terminal-first AI coding agent that orchestrates a crew of
 specialized sub-agents — named after the Greek pantheon — through the full
 software lifecycle: requirements, architecture, story breakdown,
 implementation, QA, and delivery. It is **model-agnostic** (defaults to
-OpenRouter; first-class Anthropic / OpenAI / Codex / Ollama / Claude-Code
+OpenRouter; first-class Anthropic / OpenAI / Codex / Claude-Code
 OAuth), **hook-driven** (typed pre/post lifecycle events with real blocking
-semantics), and **skill-extensible** (Hermes-style on-demand `SKILL.md`
+semantics), and **skill-extensible** (on-demand `SKILL.md`
 loaded by the active agent based on context).
 
 ## Goals

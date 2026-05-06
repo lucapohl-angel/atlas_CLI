@@ -5,9 +5,8 @@
  * current list. With `todos`, replaces (default) or merges by id.
  * State lives on `ctx.todoStore` (one per session).
  *
- * Port of Hermes' todo tool — same shape, same status enum, same
- * "list-position is priority, only one in_progress at a time"
- * convention. Behavioral guidance is in the schema description so it
+ * List position is priority and only one item can be `in_progress` at a
+ * time. Behavioral guidance is in the schema description so it
  * stays cached as part of the static tool spec.
  */
 import { z } from 'zod';

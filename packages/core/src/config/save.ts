@@ -4,8 +4,7 @@
  * Used by the in-app setup flow so users can configure Atlas without
  * leaving the TUI. Writes are atomic-ish: target dir is created if
  * missing, file is written via the user's umask. Secrets are stored
- * in plaintext — this matches how Claude Code, OpenCode, and Hermes
- * keep their config; it lives under `~/.atlas/` which the user owns.
+ * in plaintext under `~/.atlas/`, which the user owns.
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';

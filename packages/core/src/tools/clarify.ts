@@ -6,8 +6,8 @@
  * open-ended. The actual interaction is delegated to a host-supplied
  * `ctx.clarifyAsk` callback so this tool stays UI-agnostic.
  *
- * Port of Hermes' clarify tool. Same MAX_CHOICES=4, same "fall back
- * to open-ended when choices array is empty" rule.
+ * Keeps the UI compact with MAX_CHOICES=4 and falls back to open-ended
+ * questions when the choices array is empty.
  */
 import { z } from 'zod';
 import { atlasError } from '../errors.js';

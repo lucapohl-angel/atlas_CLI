@@ -1,7 +1,7 @@
 /**
  * Built-in tool: `browser` — drive a headless Chromium via Playwright.
  *
- * One tool with an `op` discriminator (matching the Hermes shape):
+ * One tool with an `op` discriminator:
  *
  *   navigate  open a URL (SSRF-pre-flighted)
  *   snapshot  return the accessibility tree with [ref=eN] markers

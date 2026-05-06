@@ -1,10 +1,9 @@
 /**
  * Workflow phase router — types.
  *
- * The phase router replaces the GSD-style explicit slash command
- * pipeline (`/discuss`, `/plan`, `/execute`, ...) with a single
- * implicit state machine the orchestrator advances on its own. The
- * user just talks; Atlas decides which phase the conversation is in.
+ * The phase router replaces explicit slash-command pipeline control with
+ * a single implicit state machine the orchestrator advances on its own.
+ * The user just talks; Atlas decides which phase the conversation is in.
  *
  * Phases are deliberately a small enum (six values) so the TUI can
  * surface the current phase as a single status chip and so transition

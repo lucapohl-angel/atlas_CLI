@@ -1,7 +1,7 @@
 /**
  * Per-process headless Chromium session for the `browser` tool.
  *
- * Design goals (lifted from Hermes' browser_tool, adapted for Node):
+ * Design goals:
  *   - One Chromium instance per Atlas process — re-used across calls.
  *   - Single page (single tab). New navigations replace the current page.
  *   - Snapshots return an accessibility tree with `[ref=e1]`-style refs

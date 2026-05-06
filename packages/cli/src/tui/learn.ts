@@ -1,6 +1,6 @@
 /**
- * Self-improvement loop helpers — the "skill auto-creation" feature
- * described in the README's Hermes-comparison section.
+ * Self-improvement loop helpers — the learned-skill auto-creation
+ * feature used by the TUI.
  *
  * The flow is:
  *

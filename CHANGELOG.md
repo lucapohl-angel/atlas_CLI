@@ -174,7 +174,7 @@ semantic versioning.
   hercules, nemesis, iris, apollo) enriched with full DNA.
 
 ### Added — Phase 12 polish (post-1.0 wiring)
-- **Self-improvement loop (Hermes-style learned skills)** — Atlas now
+- **Self-improvement loop (learned skills)** — Atlas now
   watches each turn and, when a heuristic fires (≥5 rounds, ≥2 tool
   errors, or a success phrase after a struggle), runs a one-shot
   reflection sub-call against the active provider asking it to distill

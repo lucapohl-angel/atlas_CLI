@@ -11,8 +11,8 @@
 2. **Hook-driven**: typed lifecycle events (`beforeTool`, `afterTool`, etc.)
    with real blocking semantics, so guardrails are enforced — not suggested.
 3. **Model-agnostic**: OpenRouter is the default and supports any of its
-   hundreds of models. Anthropic / OpenAI / Google / Ollama are first-class.
-4. **Skill-extensible**: Hermes-style on-demand skills loaded by the active
+   hundreds of models. Anthropic and OpenAI can also be configured directly.
+4. **Skill-extensible**: on-demand skills loaded by the active
    agent when triggered by context.
 5. **Beginner-friendly**: project state detection drives automatic agent
    selection, with clear visual indication of who is active and why.
@@ -37,7 +37,7 @@ VS Code extensions, MCP servers) without dragging in TUI dependencies.
 - Stored: `~/.atlas/agents/<name>/AGENT.md` (YAML frontmatter + markdown body).
 - The active agent's persona is injected into the system prompt.
 
-### Skills (Hermes-style)
+### Skills
 
 - **Many can be loaded** at once.
 - Loaded **on-demand** by the active agent based on triggers in the user's

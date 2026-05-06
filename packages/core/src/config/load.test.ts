@@ -42,6 +42,34 @@ describe('loadConfig', () => {
     expect(r.value.providers.openrouter.apiKey).toBe('from-env');
   });
 
+  it('maps legacy local liteMode to explicit toolMode', async () => {
+    const path = join(dir, 'config.yaml');
+    await writeFile(
+      path,
+      'providers:\n  local:\n    liteMode: false\n',
+      'utf8'
+    );
+    const r = await loadConfig({ path, env: {} });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.providers.local.toolMode).toBe('full');
+    expect(r.value.providers.local.liteMode).toBe(false);
+  });
+
+  it('lets explicit local toolMode override legacy liteMode', async () => {
+    const path = join(dir, 'config.yaml');
+    await writeFile(
+      path,
+      'providers:\n  local:\n    toolMode: hybrid\n    liteMode: true\n',
+      'utf8'
+    );
+    const r = await loadConfig({ path, env: {} });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.providers.local.toolMode).toBe('hybrid');
+    expect(r.value.providers.local.liteMode).toBe(false);
+  });
+
   it('rejects non-object YAML', async () => {
     const path = join(dir, 'bad.yaml');
     await writeFile(path, '- one\n- two\n', 'utf8');

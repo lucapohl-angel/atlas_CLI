@@ -3865,6 +3865,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               headers: {},
               autoDetect: true,
               customModels: [],
+              toolMode: 'lite',
               liteMode: true,
               requestTimeoutMs: 300_000
             }
@@ -3971,6 +3972,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           headers: {},
           autoDetect: true,
           customModels: [],
+          toolMode: 'lite',
           liteMode: true,
           requestTimeoutMs: 300_000
         }

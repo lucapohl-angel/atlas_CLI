@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildAllProviders,
   chooseStartupModel,
   providerForStartupModel,
   shouldLoadStartupSession,
   type StartupModelSelectionInput
 } from './runTui.js';
 import type {
+  AtlasConfig,
   CompletionRequest,
   ModelInfo,
   Provider,
   StreamEvent
 } from '@atlas/core';
+import { AtlasConfigSchema as ConfigSchema } from '@atlas/core';
 
 const provider = (name: string): Provider => ({
   name,
@@ -80,5 +83,45 @@ describe('startup session selection', () => {
     expect(shouldLoadStartupSession(undefined)).toBe(false);
     expect(shouldLoadStartupSession('latest')).toBe(true);
     expect(shouldLoadStartupSession('session_123')).toBe(true);
+  });
+});
+
+describe('runtime provider construction', () => {
+  it('preserves local lite mode on the picker provider map', async () => {
+    const cfg = ConfigSchema.parse({
+      defaultProvider: 'local',
+      defaultModel: 'qwen2.5-coder:1.5b',
+      providers: {
+        local: {
+          baseUrl: 'http://localhost:11434/v1',
+          liteMode: true,
+          requestTimeoutMs: 300_000
+        }
+      }
+    }) satisfies AtlasConfig;
+
+    const providers = await buildAllProviders(cfg);
+
+    expect(providers.local?.supportsToolCalling).toBe(false);
+  });
+
+  it('preserves local hybrid mode on the picker provider map', async () => {
+    const cfg = ConfigSchema.parse({
+      defaultProvider: 'local',
+      defaultModel: 'qwen2.5-coder:7b',
+      providers: {
+        local: {
+          baseUrl: 'http://localhost:11434/v1',
+          toolMode: 'hybrid',
+          requestTimeoutMs: 300_000
+        }
+      }
+    }) satisfies AtlasConfig;
+
+    const providers = await buildAllProviders(cfg);
+
+    expect(providers.local?.supportsToolCalling).toBe(true);
+    expect(providers.local?.allowedToolNames).toContain('read_file');
+    expect(providers.local?.allowedToolNames).not.toContain('browser');
   });
 });

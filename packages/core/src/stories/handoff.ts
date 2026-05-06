@@ -13,6 +13,7 @@
 import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import matter from 'gray-matter';
 import { z } from 'zod';
 import { atlasError, type AtlasError } from '../errors.js';
@@ -73,7 +74,7 @@ export const emitHandoff = async (
   const md = matter.stringify('\n', parsed.data);
   try {
     await mkdir(dir, { recursive: true });
-    const tmp = join(tmpdir(), `atlas-handoff-emit-${Date.now()}.md`);
+    const tmp = join(tmpdir(), `atlas-handoff-emit-${randomUUID()}.md`);
     await writeFile(tmp, md, 'utf8');
     await rename(tmp, target);
   } catch (e) {
@@ -113,7 +114,7 @@ export const consumeHandoff = async (
   const next: StoryHandoff = { ...r.value, consumed: true };
   const md = matter.stringify('\n', next);
   try {
-    const tmp = join(tmpdir(), `atlas-handoff-consume-${Date.now()}.md`);
+    const tmp = join(tmpdir(), `atlas-handoff-consume-${randomUUID()}.md`);
     await writeFile(tmp, md, 'utf8');
     await rename(tmp, path);
   } catch (e) {

@@ -36,6 +36,7 @@ const FORCE_INLINE = new Set([
   'ink-select-input',
   'ink-spinner',
   'ink-text-input',
+  '@opentui/react',
   'es-toolkit',
   'es-toolkit/compat',
   // React is pulled in transitively by ink (and by @opentui/react in

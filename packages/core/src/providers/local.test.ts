@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  LOCAL_HYBRID_TOOL_NAMES,
   createLocalProvider,
   listLocalModels,
   probeLocalProvider,
@@ -192,6 +193,81 @@ describe('Local provider', () => {
       tools?: ReadonlyArray<{ type: string; function: { name: string } }>;
     };
     expect(body.tools?.[0]?.function.name).toBe('echo');
+  });
+
+  it('keeps Atlas identity and exact model self-knowledge in lite mode', async () => {
+    const fakeFetch = vi.fn(async () =>
+      new Response(sseBody(['data: [DONE]\n\n']), { status: 200 })
+    );
+    const provider = createLocalProvider({
+      liteMode: true,
+      fetch: fakeFetch as unknown as typeof fetch
+    });
+
+    await collect(
+      provider.stream({
+        model: 'qwen2.5-coder:7b',
+        messages: [
+          { role: 'system', content: 'full Atlas system prompt with tool catalog' },
+          { role: 'user', content: 'which exact model are you?' }
+        ],
+        tools: [
+          {
+            name: 'read_file',
+            description: 'read a file',
+            parameters: { type: 'object', properties: { path: { type: 'string' } } }
+          }
+        ]
+      })
+    );
+
+    const body = JSON.parse((fakeFetch.mock.calls[0]![1] as RequestInit).body as string) as {
+      messages: ReadonlyArray<{ role: string; content: string }>;
+      tools?: unknown;
+    };
+    expect(body.tools).toBeUndefined();
+    expect(body.messages[0]?.content).toContain('You are Atlas');
+    expect(body.messages[0]?.content).toContain('qwen2.5-coder:7b');
+    expect(body.messages[0]?.content).toContain('Do not claim to be Claude');
+    expect(body.messages[0]?.content).toContain('Local lite mode');
+  });
+
+  it('keeps a compact prompt while allowing tools in hybrid mode', async () => {
+    const fakeFetch = vi.fn(async () =>
+      new Response(sseBody(['data: [DONE]\n\n']), { status: 200 })
+    );
+    const provider = createLocalProvider({
+      toolMode: 'hybrid',
+      fetch: fakeFetch as unknown as typeof fetch
+    });
+
+    expect(provider.supportsToolCalling).toBe(true);
+    expect(provider.allowedToolNames).toEqual(LOCAL_HYBRID_TOOL_NAMES);
+
+    await collect(
+      provider.stream({
+        model: 'qwen2.5-coder:7b',
+        messages: [
+          { role: 'system', content: 'full Atlas system prompt with tool catalog' },
+          { role: 'user', content: 'read package.json' }
+        ],
+        tools: [
+          {
+            name: 'read_file',
+            description: 'read a file',
+            parameters: { type: 'object', properties: { path: { type: 'string' } } }
+          }
+        ]
+      })
+    );
+
+    const body = JSON.parse((fakeFetch.mock.calls[0]![1] as RequestInit).body as string) as {
+      messages: ReadonlyArray<{ role: string; content: string }>;
+      tools?: ReadonlyArray<{ type: string; function: { name: string } }>;
+    };
+    expect(body.messages[0]?.content).toContain('You are Atlas');
+    expect(body.messages[0]?.content).toContain('Local hybrid mode');
+    expect(body.tools?.[0]?.function.name).toBe('read_file');
   });
 });
 

@@ -24,6 +24,7 @@
  */
 import { atlasError, type AtlasError } from '../errors.js';
 import { childLogger } from '../logger.js';
+import type { LocalProviderToolMode } from '../config/types.js';
 import type {
   CompletionRequest,
   Provider,
@@ -33,6 +34,46 @@ import type {
 } from './types.js';
 
 const log = childLogger('provider:local');
+
+export const LOCAL_HYBRID_TOOL_NAMES = [
+  'read_file',
+  'edit_file',
+  'write_file',
+  'terminal',
+  'git',
+  'todo',
+  'clarify',
+  'open_question'
+] as const;
+
+export const LOCAL_TOOL_MODE_SPECS: Record<
+  LocalProviderToolMode,
+  {
+    readonly label: string;
+    readonly requirements: string;
+    readonly pros: string;
+    readonly cons: string;
+  }
+> = {
+  lite: {
+    label: 'Lite',
+    requirements: 'CPU ok, 4-8 GB RAM, 1.5B-7B models',
+    pros: 'fastest and most reliable locally',
+    cons: 'chat only; no model-driven tools or tool hooks'
+  },
+  hybrid: {
+    label: 'Hybrid',
+    requirements: '8-12 GB VRAM or strong CPU, 7B-14B models',
+    pros: 'compact prompt plus core dev tools and hooks',
+    cons: 'limited tool set; small models may still miss calls'
+  },
+  full: {
+    label: 'Full Atlas',
+    requirements: '24 GB+ VRAM or hosted server, 30B-70B+ models',
+    pros: 'full Atlas prompt, tools, MCP, and hooks',
+    cons: 'largest payload; highest timeout and quality risk locally'
+  }
+};
 
 export interface LocalProviderOptions {
   /**
@@ -51,12 +92,9 @@ export interface LocalProviderOptions {
   readonly headers?: Readonly<Record<string, string>>;
   /** Override fetch (testing). Defaults to global `fetch`. */
   readonly fetch?: typeof fetch;
-  /**
-   * Lite mode — strip all tool schemas and truncate the system prompt
-   * before sending. Reduces payload from ~30 k tokens to ~2 k so small
-   * local models (7 b / 8 b) can respond without timing out.
-   * Mirror of `providers.local.liteMode` in config.
-   */
+  /** Local prompt/tool mode. Defaults to `full` for direct API callers. */
+  readonly toolMode?: LocalProviderToolMode;
+  /** Legacy alias: true -> lite, false -> full when toolMode is unset. */
   readonly liteMode?: boolean;
   /**
    * Idle timeout per request in milliseconds. The timer resets on every
@@ -104,20 +142,44 @@ const SSE_DATA_PREFIX = 'data:';
 const SSE_DONE = '[DONE]';
 
 const DEFAULT_BASE_URL = 'http://localhost:11434/v1';
-/** Characters kept from the system prompt when liteMode is active (~375 tokens). */
+/** Characters kept per message when compact local modes are active (~375 tokens). */
 const LITE_SYSTEM_MAX_CHARS = 1_500;
 /** How many recent non-system messages to keep when liteMode is active. */
 const LITE_HISTORY_KEEP = 4;
-/** The replacement system prompt used in liteMode — small, neutral, no tool refs. */
-const LITE_SYSTEM_PROMPT =
-  'You are a helpful coding assistant running locally via Ollama. Keep responses short and direct. You do not have access to tools or files — answer from the conversation alone.';
+/** How many recent non-system messages to keep when hybrid mode is active. */
+const HYBRID_HISTORY_KEEP = 8;
+/**
+ * Replacement system prompt used in compact local modes. It must stay tiny, but
+ * it still carries Atlas self-knowledge so small local models do not
+ * fill identity questions with generic Anthropic/OpenAI/GPT priors.
+ */
+const compactSystemPrompt = (model: string, mode: 'lite' | 'hybrid'): string =>
+  [
+    'You are Atlas, the CLI coding assistant running in the user\'s terminal.',
+    `Active model id: ${model}. Provider: local OpenAI-compatible server (usually Ollama).`,
+    'If asked who you are, say you are Atlas. If asked which model is running, answer with the exact active model id above. Do not claim to be Claude, Anthropic, OpenAI, GPT-4, or ChatGPT unless that exact model id/provider says so.',
+    mode === 'lite'
+      ? 'Local lite mode is active: you do not have tools, tool results, or file access; answer only from the conversation and ask for details when needed.'
+      : `Local hybrid mode is active: only these compact development tools may be available: ${LOCAL_HYBRID_TOOL_NAMES.join(', ')}. Use them sparingly and expect approval for writes or commands.`,
+    'Atlas workflow summary: discover the task, plan carefully, build small focused changes, verify, then summarize.',
+    'Keep responses short, direct, and useful.'
+  ].join(' ');
+
+const resolveLocalToolMode = (options: LocalProviderOptions): LocalProviderToolMode =>
+  options.toolMode ??
+  (options.liteMode === undefined ? 'full' : options.liteMode ? 'lite' : 'full');
 
 export const createLocalProvider = (options: LocalProviderOptions = {}): Provider => {
   const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
   const doFetch = options.fetch ?? fetch;
+  const toolMode = resolveLocalToolMode(options);
+  const compactMode = toolMode === 'full' ? null : toolMode;
+  const supportsToolCalling = toolMode !== 'lite';
 
   return {
     name: 'local',
+    supportsToolCalling,
+    ...(toolMode === 'hybrid' ? { allowedToolNames: LOCAL_HYBRID_TOOL_NAMES } : {}),
     async *stream(request: CompletionRequest): AsyncIterable<StreamEvent> {
       const url = `${baseUrl}/chat/completions`;
       const headers: Record<string, string> = {
@@ -129,22 +191,30 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
         headers['authorization'] = `Bearer ${options.apiKey}`;
       }
 
-      const isLite = options.liteMode ?? false;
+      const includeToolProtocol = toolMode !== 'lite';
 
-      // In liteMode: collapse the entire orchestrator system stack into a
-      // single tiny prompt, drop tool-result/tool-call turns, and keep
-      // only the last few non-system messages. This shrinks the payload
-      // from ~30 k tokens to <500 so small local models can respond.
+      // In compact local modes: collapse the entire orchestrator system
+      // stack into a single tiny prompt and keep only recent turns. Lite
+      // drops tool protocol turns; hybrid keeps them so tool results can
+      // feed the follow-up request.
       let effectiveMessages: readonly typeof request.messages[number][];
-      if (isLite) {
+      if (compactMode) {
         const nonSystem = request.messages.filter((m) => {
           if (m.role === 'system') return false;
-          if (m.role === 'tool') return false;
-          if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0 && !m.content)
+          if (compactMode === 'lite' && m.role === 'tool') return false;
+          if (
+            compactMode === 'lite' &&
+            m.role === 'assistant' &&
+            m.toolCalls &&
+            m.toolCalls.length > 0 &&
+            !m.content
+          ) {
             return false;
+          }
           return true;
         });
-        const recent = nonSystem.slice(-LITE_HISTORY_KEEP);
+        const keep = compactMode === 'hybrid' ? HYBRID_HISTORY_KEEP : LITE_HISTORY_KEEP;
+        const recent = nonSystem.slice(-keep);
         // Truncate any individual message that's still huge (e.g. a pasted file).
         const trimmed = recent.map((m) =>
           m.content.length > LITE_SYSTEM_MAX_CHARS
@@ -152,18 +222,18 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
             : m
         );
         effectiveMessages = [
-          { role: 'system' as const, content: LITE_SYSTEM_PROMPT },
+          { role: 'system' as const, content: compactSystemPrompt(request.model, compactMode) },
           ...trimmed
         ];
       } else {
         effectiveMessages = request.messages;
       }
 
-      if (isLite) {
+      if (compactMode) {
         const totalChars = effectiveMessages.reduce((n, m) => n + m.content.length, 0);
         log.debug(
-          { model: request.model, msgCount: effectiveMessages.length, totalChars },
-          'liteMode payload built'
+          { model: request.model, toolMode, msgCount: effectiveMessages.length, totalChars },
+          'compact local payload built'
         );
       }
 
@@ -173,7 +243,7 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
           const base: Record<string, unknown> = { role: m.role, content: m.content };
           if (m.toolCallId) base['tool_call_id'] = m.toolCallId;
           if (m.name) base['name'] = m.name;
-          if (!isLite && m.toolCalls && m.toolCalls.length > 0) {
+          if (includeToolProtocol && m.toolCalls && m.toolCalls.length > 0) {
             base['tool_calls'] = m.toolCalls.map((tc) => ({
               id: tc.id,
               type: 'function',
@@ -190,7 +260,7 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
         keep_alive: '30m',
         ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
         ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
-        ...(!isLite && request.tools && request.tools.length > 0
+        ...(includeToolProtocol && request.tools && request.tools.length > 0
           ? {
               tools: request.tools.map((t) => ({
                 type: 'function',

@@ -138,6 +138,8 @@ export const OpenAIProviderConfigSchema = z
   })
   .default({});
 
+export const LocalProviderToolModeSchema = z.enum(['lite', 'hybrid', 'full']);
+
 /**
  * Local / OpenAI-compatible provider — talks to Ollama by default,
  * but works with any HTTP server that speaks the OpenAI
@@ -176,17 +178,22 @@ export const LocalProviderConfigSchema = z
      */
     customModels: z.array(z.string().min(1)).default([]),
     /**
-     * Lite mode — strips all tool schemas and truncates the system prompt
-     * before sending to the local server. This shrinks the payload from
-     * ~30 k tokens down to ~2 k, letting 7 b / 8 b models respond without
-     * timing out on low-RAM machines.
-     *
-     * Defaults to **true** because no realistic local model (7 b–70 b on
-     * consumer hardware) can prefill the full Atlas tool catalog inside a
-     * reasonable timeout. Set to false on big rigs (vLLM with 70 b+) where
-     * full tool-calling is desired.
+     * Local tool/prompt mode:
+     * - lite: compact Atlas prompt, no tool schemas. Best for CPU/low-RAM
+     *   1.5 b-7 b models.
+     * - hybrid: compact Atlas prompt plus a small development tool allowlist.
+     *   Best for 7 b-14 b models on a GPU or fast CPU.
+     * - full: full Atlas system prompt and full tool catalog. Intended for
+     *   large local/hosted servers, typically 30 b-70 b+ with ample VRAM.
      */
-    liteMode: z.boolean().default(true),
+    toolMode: LocalProviderToolModeSchema.optional(),
+    /**
+     * Legacy boolean alias. `true` maps to `toolMode: lite`; `false` maps
+     * to `toolMode: full` when `toolMode` is not explicitly set.
+     *
+     * Kept so existing ~/.atlas/config.yaml files keep working.
+     */
+    liteMode: z.boolean().optional(),
     /**
      * Idle timeout per local model request, in milliseconds. The timer
      * resets on every byte received from the server, so this only fires
@@ -195,7 +202,15 @@ export const LocalProviderConfigSchema = z
      */
     requestTimeoutMs: z.number().int().positive().default(300_000)
   })
-  .default({});
+  .default({})
+  .transform((cfg) => {
+    const toolMode = cfg.toolMode ?? (cfg.liteMode === false ? 'full' : 'lite');
+    return {
+      ...cfg,
+      toolMode,
+      liteMode: toolMode === 'lite'
+    };
+  });
 
 export const ProvidersConfigSchema = z
   .object({
@@ -307,6 +322,7 @@ export const AtlasConfigSchema = z
 export type OpenRouterProviderConfig = z.infer<typeof OpenRouterProviderConfigSchema>;
 export type AnthropicProviderConfig = z.infer<typeof AnthropicProviderConfigSchema>;
 export type OpenAIProviderConfig = z.infer<typeof OpenAIProviderConfigSchema>;
+export type LocalProviderToolMode = z.infer<typeof LocalProviderToolModeSchema>;
 export type LocalProviderConfig = z.infer<typeof LocalProviderConfigSchema>;
 export type OpenAICodexAuth = z.infer<typeof OpenAICodexAuthSchema>;
 export type ProvidersConfig = z.infer<typeof ProvidersConfigSchema>;

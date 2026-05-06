@@ -17,7 +17,7 @@ with a Greek pantheon of specialist agents doing the work.
 npx atlas-os@latest
 ```
 
-**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, or OpenRouter.**
+**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, OpenRouter, or local models.**
 
 ![Atlas·OS terminal](https://raw.githubusercontent.com/lucapohl-angel/ATLAS_OS/main/assets/atlasOS_TERMINAL.png)
 
@@ -77,6 +77,22 @@ export OPENROUTER_API_KEY=sk-or-...
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
 ```
+
+Local models work through Ollama, LM Studio, vLLM, or any local
+OpenAI-compatible `/v1` server. Atlas auto-detects Ollama at
+`http://localhost:11434/v1`; use `/config -> Local models` to choose Lite,
+Hybrid, or Full Atlas mode.
+
+```bash
+ollama pull qwen2.5-coder:1.5b
+ollama pull qwen2.5-coder:7b
+```
+
+| Mode | Requirements | Best For | Tradeoff |
+|---|---|---|---|
+| Lite | CPU ok, 4-8 GB RAM, 1.5B-7B models | quick local chat | no model-driven tools |
+| Hybrid | 8-12 GB VRAM or strong CPU, 7B-14B models | local coding with core dev tools | limited tool set |
+| Full Atlas | 24 GB+ VRAM or hosted server, 30B-70B+ models | full Atlas prompt, tools, MCP, and hooks | largest payload |
 
 Bootstrap once:
 

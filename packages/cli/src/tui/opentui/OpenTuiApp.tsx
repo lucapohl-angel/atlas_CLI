@@ -30,6 +30,7 @@ import {
   saveLearnedSkill,
   ATLAS_VERSION,
   buildSystemPrompt,
+  childLogger,
   canRewindTo,
   classifyIntent,
   clearActiveTask,
@@ -47,6 +48,8 @@ import {
   isFrameworkAgent,
   loadClaudeCodeCredentials,
   loadContextPack,
+  LOCAL_HYBRID_TOOL_NAMES,
+  LOCAL_TOOL_MODE_SPECS,
   findSuggestion,
   PHASES,
   phasePromptAddendum,
@@ -69,6 +72,7 @@ import {
   type AtlasConfig,
   type HookRegistry,
   type InteractionRequest,
+  type LocalProviderToolMode,
   type LoopEvent,
   type McpServerConfig,
   type Message,
@@ -122,6 +126,8 @@ import {
   type PickerOption,
   type SlashSuggestion
 } from './Picker.js';
+
+const openTuiLog = childLogger('tui:opentui');
 
 export interface OpenTuiAppProps {
   readonly provider: Provider | null;
@@ -1133,6 +1139,11 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
 // one-liner instead of restructuring the switch.
 const NOT_YET_PORTED = new Set<string>([]);
 
+const LOCAL_TOOL_MODE_ORDER: readonly LocalProviderToolMode[] = ['lite', 'hybrid', 'full'];
+
+const isLocalProviderToolMode = (value: string): value is LocalProviderToolMode =>
+  LOCAL_TOOL_MODE_ORDER.some((mode) => mode === value);
+
 const providerTagFor = (
   model: string,
   catalog: readonly ModelInfo[] | undefined
@@ -1195,6 +1206,7 @@ const saveProviderKey = async (
         headers: {},
         autoDetect: true,
         customModels: [],
+        toolMode: 'lite',
         liteMode: true,
         requestTimeoutMs: 300_000
       }
@@ -3605,6 +3617,18 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     };
 
     try {
+      openTuiLog.debug(
+        {
+          provider: activeProvider.name,
+          providerKind: activeProviderKind,
+          model: effectiveModel,
+          historyMessages: messagesRef.current.length,
+          registeredTools: props.tools.list().length,
+          supportsToolCalling: activeProvider.supportsToolCalling !== false,
+          localToolMode: props.config?.providers.local.toolMode ?? null
+        },
+        'opentui starting agent loop'
+      );
       for await (const ev of runAgentLoop({
         provider: activeProvider,
         model: effectiveModel,
@@ -4982,25 +5006,35 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         ) : null}
         {overlay === 'config-local' ? (() => {
           const detected = Boolean(props.providers?.local);
-          const currentLite = props.config?.providers?.local?.liteMode ?? false;
-          const currentTimeout = props.config?.providers?.local?.requestTimeoutMs ?? 120_000;
+          const localCfg = props.config?.providers?.local;
+          const currentToolMode: LocalProviderToolMode =
+            localCfg?.toolMode ?? (localCfg?.liteMode === false ? 'full' : 'lite');
+          const currentTimeout = localCfg?.requestTimeoutMs ?? 300_000;
+          const modeInfo = LOCAL_TOOL_MODE_ORDER.map((mode) => {
+            const spec = LOCAL_TOOL_MODE_SPECS[mode];
+            return `${spec.label}
+  Specs: ${spec.requirements}
+  Pros: ${spec.pros}
+  Cons: ${spec.cons}`;
+          }).join('\n\n');
           return (
             <Picker
               title={`⚙  Local models (Ollama / LM Studio)${detected ? '  ✓ connected' : '  ✗ not detected'}`}
               descriptionColor={detected ? palette.success : palette.warning}
               options={[
-                {
-                  value: 'lite-toggle',
-                  label: `${currentLite ? '[ON] ' : '[OFF]'} liteMode — strip tools & trim system prompt`,
-                  description: currentLite
-                    ? 'ON: payload ~2 k tokens — best for 7 b / 8 b models on slow hardware'
-                    : 'OFF: full tool set sent — enable this if Atlas times out on your machine'
-                },
+                ...LOCAL_TOOL_MODE_ORDER.map((mode): PickerOption => {
+                  const spec = LOCAL_TOOL_MODE_SPECS[mode];
+                  return {
+                    value: `mode:${mode}`,
+                    label: `${currentToolMode === mode ? '[ACTIVE] ' : '[ ] '}${spec.label}`,
+                    description: `${spec.requirements}; pro: ${spec.pros}; con: ${spec.cons}`
+                  };
+                }),
                 {
                   value: 'info',
-                  label: 'setup info',
+                  label: 'mode specs and setup info',
                   description: detected
-                    ? `connected at ${props.config?.providers?.local?.baseUrl ?? 'http://localhost:11434/v1'} · timeout ${Math.round(currentTimeout / 1000)}s`
+                    ? `connected at ${localCfg?.baseUrl ?? 'http://localhost:11434/v1'} · ${currentToolMode} · timeout ${Math.round(currentTimeout / 1000)}s`
                     : 'install Ollama or point baseUrl at your local server'
                 },
                 { value: '__cancel', label: 'back', description: '' }
@@ -5015,25 +5049,48 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                   setInfoOverlay({
                     title: 'Local models — setup',
                     body: detected
-                      ? `Connected at ${props.config?.providers?.local?.baseUrl ?? 'http://localhost:11434/v1'}.\n\nPull models with:\n  ollama pull qwen2.5-coder:1.5b   ← fast on low-RAM\n  ollama pull qwen2.5-coder:7b\n  ollama pull deepseek-r1:7b\n\nEnable liteMode if Atlas times out (strips tool schemas to ~2 k tokens).\n\nConfig file: ~/.atlas/config.yaml\n  providers:\n    local:\n      liteMode: true\n      requestTimeoutMs: 180000`
+                      ? `Connected at ${localCfg?.baseUrl ?? 'http://localhost:11434/v1'}.
+
+Pull models with:
+  ollama pull qwen2.5-coder:1.5b   (fast on low-RAM)
+  ollama pull qwen2.5-coder:7b
+  ollama pull deepseek-r1:7b
+
+Modes:
+${modeInfo}
+
+Hybrid tool allowlist:
+  ${LOCAL_HYBRID_TOOL_NAMES.join(', ')}
+
+Config file: ~/.atlas/config.yaml
+  providers:
+    local:
+      toolMode: ${currentToolMode}  # lite | hybrid | full
+      requestTimeoutMs: 300000`
                       : 'No local server at http://localhost:11434/v1.\n\nInstall Ollama: https://ollama.com/download\nThen pull a model and restart Atlas:\n  ollama pull qwen2.5-coder:1.5b\n\nAtlas auto-detects on startup — no config edit needed.',
                     tone: detected ? 'info' : 'warn'
                   });
                   setOverlay('config-info');
                   return;
                 }
-                if (action === 'lite-toggle') {
+                if (action.startsWith('mode:')) {
+                  const mode = action.slice('mode:'.length);
+                  if (!isLocalProviderToolMode(mode)) return;
                   void (async () => {
                     const current = props.config;
                     if (!current) {
-                      pushItem('error', 'no config loaded — cannot toggle liteMode');
+                      pushItem('error', 'no config loaded — cannot change local mode');
                       return;
                     }
                     const next: AtlasConfig = {
                       ...current,
                       providers: {
                         ...current.providers,
-                        local: { ...current.providers.local, liteMode: !currentLite }
+                        local: {
+                          ...current.providers.local,
+                          toolMode: mode,
+                          liteMode: mode === 'lite'
+                        }
                       }
                     };
                     const r = await saveConfig(next);
@@ -5043,7 +5100,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                     }
                     pushItem(
                       'system',
-                      `✓ liteMode ${!currentLite ? 'enabled' : 'disabled'} — restart Atlas to apply (saved to ~/.atlas/config.yaml)`
+                      `✓ local tool mode set to ${mode} — restart Atlas to apply (saved to ~/.atlas/config.yaml)`
                     );
                     setOverlay(null);
                   })();

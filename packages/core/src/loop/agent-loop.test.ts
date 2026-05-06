@@ -4,7 +4,7 @@ import { runAgentLoop, type LoopEvent } from './agent-loop.js';
 import { atlasError } from '../errors.js';
 import { ok } from '../result.js';
 import { ToolRegistry, allowAllPolicy, type Tool } from '../tools/index.js';
-import type { Provider, StreamEvent, ToolCall } from '../providers/types.js';
+import type { CompletionRequest, Provider, StreamEvent, ToolCall } from '../providers/types.js';
 
 const collect = async (
   it: AsyncIterable<LoopEvent>
@@ -21,6 +21,16 @@ const echoTool: Tool<{ value: string }> = {
   schema: z.object({ value: z.string() }),
   async execute(input) {
     return ok({ type: 'ok', summary: `echo:${input.value}` });
+  }
+};
+
+const hiddenTool: Tool<{ value: string }> = {
+  name: 'hidden',
+  description: 'A tool used to verify provider tool allowlists.',
+  approval: 'auto',
+  schema: z.object({ value: z.string() }),
+  async execute(input) {
+    return ok({ type: 'ok', summary: `hidden:${input.value}` });
   }
 };
 
@@ -70,6 +80,105 @@ describe('agent loop', () => {
     if (last?.type === 'done') {
       expect(last.rounds).toBe(1);
       expect(last.messages.at(-1)?.role).toBe('assistant');
+    }
+  });
+
+  it('skips tool schema conversion when the provider disables tool calling', async () => {
+    let capturedTools: CompletionRequest['tools'];
+    const provider: Provider = {
+      name: 'mock-local-lite',
+      supportsToolCalling: false,
+      async *stream(request): AsyncIterable<StreamEvent> {
+        capturedTools = request.tools;
+        yield { type: 'delta', text: 'ok' };
+        yield { type: 'done', finishReason: 'stop' };
+      }
+    };
+    const tools = new ToolRegistry();
+    tools.register(echoTool);
+
+    await collect(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        tools,
+        toolContext: { cwd: '/', approve: allowAllPolicy },
+        initialMessages: [{ role: 'user', content: 'hi' }]
+      })
+    );
+
+    expect(capturedTools).toBeUndefined();
+  });
+
+  it('advertises only provider-allowlisted tools', async () => {
+    let capturedTools: CompletionRequest['tools'];
+    const provider: Provider = {
+      name: 'mock-local-hybrid',
+      supportsToolCalling: true,
+      allowedToolNames: ['echo'],
+      async *stream(request): AsyncIterable<StreamEvent> {
+        capturedTools = request.tools;
+        yield { type: 'delta', text: 'ok' };
+        yield { type: 'done', finishReason: 'stop' };
+      }
+    };
+    const tools = new ToolRegistry();
+    tools.register(echoTool);
+    tools.register(hiddenTool);
+
+    await collect(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        tools,
+        toolContext: { cwd: '/', approve: allowAllPolicy },
+        initialMessages: [{ role: 'user', content: 'hi' }]
+      })
+    );
+
+    expect(capturedTools?.map((tool) => tool.name)).toEqual(['echo']);
+  });
+
+  it('blocks non-allowlisted provider tool calls before execution', async () => {
+    let hiddenRan = false;
+    const blockedTool: Tool<{ value: string }> = {
+      ...hiddenTool,
+      async execute(input) {
+        hiddenRan = true;
+        return ok({ type: 'ok', summary: `hidden:${input.value}` });
+      }
+    };
+    const provider = buildProvider([
+      [
+        { type: 'tool_call', call: tc('call_1', 'hidden', { value: 'secret' }) },
+        { type: 'done', finishReason: 'tool_calls' }
+      ],
+      [{ type: 'done', finishReason: 'stop' }]
+    ]);
+    const hybridProvider: Provider = {
+      ...provider,
+      supportsToolCalling: true,
+      allowedToolNames: ['echo']
+    };
+    const tools = new ToolRegistry();
+    tools.register(echoTool);
+    tools.register(blockedTool);
+
+    const events = await collect(
+      runAgentLoop({
+        provider: hybridProvider,
+        model: 'm',
+        tools,
+        toolContext: { cwd: '/', approve: allowAllPolicy },
+        initialMessages: [{ role: 'user', content: 'hi' }]
+      })
+    );
+
+    const done = events.find((event) => event.type === 'tool_call_done');
+    expect(hiddenRan).toBe(false);
+    expect(done?.type).toBe('tool_call_done');
+    if (done?.type === 'tool_call_done') {
+      expect(done.outcome.type).toBe('error');
     }
   });
 

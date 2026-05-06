@@ -116,7 +116,7 @@ Never fail silently.
 
 ## `/config` menu (post-setup runtime)
 
-7 entries in fixed order, each with a connected/configured badge in
+8 entries in fixed order, each with a connected/configured badge in
 the description column:
 
 1. `OpenRouter API key  (sk-or-…)` — green ● connected when
@@ -128,12 +128,35 @@ the description column:
 4. `Sign in with ChatGPT (browser, Codex)` — connected when
    `props.providers['openai-codex']` is live. PKCE flow is
    browser-based; OpenTUI variant routes to `--ui=ink` until ported.
-5. `GitHub token        (gh integration)` — connected when
+5. `Local models        (Ollama, LM Studio, vLLM)` — connected when
+  the local provider runtime is detected. Selecting opens the local
+  mode submenu.
+6. `GitHub token        (gh integration)` — connected when
    `config.github.token` is set.
-6. `MCP server          (model context protocol)` — count badge,
+7. `MCP server          (model context protocol)` — count badge,
    `● N configured`. Selecting opens the MCP submenu (catalog).
-7. `Ship: auto-merge    (current: <strategy>, prompt: on/off)` —
+8. `Ship: auto-merge    (current: <strategy>, prompt: on/off)` —
    currently info-only in OpenTUI; full editor in Ink.
+
+### Local mode submenu
+
+Selecting "Local models" opens a picker with exactly three mode rows
+plus setup info/back. The selected row is marked `[ACTIVE]` and saving
+requires restart to rebuild the provider map.
+
+| Mode | Requirements | Pros | Cons |
+|------|--------------|------|------|
+| lite | CPU ok, 4-8 GB RAM, 1.5B-7B models | fastest and most reliable locally | chat only; no model-driven tools or tool hooks |
+| hybrid | 8-12 GB VRAM or strong CPU, 7B-14B models | compact prompt plus core dev tools and hooks | limited tool set; small models may still miss calls |
+| full | 24 GB+ VRAM or hosted server, 30B-70B+ models | full Atlas prompt, tools, MCP, and hooks | largest payload; highest timeout and quality risk locally |
+
+Config key: `providers.local.toolMode: lite | hybrid | full`. Legacy
+`providers.local.liteMode` is still accepted (`true` -> lite,
+`false` -> full) but new UI writes `toolMode`.
+
+Hybrid mode must advertise and execute only the compact development
+allowlist: `read_file`, `edit_file`, `write_file`, `terminal`, `git`,
+`todo`, `clarify`, `open_question`.
 
 ### Key entry stage
 

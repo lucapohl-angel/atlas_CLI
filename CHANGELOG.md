@@ -6,6 +6,25 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-05-06
+
+### Added
+- OpenTUI local-model setup now exposes Lite, Hybrid, and Full Atlas modes
+  from `/config -> Local models`, with hardware guidance and short pros/cons
+  for each mode.
+- Local Hybrid mode keeps a compact Atlas prompt while advertising only the
+  core development tool allowlist for small local models.
+
+### Changed
+- Local provider config now writes `providers.local.toolMode` while preserving
+  the legacy `liteMode` alias for existing configs.
+
+### Fixed
+- OpenTUI now preserves the local provider mode through startup/model switching,
+  and compact local prompts keep Atlas identity plus the exact active model id.
+- The compiled OpenTUI binary bundles the React binding consistently for local
+  model runs.
+
 ## [0.1.7] - 2026-05-06
 
 ### Changed

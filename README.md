@@ -18,7 +18,7 @@ with a Greek pantheon of specialist agents doing the work.
 npx atlas-os@latest
 ```
 
-**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, or OpenRouter.**
+**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, OpenRouter, or local models.**
 
 <br>
 
@@ -149,6 +149,10 @@ export ANTHROPIC_API_KEY=sk-ant-...     # Anthropic direct
 export OPENAI_API_KEY=sk-...            # OpenAI / ChatGPT direct
 ```
 
+Local OpenAI-compatible servers work too. Atlas auto-detects Ollama at
+`http://localhost:11434/v1` and also works with LM Studio, vLLM, and llama.cpp
+servers that expose an OpenAI-compatible `/v1` API.
+
 Optional config:
 
 ```yaml
@@ -237,6 +241,38 @@ pnpm --filter atlas-os build
 node packages/cli/dist/bin/atlas.js doctor
 ```
 
+### Local Models While Developing
+
+For local development, start an OpenAI-compatible server such as Ollama and pull
+a coding model:
+
+```bash
+ollama pull qwen2.5-coder:1.5b   # fastest low-RAM smoke model
+ollama pull qwen2.5-coder:7b     # better local coding baseline
+```
+
+Then run Atlas and open `/config -> Local models`. The picker writes
+`~/.atlas/config.yaml` and requires a restart after changing mode because the
+provider map is built at startup.
+
+```yaml
+providers:
+  local:
+    baseUrl: http://localhost:11434/v1
+    toolMode: hybrid  # lite | hybrid | full
+    requestTimeoutMs: 300000
+```
+
+| Mode | Requirements | Best For | Tradeoff |
+|---|---|---|---|
+| Lite | CPU ok, 4-8 GB RAM, 1.5B-7B models | quick local chat and smoke tests | no model-driven tools or tool hooks |
+| Hybrid | 8-12 GB VRAM or strong CPU, 7B-14B models | local coding with core dev tools | limited tool set; small models may miss calls |
+| Full Atlas | 24 GB+ VRAM or hosted server, 30B-70B+ models | full Atlas prompt, tools, MCP, and hooks | largest payload; highest timeout risk locally |
+
+Hybrid mode advertises only the compact development allowlist:
+`read_file`, `edit_file`, `write_file`, `terminal`, `git`, `todo`, `clarify`,
+and `open_question`.
+
 Full quality gate:
 
 ```bash
@@ -252,6 +288,8 @@ Experienced-user tweaks:
 
 - Providers: edit `~/.atlas/config.yaml`, set provider env vars, or use
   `/config` in the TUI.
+- Local models: use `/config -> Local models` to choose Lite, Hybrid, or Full
+  Atlas mode for Ollama / LM Studio / vLLM.
 - MCP servers: use `/mcps` and `/mcps add` in the TUI, or edit
   `~/.atlas/config.yaml` under `mcp.servers`.
 - Agents: add user agents under `~/.atlas/agents/<name>/AGENT.md`; project

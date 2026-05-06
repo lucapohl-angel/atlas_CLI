@@ -122,5 +122,17 @@ export interface TokenUsage {
 
 export interface Provider {
   readonly name: string;
+  /**
+   * Whether this backend should receive tool schemas from the agent loop.
+   * Defaults to true. Local lite mode sets this false so the loop can skip
+   * expensive schema conversion for tools the provider will not use.
+   */
+  readonly supportsToolCalling?: boolean;
+  /**
+   * Optional allowlist for providers that can use tools but should only
+   * receive/execute a compact subset. Undefined means every registered
+   * tool may be advertised. Empty means none.
+   */
+  readonly allowedToolNames?: readonly string[];
   stream(request: CompletionRequest): AsyncIterable<StreamEvent>;
 }

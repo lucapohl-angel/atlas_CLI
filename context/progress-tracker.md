@@ -27,7 +27,9 @@ token-optimization** track on top of it.
 
 ## In Progress
 
-- _None._
+- OpenTUI local-model mode picker now supports lite / hybrid / full;
+  Ink still only writes local default `toolMode`, so mirror the picker
+  there if Ink parity is required.
 
 ## Next Up (recommended order)
 
@@ -36,21 +38,24 @@ token-optimization** track on top of it.
    `/model`, add `/local` slash command for zero-config UX. Also
    serves any OpenAI-compatible endpoint (LM Studio, vLLM,
    llama.cpp) via `providers.local.baseUrl`.
-2. **VS Code extension** — see
+2. **Ink parity for local modes** — mirror the OpenTUI lite / hybrid /
+  full picker and hardware guidance in the Ink `/config` menu, or
+  explicitly retire Ink parity for this local-model flow.
+3. **VS Code extension** — see
    [`vscode-extension-plan.md`](vscode-extension-plan.md) for the
    full design. New `packages/vscode/` host that embeds
    `@atlas/core`; webview UI mirrors the TUI workflow.
-3. Wire a hook (or contributor docs) so `progress-tracker.md` gets a
+4. Wire a hook (or contributor docs) so `progress-tracker.md` gets a
    one-liner appended automatically after each commit on `main`.
-2. Pull the performance-track items into `CHANGELOG.md` under an
+5. Pull the performance-track items into `CHANGELOG.md` under an
    `Unreleased` heading.
-3. Decide: do we resurrect post-1.0 phase 12 (installer + module
+6. Decide: do we resurrect post-1.0 phase 12 (installer + module
    system), or formally close it as out of scope and update the README
    phase table to "🚫 deferred"?
-4. Audit existing tools for `whenToUse` / `outputContract` /
+7. Audit existing tools for `whenToUse` / `outputContract` /
    `blockedOps` / `examples` completeness — anything missing reduces
    tool-routing quality.
-5. Wire `routerModel` into the remaining background paths
+8. Wire `routerModel` into the remaining background paths
    (`summarizeToolArgs` in the TUI, todo extraction, slash-parsing
    helpers) — only compaction + skill-learning reflection are wired
    today.

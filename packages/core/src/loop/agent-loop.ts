@@ -28,7 +28,7 @@ import type {
   ToolCall,
   TokenUsage
 } from '../providers/types.js';
-import { registryToSpecs } from '../providers/tool-spec.js';
+import { registryToSpecs, toolToSpec } from '../providers/tool-spec.js';
 import { truncateForLLM } from '../tools/truncate.js';
 
 const log = childLogger('loop');
@@ -81,7 +81,26 @@ export const runAgentLoop = async function* (
   opts: AgentLoopOptions
 ): AsyncGenerator<LoopEvent> {
   const messages: Message[] = [...opts.initialMessages];
-  const tools = registryToSpecs(opts.tools);
+  const supportsToolCalling = opts.provider.supportsToolCalling !== false;
+  const allowedToolNameSet = supportsToolCalling
+    ? opts.provider.allowedToolNames
+      ? new Set(opts.provider.allowedToolNames)
+      : null
+    : new Set<string>();
+  const tools = supportsToolCalling
+    ? allowedToolNameSet
+      ? opts.tools.list().filter((tool) => allowedToolNameSet.has(tool.name)).map(toolToSpec)
+      : registryToSpecs(opts.tools)
+    : [];
+  log.debug(
+    {
+      provider: opts.provider.name,
+      supportsToolCalling,
+      toolCount: tools.length,
+      allowedToolNames: opts.provider.allowedToolNames ?? null
+    },
+    'agent loop prepared tool specs'
+  );
   const maxRounds = opts.maxRounds ?? DEFAULT_MAX_ROUNDS;
   let rounds = 0;
   let lastFinish: string | null = null;
@@ -104,6 +123,16 @@ export const runAgentLoop = async function* (
       ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
       ...(opts.signal ? { signal: opts.signal } : {})
     };
+    log.debug(
+      {
+        provider: opts.provider.name,
+        model: opts.model,
+        round: rounds,
+        messages: messages.length,
+        tools: tools.length
+      },
+      'agent loop starting provider stream'
+    );
 
     let assistantText = '';
     const turnToolCalls: ToolCall[] = [];
@@ -172,6 +201,19 @@ export const runAgentLoop = async function* (
     // Execute every tool call in order, append a `tool` message per call.
     for (const call of turnToolCalls) {
       yield { type: 'tool_call_start', call };
+      if (allowedToolNameSet && !allowedToolNameSet.has(call.name)) {
+        const error = atlasError('TOOL_DENIED_BY_USER', `tool ${call.name} is not enabled for this provider`, {
+          context: { name: call.name, provider: opts.provider.name }
+        });
+        messages.push({
+          role: 'tool',
+          content: `error: ${error.message}`,
+          toolCallId: call.id,
+          name: call.name
+        });
+        yield { type: 'tool_call_done', call, outcome: { type: 'error', error } };
+        continue;
+      }
       let parsed: unknown;
       try {
         parsed = call.arguments.length > 0 ? JSON.parse(call.arguments) : {};

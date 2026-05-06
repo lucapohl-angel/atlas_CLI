@@ -837,7 +837,7 @@ const loadModelCatalog = async (
  * provider at startup is still selected by `providerFromConfigAsync`
  * so first-render behavior matches the user's `defaultProvider`.
  */
-const buildAllProviders = async (
+export const buildAllProviders = async (
   cfg: AtlasConfig | null
 ): Promise<Partial<Record<'openrouter' | 'anthropic' | 'openai-codex' | 'local', Provider>>> => {
   if (!cfg) return {};
@@ -932,7 +932,9 @@ const buildAllProviders = async (
     out.local = createLocalProvider({
       baseUrl: lo.baseUrl,
       ...(lo.apiKey ? { apiKey: lo.apiKey } : {}),
-      ...(Object.keys(lo.headers).length > 0 ? { headers: lo.headers } : {})
+      ...(Object.keys(lo.headers).length > 0 ? { headers: lo.headers } : {}),
+      toolMode: lo.toolMode,
+      requestTimeoutMs: lo.requestTimeoutMs
     });
   }
 

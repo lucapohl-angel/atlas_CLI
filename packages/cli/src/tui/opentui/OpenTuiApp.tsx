@@ -130,7 +130,7 @@ export interface OpenTuiAppProps {
    * / openai-codex). Drives the /config menu's connection badges and
    * the model-picker section visibility — same contract as the Ink TUI.
    */
-  readonly providers?: Partial<Record<'openrouter' | 'anthropic' | 'openai-codex', Provider>>;
+  readonly providers?: Partial<Record<'openrouter' | 'anthropic' | 'openai-codex' | 'local', Provider>>;
   readonly agents: AgentRegistry;
   readonly skills: SkillRegistry;
   readonly tools: ToolRegistry;
@@ -874,7 +874,7 @@ const LearnDraftReviewOverlay = (props: LearnDraftReviewOverlayProps) => {
   );
 };
 
-type ProviderKindLabel = 'openrouter' | 'anthropic' | 'openai-codex' | 'unknown';
+type ProviderKindLabel = 'openrouter' | 'anthropic' | 'openai-codex' | 'local' | 'unknown';
 
 const withSelectedDefaultModel = (
   cfg: AtlasConfig,
@@ -883,7 +883,7 @@ const withSelectedDefaultModel = (
 ): AtlasConfig => ({
   ...cfg,
   defaultModel: modelId,
-  ...(kind === 'openrouter' || kind === 'anthropic'
+  ...(kind === 'openrouter' || kind === 'anthropic' || kind === 'local'
     ? { defaultProvider: kind }
     : {})
 });
@@ -918,6 +918,8 @@ const providerLongLabel = (kind: ProviderKindLabel): string => {
       return 'Anthropic';
     case 'openai-codex':
       return 'OpenAI (ChatGPT/Codex backend)';
+    case 'local':
+      return 'Local (Ollama / LM Studio)';
     case 'unknown':
       return 'unknown';
   }
@@ -1182,6 +1184,12 @@ const saveProviderKey = async (
       openai: {
         codex: {},
         baseUrl: 'https://chatgpt.com/backend-api/codex'
+      },
+      local: {
+        baseUrl: 'http://localhost:11434/v1',
+        headers: {},
+        autoDetect: true,
+        customModels: []
       }
     },
     mcp: { servers: [], builtinsSeeded: false },

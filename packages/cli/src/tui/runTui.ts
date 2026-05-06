@@ -21,11 +21,14 @@ import {
   createAnthropicProvider,
   createCodexProvider,
   createDelegateRunner,
+  createLocalProvider,
   createOpenRouterProvider,
   DEFAULT_BUILTIN_MCP_SERVERS,
   fetchAnthropicModels,
   fetchCodexModels,
   fetchOpenRouterModels,
+  listLocalModels,
+  probeLocalProvider,
   loadAgents,
   loadConfig,
   loadSkills,
@@ -101,6 +104,28 @@ const ANTHROPIC_NATIVE_MODELS = [
 type RuntimeProviderKind = ModelInfo['provider'];
 type RuntimeProviders = Partial<Record<RuntimeProviderKind, Provider>>;
 
+// Recommended local models surfaced in the picker when Ollama is running
+// but the user hasn't configured a preferred model. Ordered by quality
+// within the constraint of being runnable on modest hardware.
+const LOCAL_RECOMMENDED_MODELS: readonly ModelInfo[] = [
+  { id: 'qwen2.5-coder:7b',  label: 'Qwen 2.5 Coder 7B (recommended)',  thinking: ['off'], provider: 'local' },
+  { id: 'qwen2.5-coder:3b',  label: 'Qwen 2.5 Coder 3B',                thinking: ['off'], provider: 'local' },
+  { id: 'qwen2.5-coder:1.5b',label: 'Qwen 2.5 Coder 1.5B (lightweight)',thinking: ['off'], provider: 'local' },
+  { id: 'llama3.1:8b',       label: 'Llama 3.1 8B',                     thinking: ['off'], provider: 'local' },
+  { id: 'deepseek-r1:7b',    label: 'DeepSeek R1 7B (reasoning)',        thinking: ['off', 'low', 'medium'], provider: 'local' },
+];
+
+/**
+ * Infer thinking-level support from a local model id.
+ * DeepSeek-R1 and Qwen3-thinking variants emit <think>…</think> blocks
+ * which the provider strips into thinking events.
+ */
+const inferLocalThinking = (id: string): readonly import('@atlas/core').ThinkingLevel[] => {
+  const m = id.toLowerCase();
+  if (/deepseek-r1|qwen3.*think/.test(m)) return ['off', 'low', 'medium'];
+  return ['off'];
+};
+
 export interface StartupModelSelectionInput {
   readonly explicitModel?: string;
   readonly resumedModel?: string;
@@ -125,6 +150,9 @@ export const providerKindForStartupModel = (
   const m = modelId.toLowerCase();
   if (/^claude/.test(m)) return 'anthropic';
   if (/^(gpt-|codex-|o[1-9])/.test(m)) return 'openai-codex';
+  // Model ids that look like Ollama tags (e.g. "qwen2.5-coder:7b",
+  // "llama3.1:8b") have a colon separator — no provider prefix, no slash.
+  if (/:/.test(modelId) && !modelId.includes('/')) return 'local';
   return null;
 };
 
@@ -192,6 +220,47 @@ export const shouldLoadStartupSession = (
  * either provider, or `defaultProvider` set in ~/.atlas/config.yaml)
  * untouched.
  */
+/**
+ * Auto-detect a running Ollama (or any OpenAI-compatible local server)
+ * with a short probe. When found and no provider is explicitly configured,
+ * switch `defaultProvider` to `local` and set a sensible default model
+ * (the first pulled model found via /models, falling back to a
+ * recommended preset). This runs before `maybeAutoDetectClaudeCode` so
+ * paid-cloud credentials still win when present.
+ */
+const maybeAutoDetectLocal = async (cfg: AtlasConfig): Promise<AtlasConfig> => {
+  // Only auto-switch when no cloud provider key is configured and the
+  // user hasn't explicitly chosen a provider.
+  const hasCloudKey =
+    Boolean(cfg.providers.openrouter.apiKey) ||
+    Boolean(cfg.providers.anthropic.apiKey);
+  if (hasCloudKey) return cfg;
+  if (cfg.defaultProvider !== 'openrouter') return cfg;
+  if (!cfg.providers.local.autoDetect) return cfg;
+
+  const baseUrl = cfg.providers.local.baseUrl;
+  const reachable = await probeLocalProvider(baseUrl);
+  if (!reachable) return cfg;
+
+  // Ollama is up — discover pulled models.
+  const pulledIds = await listLocalModels(baseUrl,
+    cfg.providers.local.apiKey ? { apiKey: cfg.providers.local.apiKey } : {}
+  );
+
+  // Pick a default model: first pulled model, else keep existing if it
+  // looks local, else fall back to the top recommended preset.
+  const looksLikeOpenRouterId = cfg.defaultModel.includes('/');
+  const defaultModel =
+    pulledIds?.[0] ??
+    (looksLikeOpenRouterId ? LOCAL_RECOMMENDED_MODELS[0]!.id : cfg.defaultModel);
+
+  return {
+    ...cfg,
+    defaultProvider: 'local',
+    defaultModel
+  };
+};
+
 const maybeAutoDetectClaudeCode = async (cfg: AtlasConfig): Promise<AtlasConfig> => {
   const orHasKey = Boolean(cfg.providers.openrouter.apiKey);
   const anHasKey = Boolean(cfg.providers.anthropic.apiKey);
@@ -291,7 +360,8 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
     if (!cfgResult.ok) {
       setupError = cfgResult.error.message;
     } else {
-      cfg = await maybeAutoDetectClaudeCode(cfgResult.value);
+      cfg = await maybeAutoDetectLocal(cfgResult.value);
+      cfg = await maybeAutoDetectClaudeCode(cfg);
       cfg = await maybeSeedDefaultMcps(cfg);
       const provResult = await providerFromConfigAsync(cfg);
       if (provResult.ok) {
@@ -351,7 +421,11 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
   })();
 
   const fallbackPool =
-    cfg?.defaultProvider === 'anthropic' ? ANTHROPIC_NATIVE_MODELS : OPENROUTER_FALLBACK_MODELS;
+    cfg?.defaultProvider === 'anthropic'
+      ? ANTHROPIC_NATIVE_MODELS
+      : cfg?.defaultProvider === 'local'
+        ? LOCAL_RECOMMENDED_MODELS.map((m) => m.id)
+        : OPENROUTER_FALLBACK_MODELS;
   const configuredModel =
     cfg?.defaultModel ??
     (cfg?.defaultProvider === 'anthropic' ? 'claude-sonnet-4-5' : 'anthropic/claude-sonnet-4');
@@ -692,6 +766,41 @@ const loadModelCatalog = async (
     tasks.push(fetchCodexModels(accessToken, opts).then((r) => (r.ok ? r.value : [])));
   }
 
+  // Local / Ollama — probe the server and list whatever models the user
+  // has pulled. We also splice in the recommended presets (uninstalled
+  // ones show up dimmed in the picker so the user knows what to pull).
+  // The probe uses a short timeout so it doesn't delay startup when no
+  // local server is running.
+  const lo = cfg.providers.local;
+  if (lo.autoDetect || cfg.defaultProvider === 'local') {
+    tasks.push(
+      (async (): Promise<readonly ModelInfo[]> => {
+        const reachable = await probeLocalProvider(lo.baseUrl);
+        if (!reachable) {
+          // Server not running — still expose recommended presets so the
+          // user can see what to pull, but mark them as local.
+          return LOCAL_RECOMMENDED_MODELS;
+        }
+        const pulledIds = await listLocalModels(lo.baseUrl,
+          lo.apiKey ? { apiKey: lo.apiKey } : {}
+        );
+        if (!pulledIds || pulledIds.length === 0) return LOCAL_RECOMMENDED_MODELS;
+        // Build ModelInfo for each pulled model. Infer thinking support
+        // from the model name family.
+        const pulledSet = new Set(pulledIds);
+        const pulled: ModelInfo[] = pulledIds.map((id) => ({
+          id,
+          label: id,
+          thinking: inferLocalThinking(id),
+          provider: 'local' as const
+        }));
+        // Append recommended models that aren't already pulled.
+        const extras = LOCAL_RECOMMENDED_MODELS.filter((m) => !pulledSet.has(m.id));
+        return [...pulled, ...extras];
+      })()
+    );
+  }
+
   const results = await Promise.all(tasks);
   const merged: ModelInfo[] = [];
   const seen = new Set<string>();
@@ -717,9 +826,9 @@ const loadModelCatalog = async (
  */
 const buildAllProviders = async (
   cfg: AtlasConfig | null
-): Promise<Partial<Record<'openrouter' | 'anthropic' | 'openai-codex', Provider>>> => {
+): Promise<Partial<Record<'openrouter' | 'anthropic' | 'openai-codex' | 'local', Provider>>> => {
   if (!cfg) return {};
-  const out: Partial<Record<'openrouter' | 'anthropic' | 'openai-codex', Provider>> = {};
+  const out: Partial<Record<'openrouter' | 'anthropic' | 'openai-codex' | 'local', Provider>> = {};
 
   const or = cfg.providers.openrouter;
   if (or.apiKey) {
@@ -797,6 +906,20 @@ const buildAllProviders = async (
           await saveConfig(merged);
         }
       }
+    });
+  }
+
+  // Local / Ollama provider — added when autoDetect is on or the user
+  // has explicitly set defaultProvider: local. A second call to probe
+  // is avoided: buildAllProviders runs after maybeAutoDetectLocal which
+  // already confirmed reachability. We construct the provider object so
+  // the factory switch in providerFromConfig has something to return.
+  const lo = cfg.providers.local;
+  if (cfg.defaultProvider === 'local' || lo.autoDetect) {
+    out.local = createLocalProvider({
+      baseUrl: lo.baseUrl,
+      ...(lo.apiKey ? { apiKey: lo.apiKey } : {}),
+      ...(Object.keys(lo.headers).length > 0 ? { headers: lo.headers } : {})
     });
   }
 

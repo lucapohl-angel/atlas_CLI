@@ -189,7 +189,7 @@ export interface TuiAppProps {
    * switch between them just by switching models.
    */
   readonly providers?: Partial<
-    Record<'openrouter' | 'anthropic' | 'openai-codex', Provider>
+    Record<'openrouter' | 'anthropic' | 'openai-codex' | 'local', Provider>
   >;
   readonly agents: AgentRegistry;
   readonly skills: SkillRegistry;
@@ -530,7 +530,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
    *  header tag and gets rotated when the user picks a model from a
    *  different provider in the picker. */
   const [activeProviderKind, setActiveProviderKind] = useState<
-    'openrouter' | 'anthropic' | 'openai-codex' | 'unknown'
+    'openrouter' | 'anthropic' | 'openai-codex' | 'local' | 'unknown'
   >(() => providerKindFor(props.defaultModel, modelCatalog));
   const [overlay, setOverlay] = useState<Overlay>(() =>
     props.provider
@@ -2677,7 +2677,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       }
       // Item value shape: `<providerKind>:<modelId>` for catalog rows,
       // bare `<modelId>` for legacy / custom rows. Decode and route.
-      let providerKind: 'openrouter' | 'anthropic' | 'openai-codex' | 'unknown' = 'unknown';
+      let providerKind: 'openrouter' | 'anthropic' | 'openai-codex' | 'local' | 'unknown' = 'unknown';
       let modelId = item.value;
       const sep = item.value.indexOf(':');
       if (sep > 0) {
@@ -3859,6 +3859,12 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
             openai: {
               codex: {},
               baseUrl: 'https://chatgpt.com/backend-api/codex'
+            },
+            local: {
+              baseUrl: 'http://localhost:11434/v1',
+              headers: {},
+              autoDetect: true,
+              customModels: []
             }
           },
           mcp: { servers: [], builtinsSeeded: false },
@@ -3957,6 +3963,12 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         openai: {
           codex: {},
           baseUrl: 'https://chatgpt.com/backend-api/codex'
+        },
+        local: {
+          baseUrl: 'http://localhost:11434/v1',
+          headers: {},
+          autoDetect: true,
+          customModels: []
         }
       },
       mcp: { servers: [], builtinsSeeded: false },
@@ -6145,7 +6157,7 @@ const contextWindowFor = (
 };
 
 /** Provider tag rendered after the model id in the header. */
-type ProviderKindLabel = 'openrouter' | 'anthropic' | 'openai-codex' | 'unknown';
+type ProviderKindLabel = 'openrouter' | 'anthropic' | 'openai-codex' | 'local' | 'unknown';
 
 /**
  * Resolve which provider exposes the given model id.
@@ -6175,6 +6187,8 @@ const providerColor = (kind: ProviderKindLabel): string => {
       return 'yellow';
     case 'openai-codex':
       return 'green';
+    case 'local':
+      return 'cyan';
     case 'unknown':
       return 'gray';
   }
@@ -6193,6 +6207,8 @@ const providerShortLabel = (kind: ProviderKindLabel): string => {
       return 'AN';
     case 'openai-codex':
       return 'OAI';
+    case 'local':
+      return 'LCL';
     case 'unknown':
       return '?';
   }
@@ -6207,6 +6223,8 @@ const providerLongLabel = (kind: ProviderKindLabel): string => {
       return 'Anthropic';
     case 'openai-codex':
       return 'OpenAI (ChatGPT/Codex backend)';
+    case 'local':
+      return 'Local (Ollama / LM Studio)';
     case 'unknown':
       return 'unknown';
   }

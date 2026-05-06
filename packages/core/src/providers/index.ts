@@ -8,12 +8,14 @@ import { err, ok, type Result } from '../result.js';
 import type { AtlasConfig } from '../config/types.js';
 import { createOpenRouterProvider } from './openrouter.js';
 import { createAnthropicProvider } from './anthropic.js';
+import { createLocalProvider } from './local.js';
 import { loadClaudeCodeCredentials } from './claude-code.js';
 import type { Provider } from './types.js';
 
 export * from './types.js';
 export * from './openrouter.js';
 export * from './anthropic.js';
+export * from './local.js';
 export * from './claude-code.js';
 export * from './pricing.js';
 export * from './catalog.js';
@@ -67,6 +69,16 @@ export const providerFromConfig = (cfg: AtlasConfig): Result<Provider, AtlasErro
           'PROVIDER_AUTH_FAILED',
           'Anthropic provider requires either an API key or Claude Code OAuth (use providerFromConfigAsync to read OAuth credentials).'
         )
+      );
+    }
+    case 'local': {
+      const lo = cfg.providers.local;
+      return ok(
+        createLocalProvider({
+          baseUrl: lo.baseUrl,
+          ...(lo.apiKey ? { apiKey: lo.apiKey } : {}),
+          ...(Object.keys(lo.headers).length > 0 ? { headers: lo.headers } : {})
+        })
       );
     }
     default:

@@ -24,7 +24,7 @@ const log = childLogger('catalog');
 
 export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
 
-export type ModelProviderKind = 'openrouter' | 'anthropic' | 'openai-codex';
+export type ModelProviderKind = 'openrouter' | 'anthropic' | 'openai-codex' | 'local';
 
 export interface ModelInfo {
   /** Provider-native id (no provider/ prefix for native Anthropic). */

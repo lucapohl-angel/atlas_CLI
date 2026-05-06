@@ -138,11 +138,52 @@ export const OpenAIProviderConfigSchema = z
   })
   .default({});
 
+/**
+ * Local / OpenAI-compatible provider — talks to Ollama by default,
+ * but works with any HTTP server that speaks the OpenAI
+ * `/chat/completions` SSE protocol (LM Studio, vLLM, llama.cpp
+ * `server`, text-generation-webui, …).
+ *
+ * The default `baseUrl` points at Ollama's OpenAI-compatible bridge
+ * on `http://localhost:11434/v1`, so users who install Ollama and
+ * pull a model don't need to edit anything.
+ */
+export const LocalProviderConfigSchema = z
+  .object({
+    /**
+     * Base URL of the OpenAI-compatible endpoint. Must include the
+     * `/v1` suffix when the server requires it. Defaults to Ollama.
+     */
+    baseUrl: z.string().url().default('http://localhost:11434/v1'),
+    /**
+     * Optional bearer token. Most local servers don't need one — set
+     * this only for endpoints that require auth (vLLM with
+     * `--api-key`, hosted gateways, …).
+     */
+    apiKey: z.string().min(1).optional(),
+    /** Extra static request headers (e.g. behind a private gateway). */
+    headers: z.record(z.string()).default({}),
+    /**
+     * Auto-detect the local server on session start. When true, Atlas
+     * pings `${baseUrl}/models` with a short timeout and silently
+     * exposes any discovered models in the `/model` picker. No prompts,
+     * no errors when nothing is running.
+     */
+    autoDetect: z.boolean().default(true),
+    /**
+     * Model ids the user has added via the in-TUI "+ Add custom model id…"
+     * picker entry. Surfaced at the top of the local section.
+     */
+    customModels: z.array(z.string().min(1)).default([])
+  })
+  .default({});
+
 export const ProvidersConfigSchema = z
   .object({
     openrouter: OpenRouterProviderConfigSchema,
     anthropic: AnthropicProviderConfigSchema,
-    openai: OpenAIProviderConfigSchema
+    openai: OpenAIProviderConfigSchema,
+    local: LocalProviderConfigSchema
   })
   .default({});
 
@@ -220,7 +261,7 @@ export const ShipConfigSchema = z
 
 export const AtlasConfigSchema = z
   .object({
-    defaultProvider: z.enum(['openrouter', 'anthropic']).default('openrouter'),
+    defaultProvider: z.enum(['openrouter', 'anthropic', 'local']).default('openrouter'),
     defaultModel: z.string().min(1).default('anthropic/claude-sonnet-4'),
     /**
      * Optional cheaper model used for low-stakes side tasks: tool-arg
@@ -247,6 +288,7 @@ export const AtlasConfigSchema = z
 export type OpenRouterProviderConfig = z.infer<typeof OpenRouterProviderConfigSchema>;
 export type AnthropicProviderConfig = z.infer<typeof AnthropicProviderConfigSchema>;
 export type OpenAIProviderConfig = z.infer<typeof OpenAIProviderConfigSchema>;
+export type LocalProviderConfig = z.infer<typeof LocalProviderConfigSchema>;
 export type OpenAICodexAuth = z.infer<typeof OpenAICodexAuthSchema>;
 export type ProvidersConfig = z.infer<typeof ProvidersConfigSchema>;
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;

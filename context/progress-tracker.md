@@ -31,7 +31,16 @@ token-optimization** track on top of it.
 
 ## Next Up (recommended order)
 
-1. Wire a hook (or contributor docs) so `progress-tracker.md` gets a
+1. **Local-model provider via Ollama** — auto-detect
+   `http://localhost:11434`, expose any user-pulled model in
+   `/model`, add `/local` slash command for zero-config UX. Also
+   serves any OpenAI-compatible endpoint (LM Studio, vLLM,
+   llama.cpp) via `providers.local.baseUrl`.
+2. **VS Code extension** — see
+   [`vscode-extension-plan.md`](vscode-extension-plan.md) for the
+   full design. New `packages/vscode/` host that embeds
+   `@atlas/core`; webview UI mirrors the TUI workflow.
+3. Wire a hook (or contributor docs) so `progress-tracker.md` gets a
    one-liner appended automatically after each commit on `main`.
 2. Pull the performance-track items into `CHANGELOG.md` under an
    `Unreleased` heading.

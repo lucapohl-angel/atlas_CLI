@@ -104,7 +104,7 @@ export const buildProgram = (): Command => {
         if (opts.ui === 'opentui' || opts.ui === 'ink') tuiOpts.ui = opts.ui;
         const { runTui } = await import('./tui/runTui.js');
         const { exitCode } = await runTui(tuiOpts);
-        if (exitCode !== 0) process.exitCode = exitCode;
+        process.exit(exitCode);
       }
     );
 

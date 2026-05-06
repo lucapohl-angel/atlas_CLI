@@ -26,7 +26,8 @@ semantic versioning.
 
 ### Fixed
 - Exiting the TUI now restores the terminal cleanly, prints the Atlas OS
-  wordmark, and avoids OpenTUI `EditBuffer is destroyed` teardown stacks.
+  wordmark, avoids OpenTUI `EditBuffer is destroyed` teardown stacks, and
+  returns control to the shell immediately after the splash.
 
 ## [1.7.1] - 2026-05-06
 

@@ -70,7 +70,9 @@ inline `palette` near line 69).
 user's terminal, suppress renderer teardown stack traces, and print the `ATLAS
 OS` wordmark in the normal scrollback. Do not destroy the OpenTUI renderer from
 inside the same key/submit handler that requested exit; resolve the exit request
-first, then destroy the renderer during shutdown cleanup.
+first, unmount the React tree, then stop/destroy the renderer during shutdown
+cleanup. Reset terminal modes before and after the wordmark, pause stdin, and
+explicitly terminate the CLI process so the shell prompt is immediately usable.
 
 ## Slash command system
 

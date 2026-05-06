@@ -128,13 +128,27 @@ export const runOpenTui = async (
   };
 
   const appProps: OpenTuiAppProps = { ...props, onExit };
-  createRoot(renderer).render(React.createElement(OpenTuiApp, appProps));
+  const root = createRoot(renderer);
+  root.render(React.createElement(OpenTuiApp, appProps));
 
   try {
     await exited;
   } finally {
     try {
+      root.unmount();
+    } catch {
+      /* noop */
+    }
+    try {
+      renderer.pause?.();
+      renderer.stop?.();
+      await renderer.idle?.();
+    } catch {
+      /* noop */
+    }
+    try {
       renderer.destroy?.();
+      await renderer.idle?.();
     } catch {
       /* noop */
     }

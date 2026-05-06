@@ -48,7 +48,7 @@ import {
   type SessionRecord
 } from '@atlas/core';
 import { TuiApp } from './App.js';
-import { printAtlasExitSplash } from './exit-splash.js';
+import { printAtlasExitSplash, restoreInteractiveTerminal } from './exit-splash.js';
 
 export interface RunTuiOptions {
   readonly model?: string;
@@ -686,7 +686,9 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
       process.off('exit', restore);
       restore();
     }
+    restoreInteractiveTerminal();
     if (result?.exitCode === 0) printAtlasExitSplash();
+    restoreInteractiveTerminal();
     return result ?? { exitCode: 1 };
   }
 
@@ -701,7 +703,9 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
     process.off('exit', restore);
     restore();
   }
+  restoreInteractiveTerminal();
   if (exitedCleanly) printAtlasExitSplash();
+  restoreInteractiveTerminal();
   return { exitCode: 0 };
 };
 

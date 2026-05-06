@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderAtlasExitSplash } from './exit-splash.js';
+import { renderAtlasExitSplash, restoreInteractiveTerminal } from './exit-splash.js';
 
 describe('renderAtlasExitSplash', () => {
   it('renders a plain Atlas OS wordmark', () => {
@@ -15,5 +15,37 @@ describe('renderAtlasExitSplash', () => {
 
     expect(output).toContain('\x1b[');
     expect(output).toContain('ATLAS OS');
+  });
+
+  it('restores cursor/input terminal state', () => {
+    const writes: string[] = [];
+    let rawMode: boolean | null = null;
+    let paused = false;
+
+    restoreInteractiveTerminal({
+      stdout: {
+        isTTY: true,
+        write: (chunk: string | Uint8Array): boolean => {
+          writes.push(String(chunk));
+          return true;
+        }
+      },
+      stdin: {
+        isTTY: true,
+        setRawMode: (value: boolean) => {
+          rawMode = value;
+          return {} as NodeJS.ReadStream;
+        },
+        pause: () => {
+          paused = true;
+          return {} as NodeJS.ReadStream;
+        }
+      } as NodeJS.ReadStream
+    });
+
+    expect(writes.join('')).toContain('\x1b[?25h');
+    expect(writes.join('')).toContain('\x1b[?1004l');
+    expect(rawMode).toBe(false);
+    expect(paused).toBe(true);
   });
 });

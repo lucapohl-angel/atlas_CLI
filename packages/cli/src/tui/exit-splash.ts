@@ -9,6 +9,18 @@ const WORDMARK_LINES = [
 
 const ANSI_RESET = '\x1b[0m';
 const ANSI_DIM = '\x1b[2m';
+const TERMINAL_RESTORE_SEQUENCE = [
+  '\x1b[0m',
+  '\x1b[?25h',
+  '\x1b[?2004l',
+  '\x1b[?1000l',
+  '\x1b[?1002l',
+  '\x1b[?1003l',
+  '\x1b[?1004l',
+  '\x1b[?1005l',
+  '\x1b[?1006l',
+  '\x1b[?1015l'
+].join('');
 const ANSI_COLORS = [
   '\x1b[38;2;96;165;250m',
   '\x1b[38;2;96;165;250m',
@@ -35,4 +47,24 @@ export const printAtlasExitSplash = (
   if (process.env['ATLAS_NO_EXIT_SPLASH']) return;
   const color = stdout.isTTY === true && !process.env['NO_COLOR'];
   stdout.write(renderAtlasExitSplash(color));
+};
+
+export const restoreInteractiveTerminal = ({
+  stdin = process.stdin,
+  stdout = process.stdout
+}: {
+  readonly stdin?: NodeJS.ReadStream;
+  readonly stdout?: Pick<NodeJS.WriteStream, 'write' | 'isTTY'>;
+} = {}): void => {
+  if (stdout.isTTY === true) {
+    stdout.write(TERMINAL_RESTORE_SEQUENCE);
+  }
+  if (stdin.isTTY === true && typeof stdin.setRawMode === 'function') {
+    try {
+      stdin.setRawMode(false);
+    } catch {
+      /* noop */
+    }
+  }
+  stdin.pause();
 };

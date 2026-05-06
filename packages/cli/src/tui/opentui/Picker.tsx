@@ -292,9 +292,58 @@ export interface GroupedPickerProps {
 export const GroupedPicker = (props: GroupedPickerProps) => {
   const { width: cols } = useTerminalDimensions();
   const pos = centeredOverlayStyle(cols, { top: 1, maxWidth: 80 });
+
+  // Type-to-search filter. Captured via useKeyboard so the user can
+  // start typing immediately — no search box to focus first. The
+  // <select> below stays `focused` and continues to consume arrow /
+  // enter keys; we only react to printable chars and backspace.
+  const [filter, setFilter] = useState('');
+  useKeyboard((key) => {
+    if (key.name === 'backspace') {
+      if (filter.length > 0) setFilter((f) => f.slice(0, -1));
+      return;
+    }
+    if (
+      typeof key.sequence === 'string' &&
+      key.sequence.length === 1 &&
+      !key.ctrl &&
+      !key.meta &&
+      key.sequence.charCodeAt(0) >= 0x20
+    ) {
+      setFilter((f) => f + key.sequence);
+    }
+  });
+
+  // Filter entries by label / value substring. Headers are emitted
+  // only when their section has at least one matching item, so empty
+  // sections collapse out of the list while typing.
+  const filteredEntries = useMemo(() => {
+    if (filter.length === 0) return props.entries;
+    const q = filter.toLowerCase();
+    const out: GroupedPickerEntry[] = [];
+    let pendingHeader: GroupedPickerEntry | null = null;
+    for (const e of props.entries) {
+      if (e.kind === 'header') {
+        pendingHeader = e;
+        continue;
+      }
+      if (
+        e.label.toLowerCase().includes(q) ||
+        e.value.toLowerCase().includes(q)
+      ) {
+        if (pendingHeader) {
+          out.push(pendingHeader);
+          pendingHeader = null;
+        }
+        out.push(e);
+      }
+    }
+    return out;
+  }, [props.entries, filter]);
+
   const items = useMemo(
     () =>
-      props.entries.map((e) => {
+      filteredEntries.map((e) => {
         if (e.kind === 'header') {
           return {
             name: e.label,
@@ -308,23 +357,29 @@ export const GroupedPicker = (props: GroupedPickerProps) => {
           value: e.value
         };
       }),
-    [props.entries]
+    [filteredEntries]
   );
   const initialIndex = useMemo(() => {
-    if (!props.initialValue) {
-      const i = props.entries.findIndex((e) => e.kind === 'item');
+    // While filtering, jump to the first matching item so Enter picks it.
+    if (filter.length > 0) {
+      const i = filteredEntries.findIndex((e) => e.kind === 'item');
       return i < 0 ? 0 : i;
     }
-    const i = props.entries.findIndex(
+    if (!props.initialValue) {
+      const i = filteredEntries.findIndex((e) => e.kind === 'item');
+      return i < 0 ? 0 : i;
+    }
+    const i = filteredEntries.findIndex(
       (e) => e.kind === 'item' && e.value === props.initialValue
     );
     return i < 0 ? 0 : i;
-  }, [props.entries, props.initialValue]);
+  }, [filteredEntries, props.initialValue, filter]);
 
-  const visibleRows = Math.min(items.length, 16);
+  const visibleRows = Math.min(Math.max(items.length, 1), 16);
   const showDescriptions = items.some((it) => it.description.length > 0);
   const rowHeight = showDescriptions ? 2 : 1;
   const selectHeight = Math.max(1, visibleRows * rowHeight);
+  const noMatches = filter.length > 0 && items.length === 0;
 
   return (
     <box
@@ -344,36 +399,66 @@ export const GroupedPicker = (props: GroupedPickerProps) => {
       <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}>
         <text fg={palette.primaryBright}>{props.title}</text>
       </box>
-      <select
-        focused
-        options={items}
-        selectedIndex={initialIndex}
-        showDescription={showDescriptions}
-        showScrollIndicator
-        wrapSelection
+      {/* Live search line — always visible so the user discovers it.
+          Shows the current query (or a placeholder hint when empty). */}
+      <box
         style={{
-          width: '100%',
-          height: selectHeight,
-          backgroundColor: palette.backgroundElement,
-          focusedBackgroundColor: palette.backgroundElement,
-          textColor: palette.text,
-          focusedTextColor: palette.text,
-          selectedBackgroundColor: palette.primary,
-          selectedTextColor: palette.background,
-          descriptionColor: palette.textMuted,
-          selectedDescriptionColor: palette.text
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundElement
         }}
-        onSelect={(_idx, opt) => {
-          if (!opt) return;
-          const v = (opt as unknown as { value?: string }).value;
-          if (typeof v !== 'string') return;
-          if (v.startsWith('__hdr_')) return;
-          props.onChoose(v);
-        }}
-      />
+      >
+        <text fg={palette.textMuted}>
+          {filter.length > 0
+            ? `🔎 ${filter}_`
+            : 'type to filter…'}
+        </text>
+      </box>
+      {noMatches ? (
+        <box
+          style={{
+            flexDirection: 'row',
+            backgroundColor: palette.backgroundElement
+          }}
+        >
+          <text fg={palette.warning}>{`no matches for "${filter}"`}</text>
+        </box>
+      ) : (
+        <select
+          // `key` forces the <select> to remount when the filter
+          // changes, which resets its internal cursor to
+          // `selectedIndex` — otherwise it keeps a stale index that
+          // can land out of bounds after the list shrinks.
+          key={`gp-${filter}`}
+          focused
+          options={items}
+          selectedIndex={initialIndex}
+          showDescription={showDescriptions}
+          showScrollIndicator
+          wrapSelection
+          style={{
+            width: '100%',
+            height: selectHeight,
+            backgroundColor: palette.backgroundElement,
+            focusedBackgroundColor: palette.backgroundElement,
+            textColor: palette.text,
+            focusedTextColor: palette.text,
+            selectedBackgroundColor: palette.primary,
+            selectedTextColor: palette.background,
+            descriptionColor: palette.textMuted,
+            selectedDescriptionColor: palette.text
+          }}
+          onSelect={(_idx, opt) => {
+            if (!opt) return;
+            const v = (opt as unknown as { value?: string }).value;
+            if (typeof v !== 'string') return;
+            if (v.startsWith('__hdr_')) return;
+            props.onChoose(v);
+          }}
+        />
+      )}
       <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}>
         <text fg={palette.textMuted}>
-          {props.hint ?? '↑/↓ navigate · ↵ choose · Esc cancel'}
+          {props.hint ?? '↑/↓ navigate · ↵ choose · type to filter · ⌫ clear · Esc cancel'}
         </text>
       </box>
     </box>

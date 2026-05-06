@@ -1749,12 +1749,14 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       byProvider.set(m.provider, list);
     }
 
-    const groupOrder: readonly ('anthropic' | 'openai-codex' | 'openrouter')[] = [
+    const groupOrder: readonly ('local' | 'anthropic' | 'openai-codex' | 'openrouter')[] = [
+      'local',
       'anthropic',
       'openai-codex',
       'openrouter'
     ];
     const groupLabel = (k: string): string => {
+      if (k === 'local') return '\u2500\u2500 Local (Ollama / LM Studio) \u2500\u2500';
       if (k === 'anthropic') return '\u2500\u2500 Anthropic \u2500\u2500';
       if (k === 'openai-codex') return '\u2500\u2500 OpenAI (ChatGPT / Codex) \u2500\u2500';
       if (k === 'openrouter') return '\u2500\u2500 OpenRouter \u2500\u2500';
@@ -4807,6 +4809,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               const hasAnthKey = Boolean(cfg?.providers.anthropic.apiKey);
               const hasClaudeCode = Boolean(props.providers?.anthropic) && !hasAnthKey;
               const hasChatGpt = Boolean(props.providers?.['openai-codex']);
+              const hasLocal = Boolean(props.providers?.local);
               const hasGithub = Boolean(cfg?.github?.token);
               const mcpCount = cfg?.mcp?.servers?.length ?? 0;
               // Only show a description when the slot is connected;
@@ -4836,6 +4839,11 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                   value: 'chatgpt',
                   label: 'Sign in with ChatGPT (browser, Codex)',
                   description: tag(hasChatGpt)
+                },
+                {
+                  value: 'local',
+                  label: 'Local models      (Ollama, LM Studio, vLLM)',
+                  description: tag(hasLocal, 'detected')
                 },
                 {
                   value: 'github',
@@ -4886,6 +4894,18 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                   title: 'Sign in with ChatGPT',
                   body: 'Browser-based sign-in is available from the classic interface for now.\n\nRun `atlas chat --ui=ink`, open /config, and complete ChatGPT sign-in there. The saved tokens in ~/.atlas/config.yaml will work here after restart.',
                   tone: 'warn'
+                });
+                setOverlay('config-info');
+                return;
+              }
+              if (v === 'local') {
+                const detected = Boolean(props.providers?.local);
+                setInfoOverlay({
+                  title: 'Local models (Ollama / LM Studio)',
+                  body: detected
+                    ? 'Local server detected at http://localhost:11434/v1 \u2014 Atlas auto-uses it when no cloud key is configured.\n\nPick any pulled model from /models. To add more:\n  ollama pull qwen2.5-coder:7b\n  ollama pull deepseek-r1:7b\n\nLM Studio / vLLM users: point providers.local.baseUrl in ~/.atlas/config.yaml at your server.'
+                    : 'No local server detected at http://localhost:11434/v1.\n\nInstall Ollama: https://ollama.com/download\nThen pull a model and restart atlas:\n  ollama pull qwen2.5-coder:7b\n\nAtlas auto-detects on startup \u2014 no config edit needed.',
+                  tone: detected ? 'info' : 'warn'
                 });
                 setOverlay('config-info');
                 return;

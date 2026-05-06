@@ -6,6 +6,12 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-05-06
+
+### Changed
+- Documentation and source comments no longer attribute design ideas to
+  external projects; wording is now neutral and Atlas-specific.
+
 ## [0.1.6] - 2026-05-05
 
 ### Added — OpenTUI, delegation, and release-readiness polish

@@ -1,6 +1,6 @@
 {
   "name": "atlas-os-linux-x64",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Linux x64 binary for atlas-os (do not install directly).",
   "license": "MIT",
   "repository": {

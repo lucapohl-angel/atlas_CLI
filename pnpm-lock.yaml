@@ -122,7 +122,7 @@ importers:
       atlas-os-linux-x64:
         specifier: workspace:*
         version: link:../binaries/linux-x64
-      atlas-os-win32-x64:
+      atlas-os-win-x64:
         specifier: workspace:*
         version: link:../binaries/win32-x64
       playwright:

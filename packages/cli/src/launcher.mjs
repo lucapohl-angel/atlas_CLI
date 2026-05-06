@@ -23,7 +23,9 @@ const __dirname = dirname(__filename);
 const platform = process.platform;
 const arch = process.arch;
 const ext = platform === 'win32' ? '.exe' : '';
-const pkgName = `atlas-os-${platform}-${arch}`;
+// Note: 'atlas-os-win32-x64' triggered npm's spam filter, so the
+// Windows binary package is published as 'atlas-os-win-x64' instead.
+const pkgName = platform === 'win32' ? `atlas-os-win-${arch}` : `atlas-os-${platform}-${arch}`;
 
 function tryResolveBinary() {
   try {
@@ -74,7 +76,7 @@ function runFallback() {
   if (!existsSync(fallback)) {
     process.stderr.write(
       `atlas: no native binary for ${platform}-${arch} and no JS fallback found.\n` +
-        `Install one of: atlas-os-linux-x64, atlas-os-linux-arm64, atlas-os-darwin-x64, atlas-os-darwin-arm64, atlas-os-win32-x64\n`,
+        `Install one of: atlas-os-linux-x64, atlas-os-linux-arm64, atlas-os-darwin-x64, atlas-os-darwin-arm64, atlas-os-win-x64\n`,
     );
     process.exit(1);
   }

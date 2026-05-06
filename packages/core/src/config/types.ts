@@ -181,10 +181,12 @@ export const LocalProviderConfigSchema = z
      * ~30 k tokens down to ~2 k, letting 7 b / 8 b models respond without
      * timing out on low-RAM machines.
      *
-     * Set `providers.local.liteMode: true` in ~/.atlas/config.yaml, or
-     * toggle it from the `/config` → Local models menu inside Atlas.
+     * Defaults to **true** because no realistic local model (7 b–70 b on
+     * consumer hardware) can prefill the full Atlas tool catalog inside a
+     * reasonable timeout. Set to false on big rigs (vLLM with 70 b+) where
+     * full tool-calling is desired.
      */
-    liteMode: z.boolean().default(false),
+    liteMode: z.boolean().default(true),
     /**
      * Hard timeout for each local model request in milliseconds.
      * Defaults to 120 000 (2 minutes). Raise for very slow hardware;

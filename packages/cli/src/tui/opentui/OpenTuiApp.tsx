@@ -1195,7 +1195,7 @@ const saveProviderKey = async (
         headers: {},
         autoDetect: true,
         customModels: [],
-        liteMode: false,
+        liteMode: true,
         requestTimeoutMs: 120_000
       }
     },

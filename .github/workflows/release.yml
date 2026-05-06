@@ -134,6 +134,9 @@ jobs:
     # AND the user explicitly set publish=true. Tag pushes will build
     # artifacts but stop here.
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true'
+    permissions:
+      contents: read
+      id-token: write  # required for npm --provenance (sigstore OIDC)
     steps:
       - uses: actions/checkout@v4
 

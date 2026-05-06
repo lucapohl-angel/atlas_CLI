@@ -104,6 +104,33 @@ export const CompactionConfigSchema = z
   })
   .default({});
 
+export const AtlasPowerModeSchema = z.enum(['full', 'smart']);
+
+export const ATLAS_POWER_MODE_SPECS: Record<
+  z.infer<typeof AtlasPowerModeSchema>,
+  {
+    readonly label: string;
+    readonly costEstimate: string;
+    readonly pros: string;
+    readonly cons: string;
+  }
+> = {
+  full: {
+    label: 'Atlas Power Full',
+    costEstimate:
+      'roughly 100k-250k input tokens on heavy turns before cache; cache-capable models make repeat turns much cheaper',
+    pros: 'maximum Atlas context, tools, MCP, hooks, and predictable behavior',
+    cons: 'largest token payload; no-cache models rebill the full prefix each message'
+  },
+  smart: {
+    label: 'Atlas Smart Mode',
+    costEstimate:
+      'roughly 20k-80k input tokens on normal hosted turns; complex turns can still pay Full Atlas costs',
+    pros: 'cost-aware default for daily hosted work; favors cache-friendly model choices',
+    cons: 'adaptive strategy; very complex work may still need the full prompt/tool surface'
+  }
+};
+
 export const GitHubAuthConfigSchema = z
   .object({
     /** OAuth access token obtained via the device-flow setup. */
@@ -310,6 +337,8 @@ export const AtlasConfigSchema = z
     routerModel: z.string().min(1).optional(),
     /** Models to try in order if the primary fails (429 / 5xx / network). */
     fallbackModels: z.array(z.string().min(1)).default([]),
+    /** Hosted-provider cost posture shown in /config. */
+    atlasMode: AtlasPowerModeSchema.default('full'),
     providers: ProvidersConfigSchema,
     mcp: McpConfigSchema,
     github: GitHubAuthConfigSchema,
@@ -322,6 +351,7 @@ export const AtlasConfigSchema = z
 export type OpenRouterProviderConfig = z.infer<typeof OpenRouterProviderConfigSchema>;
 export type AnthropicProviderConfig = z.infer<typeof AnthropicProviderConfigSchema>;
 export type OpenAIProviderConfig = z.infer<typeof OpenAIProviderConfigSchema>;
+export type AtlasPowerMode = z.infer<typeof AtlasPowerModeSchema>;
 export type LocalProviderToolMode = z.infer<typeof LocalProviderToolModeSchema>;
 export type LocalProviderConfig = z.infer<typeof LocalProviderConfigSchema>;
 export type OpenAICodexAuth = z.infer<typeof OpenAICodexAuthSchema>;

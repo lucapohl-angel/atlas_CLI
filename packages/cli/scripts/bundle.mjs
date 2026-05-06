@@ -73,7 +73,15 @@ const common = {
   format: 'esm',
   platform: 'node',
   target: 'node20',
+  splitting: true,
+  chunkNames: 'chunks/[name]-[hash]',
   external: externals,
+  banner: {
+    js: [
+      'import { createRequire as __atlasCreateRequire } from "node:module";',
+      'const require = __atlasCreateRequire(import.meta.url);',
+    ].join('\n'),
+  },
   plugins: [versionInjector],
   logLevel: 'info',
   legalComments: 'none',
@@ -88,7 +96,8 @@ await mkdir(resolve(root, 'dist/bin'), { recursive: true });
 await build({
   ...common,
   entryPoints: [resolve(root, 'src/bin/atlas.ts')],
-  outfile: resolve(root, 'dist/bin/atlas.js'),
+  outdir: resolve(root, 'dist/bin'),
+  entryNames: 'atlas',
 });
 await chmod(resolve(root, 'dist/bin/atlas.js'), 0o755);
 
@@ -98,7 +107,8 @@ if (existsSync(indexEntry)) {
   await build({
     ...common,
     entryPoints: [indexEntry],
-    outfile: resolve(root, 'dist/index.js'),
+    outdir: resolve(root, 'dist'),
+    entryNames: 'index',
   });
 }
 

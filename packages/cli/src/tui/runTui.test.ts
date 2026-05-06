@@ -27,6 +27,7 @@ const model = (id: string, kind: ModelInfo['provider']): ModelInfo => ({
   id,
   label: id,
   thinking: ['off'],
+  promptCache: kind === 'local' ? 'unsupported' : 'supported',
   provider: kind
 });
 

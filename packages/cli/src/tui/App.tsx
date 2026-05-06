@@ -42,6 +42,7 @@ import {
 } from './learn.js';
 import {
   ATLAS_VERSION,
+  ATLAS_POWER_MODE_SPECS,
   DEFAULT_BUILTIN_MCP_SERVERS,
   MCP_SUGGESTIONS,
   allowAllPolicy,
@@ -66,6 +67,7 @@ import {
   tryExtractInteraction,
   type Agent,
   type AgentRegistry,
+  type AtlasPowerMode,
   type AtlasConfig,
   type InteractionRequest,
   type LoopEvent,
@@ -141,7 +143,9 @@ const palette = {
   success: '#7fd88f',
   warning: '#f5a742',
   error: '#e06c75',
-  info: '#56b6c2'
+  info: '#56b6c2',
+  neonPower: '#ff315f',
+  neonSmart: '#39ff88'
 } as const;
 
 
@@ -245,6 +249,25 @@ export interface TuiAppProps {
 
 type Mode = 'plan' | 'build' | 'autopilot';
 const MODE_CYCLE: readonly Mode[] = ['plan', 'build', 'autopilot'];
+const ATLAS_POWER_MODE_ORDER: readonly AtlasPowerMode[] = ['full', 'smart'];
+
+const isAtlasPowerMode = (value: string): value is AtlasPowerMode =>
+  ATLAS_POWER_MODE_ORDER.some((mode) => mode === value);
+
+const promptCacheLabel = (model: ModelInfo | undefined): string => {
+  switch (model?.promptCache) {
+    case 'supported':
+      return 'cache yes';
+    case 'unsupported':
+      return 'cache no';
+    case 'unknown':
+    default:
+      return 'cache unknown';
+  }
+};
+
+const withPromptCacheLabel = (label: string, model: ModelInfo | undefined): string =>
+  `${label} [${promptCacheLabel(model)}]`;
 
 type Overlay =
   | { readonly kind: 'none' }
@@ -380,9 +403,9 @@ type Overlay =
     }
   | {
       readonly kind: 'setup';
-      readonly stage: 'menu' | 'key' | 'info' | 'ship';
+      readonly stage: 'menu' | 'key' | 'info' | 'ship' | 'atlas-power';
       readonly draftKey: string;
-      readonly target: 'openrouter' | 'anthropic' | 'claude-code' | 'chatgpt' | 'github' | 'mcp' | 'ship';
+      readonly target: 'openrouter' | 'anthropic' | 'claude-code' | 'chatgpt' | 'github' | 'mcp' | 'ship' | 'atlas-power';
       readonly infoText?: string;
     }
   | {
@@ -524,6 +547,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   const [agentModels, setAgentModels] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [thinking, setThinking] = useState<ThinkingEffort>(activeAgent.thinkingEffort);
   const [mode, setMode] = useState<Mode>(activeAgent.mode);
+  const [atlasMode, setAtlasMode] = useState<AtlasPowerMode>(props.config?.atlasMode ?? 'full');
   const [autopilotConsented, setAutopilotConsented] = useState(false);
   const [provider, setProvider] = useState<Provider | null>(props.provider);
   /** Tracks which provider kind is currently driving chat. Drives the
@@ -566,6 +590,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
   useEffect(() => {
     activeTaskRef.current = activeTask;
   }, [activeTask]);
+
+  useEffect(() => {
+    setAtlasMode(props.config?.atlasMode ?? 'full');
+  }, [props.config?.atlasMode]);
 
   const pickCheapestModel = useCallback((): string => {
     const ranked = availableModelIds.find((id) => /(mini|flash|haiku|kimi|nano|lite)/i.test(id));
@@ -3799,10 +3827,14 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
 
   const onSetupMenuPick = useCallback(
     async (
-      target: 'openrouter' | 'anthropic' | 'claude-code' | 'chatgpt' | 'github' | 'mcp' | 'ship'
+      target: 'openrouter' | 'anthropic' | 'claude-code' | 'chatgpt' | 'github' | 'mcp' | 'ship' | 'atlas-power'
     ) => {
       if (target === 'ship') {
         setOverlay({ kind: 'setup', stage: 'ship', draftKey: '', target: 'ship' });
+        return;
+      }
+      if (target === 'atlas-power') {
+        setOverlay({ kind: 'setup', stage: 'atlas-power', draftKey: '', target });
         return;
       }
       if (target === 'openrouter' || target === 'anthropic') {
@@ -3849,6 +3881,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           defaultProvider: 'openrouter',
           defaultModel: model,
           fallbackModels: [],
+          atlasMode: 'full',
           providers: {
             openrouter: { baseUrl: 'https://openrouter.ai/api/v1', title: 'Atlas CLI', apiKeys: [], customModels: [] },
             anthropic: {
@@ -3951,6 +3984,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
       defaultProvider: 'openrouter',
       defaultModel: model,
       fallbackModels: [],
+      atlasMode: 'full',
       providers: {
         openrouter: {
           baseUrl: 'https://openrouter.ai/api/v1',
@@ -4215,6 +4249,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
         agent={activeAgent}
         model={model}
         modelProvider={activeProviderKind}
+        atlasMode={atlasMode}
         mode={mode}
         thinking={thinking}
         usage={usage}
@@ -4409,7 +4444,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                   if (hit) {
                     usedIds.add(hit.id);
                     const label = hit.label !== hit.id ? `${hit.id} — ${hit.label}` : hit.id;
-                    popularHere.push({ id: hit.id, label });
+                    popularHere.push({ id: hit.id, label: withPromptCacheLabel(label, hit) });
                   } else if (
                     // Only add fallback when the pin id isn't going to
                     // collide with a catalog entry (would create the
@@ -4418,7 +4453,10 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                     // above would have matched it already.
                     !catalogList.some((m) => m.id === pat.fallback)
                   ) {
-                    popularHere.push({ id: pat.fallback, label: pat.fallback });
+                    popularHere.push({
+                      id: pat.fallback,
+                      label: withPromptCacheLabel(pat.fallback, undefined)
+                    });
                   }
                 }
                 if (popularHere.length > 0) {
@@ -4440,15 +4478,16 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 const rest = new Map<string, string>();
                 for (const m of catalogList) {
                   if (groupSeen.has(m.id)) continue;
-                  rest.set(m.id, m.label !== m.id ? `${m.id} — ${m.label}` : m.id);
+                  const label = m.label !== m.id ? `${m.id} — ${m.label}` : m.id;
+                  rest.set(m.id, withPromptCacheLabel(label, m));
                 }
                 for (const id of seedHere) {
                   if (groupSeen.has(id) || rest.has(id)) continue;
-                  rest.set(id, id);
+                  rest.set(id, withPromptCacheLabel(id, undefined));
                 }
                 for (const id of customsHere) {
                   if (groupSeen.has(id) || rest.has(id)) continue;
-                  rest.set(id, id);
+                  rest.set(id, withPromptCacheLabel(id, undefined));
                 }
                 const sorted = [...rest.entries()].sort(([a], [b]) => a.localeCompare(b));
                 for (const [id, lbl] of sorted) addEntry(id, lbl);
@@ -4456,7 +4495,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 const sorted = [...catalogList].sort((a, b) => a.id.localeCompare(b.id));
                 for (const m of sorted) {
                   const lbl = m.label !== m.id ? `${m.id} — ${m.label}` : m.id;
-                  addEntry(m.id, lbl);
+                  addEntry(m.id, withPromptCacheLabel(lbl, m));
                 }
               }
             }
@@ -4467,7 +4506,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               items.push({
                 kind: 'item',
                 key: `s:${props.defaultModel}`,
-                label: props.defaultModel,
+                label: withPromptCacheLabel(props.defaultModel, undefined),
                 value: props.defaultModel
               });
             }
@@ -5710,6 +5749,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                 const hasChatGpt = Boolean(props.providers?.['openai-codex']);
                 const hasGithub = Boolean(cfg?.github?.token);
                 const mcpCount = cfg?.mcp?.servers?.length ?? 0;
+                const atlasSpec = ATLAS_POWER_MODE_SPECS[atlasMode];
                 // Sentinel \u0001 separates the action label from the
                 // status note; SetupMenuItem renders the suffix green.
                 const tag = (on: boolean, note = 'connected'): string =>
@@ -5734,6 +5774,11 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
                     key: 'chatgpt',
                     label: `Sign in with ChatGPT (browser, Codex)${tag(hasChatGpt)}`,
                     value: 'chatgpt' as const
+                  },
+                  {
+                    key: 'atlas-power',
+                    label: `Atlas power mode  (Full / Smart)${tag(true, `${atlasSpec.label}`)}`,
+                    value: 'atlas-power' as const
                   },
                   {
                     key: 'github',
@@ -5825,6 +5870,77 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           </Box>
         </Box>
       )}
+      {overlay.kind === 'setup' && overlay.stage === 'atlas-power' && (() => {
+        const currentMode: AtlasPowerMode = atlasMode;
+        return (
+          <Box
+            flexDirection="column"
+            borderStyle="double"
+            borderColor="cyan"
+            paddingX={1}
+            marginY={1}
+          >
+            <Text color="cyan" bold>
+              ⚙  Atlas power mode
+            </Text>
+            <Box marginTop={1} flexDirection="column">
+              {ATLAS_POWER_MODE_ORDER.map((mode, i) => {
+                const spec = ATLAS_POWER_MODE_SPECS[mode];
+                const active = currentMode === mode;
+                return (
+                  <Box key={mode} flexDirection="column" marginBottom={1}>
+                    <Text color={active ? 'cyan' : undefined}>
+                      {`  ${active ? '●' : '○'} [${i + 1}] ${spec.label}`}
+                    </Text>
+                    <Text color="gray">{`      cost: ${spec.costEstimate}`}</Text>
+                    <Text color="gray">{`      pros: ${spec.pros}`}</Text>
+                    <Text color="gray">{`      cons: ${spec.cons}`}</Text>
+                  </Box>
+                );
+              })}
+              <Text color="gray">
+                {'Model picker rows show [cache yes], [cache unknown], or [cache no]. Prefer cache yes for cheaper repeat turns.'}
+              </Text>
+            </Box>
+            <Box marginTop={1}>
+              <SelectInput
+                items={ATLAS_POWER_MODE_ORDER.map((mode, i) => ({
+                  key: mode,
+                  label: `[${i + 1}] ${ATLAS_POWER_MODE_SPECS[mode].label}`,
+                  value: mode
+                }))}
+                onSelect={(item) => {
+                  if (!isAtlasPowerMode(item.value)) return;
+                  const baseCfg = props.config;
+                  if (!baseCfg) {
+                    pushItem('error', 'no config loaded — cannot change Atlas power mode');
+                    closeOverlay();
+                    return;
+                  }
+                  const next: AtlasConfig = { ...baseCfg, atlasMode: item.value };
+                  void saveConfig(next).then((r) => {
+                    if (!r.ok) {
+                      pushItem('error', `save failed: ${r.error.message}`);
+                      return;
+                    }
+                    setAtlasMode(item.value);
+                    pushItem(
+                      'system',
+                      `Atlas power mode set to ${ATLAS_POWER_MODE_SPECS[item.value].label}.`
+                    );
+                  });
+                  closeOverlay();
+                }}
+              />
+            </Box>
+            <Box marginTop={1}>
+              <Text color="gray" dimColor>
+                ↵ save · Esc close (saved to ~/.atlas/config.yaml)
+              </Text>
+            </Box>
+          </Box>
+        );
+      })()}
       {overlay.kind === 'setup' && overlay.stage === 'ship' && (
         <Box
           flexDirection="column"
@@ -5994,6 +6110,7 @@ const Header = ({
   agent,
   model,
   modelProvider,
+  atlasMode,
   mode,
   thinking,
   usage,
@@ -6007,6 +6124,7 @@ const Header = ({
   agent: Agent;
   model: string;
   modelProvider: ProviderKindLabel;
+  atlasMode: AtlasPowerMode;
   mode: Mode;
   thinking: ThinkingEffort;
   usage: {
@@ -6045,6 +6163,11 @@ const Header = ({
   const compactModel = width < 60 && model.length > 14
     ? model.slice(0, 12) + '…'
     : model;
+  const atlasModeLabel = atlasMode === 'smart' ? 'ATLAS SMART' : 'ATLAS POWER';
+  const compactAtlasModeLabel = width < 72
+    ? atlasModeLabel.replace('ATLAS ', '')
+    : atlasModeLabel;
+  const atlasModeColor = atlasMode === 'smart' ? palette.neonSmart : palette.neonPower;
 
   return (
     <Box borderStyle="round" borderColor="gray" paddingX={1} marginBottom={0}>
@@ -6055,6 +6178,8 @@ const Header = ({
         {showPersonaAlias && agent.personaAlias && (
           <Text color="gray" wrap="truncate-end"> ({agent.personaAlias})</Text>
         )}
+        <Text color="gray"> · </Text>
+        <Text color={atlasModeColor} bold>{compactAtlasModeLabel}</Text>
         <Text color="gray"> · </Text>
         <Text color="white" wrap="truncate-end">{compactModel}</Text>
         <Text color={providerColor(modelProvider)}> [{providerShortLabel(modelProvider)}]</Text>
@@ -6632,13 +6757,34 @@ const GroupedPicker = ({
   readonly limit: number;
   readonly onSelect: (item: { value: string }) => void;
 }): React.JSX.Element => {
+  const [filter, setFilter] = useState('');
+  const filteredItems = useMemo(() => {
+    if (filter.length === 0) return items;
+    const q = filter.toLowerCase();
+    const out: PickerEntry[] = [];
+    let pendingHeader: PickerEntry | null = null;
+    for (const e of items) {
+      if (e.kind === 'header') {
+        pendingHeader = e;
+        continue;
+      }
+      if (e.label.toLowerCase().includes(q) || e.value.toLowerCase().includes(q)) {
+        if (pendingHeader) {
+          out.push(pendingHeader);
+          pendingHeader = null;
+        }
+        out.push(e);
+      }
+    }
+    return out;
+  }, [items, filter]);
   const itemEntryIdx = useMemo(() => {
     const out: number[] = [];
-    items.forEach((e, i) => {
+    filteredItems.forEach((e, i) => {
       if (e.kind === 'item') out.push(i);
     });
     return out;
-  }, [items]);
+  }, [filteredItems]);
   const [cursor, setCursor] = useState(0);
   const cur = itemEntryIdx.length === 0 ? 0 : Math.min(cursor, itemEntryIdx.length - 1);
   const cursorEntry = itemEntryIdx[cur] ?? 0;
@@ -6657,14 +6803,24 @@ const GroupedPicker = ({
       winStart -= 1;
     }
   }
-  winStart = Math.max(0, Math.min(winStart, Math.max(0, items.length - effLimit)));
+  winStart = Math.max(0, Math.min(winStart, Math.max(0, filteredItems.length - effLimit)));
   if (winStart !== start) {
     // Defer state update; React tolerates render-time setState only when
     // it's the same value, but we want to persist the clamp.
     queueMicrotask(() => setStart(winStart));
   }
-  const winEnd = Math.min(items.length, winStart + effLimit);
-  useInput((_char, key) => {
+  const winEnd = Math.min(filteredItems.length, winStart + effLimit);
+  useInput((char, key) => {
+    if (key.backspace || key.delete) {
+      setFilter((prev) => prev.slice(0, -1));
+      setCursor(0);
+      return;
+    }
+    if (char.length === 1 && !key.ctrl && !key.meta && char.charCodeAt(0) >= 0x20) {
+      setFilter((prev) => prev + char);
+      setCursor(0);
+      return;
+    }
     if (itemEntryIdx.length === 0) return;
     if (key.upArrow) {
       setCursor((p) => (p <= 0 ? itemEntryIdx.length - 1 : p - 1));
@@ -6673,18 +6829,24 @@ const GroupedPicker = ({
     } else if (key.return) {
       const idx = itemEntryIdx[cur];
       if (idx === undefined) return;
-      const e = items[idx];
+      const e = filteredItems[idx];
       if (e && e.kind === 'item') onSelect({ value: e.value });
     }
   });
   return (
     <Box flexDirection="column">
+      <Text color="gray" dimColor>
+        {filter.length > 0 ? `search: ${filter}_` : 'search: type to filter'}
+      </Text>
+      {filter.length > 0 && itemEntryIdx.length === 0 && (
+        <Text color="yellow">{`no matches for "${filter}"`}</Text>
+      )}
       {winStart > 0 && (
         <Text color="gray" dimColor>
           ↑ {winStart} above
         </Text>
       )}
-      {items.slice(winStart, winEnd).map((e, i) => {
+      {filteredItems.slice(winStart, winEnd).map((e, i) => {
         const idx = winStart + i;
         if (e.kind === 'header') {
           return (
@@ -6704,9 +6866,9 @@ const GroupedPicker = ({
           </Text>
         );
       })}
-      {winEnd < items.length && (
+      {winEnd < filteredItems.length && (
         <Text color="gray" dimColor>
-          ↓ {items.length - winEnd} below
+          ↓ {filteredItems.length - winEnd} below
         </Text>
       )}
     </Box>
@@ -6783,7 +6945,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'thinking', args: 'off|low|medium|high|xhigh', summary: 'set reasoning effort (model-aware)' },
   { name: 'config', summary: 'open the config menu (API keys, OAuth, integrations)' },
   { name: 'mcps', args: '[add|enable <name>|disable <name>|remove <name>]', summary: 'list / add / toggle / remove MCP servers' },
-  { name: 'sessions', args: '[id]', summary: 'list / resume saved sessions' },
+  { name: 'sessions', args: '[id]', summary: 'list / resume / rename / bulk-delete saved sessions' },
   { name: 'resume', args: '[id]', summary: 'resume a session (alias of /sessions)' },
   { name: 'compact', args: '[now|status|on|off|model [id]|threshold <0..1>]', summary: 'auto-compaction controls' },
   { name: 'learn', args: '[on|off|status]', summary: 'self-improvement loop: distill the current turn into a learned skill' },

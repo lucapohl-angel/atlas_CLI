@@ -158,10 +158,31 @@ Optional config:
 ```yaml
 defaultProvider: openrouter
 defaultModel: anthropic/claude-sonnet-4.5
+atlasMode: smart  # full | smart
 providers:
   openrouter:
     apiKey: sk-or-...
 ```
+
+### Hosted Atlas Modes
+
+Open `/config -> Atlas power mode` to choose how Atlas presents the hosted
+provider cost posture.
+
+| Mode | Cost Estimate | Pros | Cons |
+|---|---|---|---|
+| Atlas Power Full | roughly 100k-250k input tokens on heavy turns before cache; cache-capable models make repeat turns much cheaper | maximum Atlas context, tools, MCP, hooks, and predictable behavior | no-cache models rebill the full prefix each message |
+| Atlas Smart Mode | roughly 20k-80k input tokens on normal hosted turns; complex turns can still pay Full Atlas costs | cost-aware default for daily hosted work; favors cache-friendly model choices | adaptive strategy; very complex work may still need the full prompt/tool surface |
+
+The active mode is also shown in the TUI top bar: `ATLAS POWER` uses a bright
+red badge, and `ATLAS SMART` uses a bright green badge.
+
+The model picker marks each catalog row with `cache: yes (cheaper)`,
+`cache: unknown`, or `cache: no`. OpenRouter rows are sourced from the live
+`/models` response cache-pricing fields, so DeepSeek, Kimi/Moonshot, Gemini,
+OpenAI, Anthropic, and other cache-priced routes are labeled from provider data.
+Prefer cache-capable routes when you want Full Atlas power with lower repeat-turn
+cost.
 
 ### Project Bootstrap
 
@@ -288,6 +309,12 @@ Experienced-user tweaks:
 
 - Providers: edit `~/.atlas/config.yaml`, set provider env vars, or use
   `/config` in the TUI.
+- Hosted cost mode: use `/config -> Atlas power mode` to switch between Atlas
+  Power Full and Atlas Smart Mode. The top bar shows `ATLAS POWER` in bright
+  red or `ATLAS SMART` in bright green, and model rows show cache support when
+  known.
+- Model switching: use `/models`, then type in the search field to filter long
+  provider catalogs by model id or label.
 - Local models: use `/config -> Local models` to choose Lite, Hybrid, or Full
   Atlas mode for Ollama / LM Studio / vLLM.
 - MCP servers: use `/mcps` and `/mcps add` in the TUI, or edit
@@ -298,7 +325,9 @@ Experienced-user tweaks:
   to inspect or toggle them.
 - Models: use `/model`, `/config`, or `defaultModel` / `fallbackModels` in
   `~/.atlas/config.yaml`.
-- Sessions: use `/sessions` to resume, rename, or delete saved transcripts.
+- Sessions: use `/sessions` to resume, rename, start fresh, delete one saved
+  transcript, select several for deletion, or delete all saved sessions with a
+  confirmation prompt.
 
 ---
 

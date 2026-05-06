@@ -78,6 +78,24 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
 ```
 
+Hosted model cost posture is configurable from `/config -> Atlas power mode`.
+
+| Mode | Cost Estimate | Pros | Cons |
+|---|---|---|---|
+| Atlas Power Full | roughly 100k-250k input tokens on heavy turns before cache; cache-capable models make repeat turns cheaper | maximum Atlas context, tools, MCP, hooks, and predictable behavior | no-cache models rebill the full prefix each message |
+| Atlas Smart Mode | roughly 20k-80k input tokens on normal hosted turns; complex turns can still pay Full Atlas costs | cost-aware default for daily hosted work | very complex work may still need the full prompt/tool surface |
+
+The active hosted mode is visible in the TUI top bar as `ATLAS POWER` in bright
+red or `ATLAS SMART` in bright green.
+
+The model picker writes cache support beside provider-pulled models as
+`cache yes`, `cache unknown`, or `cache no` so cheaper cache-capable models are
+easy to spot. OpenRouter rows use the live `/models` cache-pricing fields, and
+`/models` includes a search field for filtering long provider catalogs.
+
+Saved sessions are managed from `/sessions`: resume, rename, start fresh,
+delete one, select several for deletion, or delete all with confirmation.
+
 Local models work through Ollama, LM Studio, vLLM, or any local
 OpenAI-compatible `/v1` server. Atlas auto-detects Ollama at
 `http://localhost:11434/v1`; use `/config -> Local models` to choose Lite,

@@ -16,12 +16,26 @@ describe('fetchOpenRouterModels', () => {
           id: 'anthropic/claude-opus-4.7',
           name: 'Claude Opus 4.7',
           context_length: 200_000,
-          supported_parameters: ['temperature', 'tools', 'reasoning']
+          supported_parameters: ['temperature', 'tools', 'reasoning'],
+          pricing: { prompt: '0.0000015', completion: '0.000075', input_cache_read: '0.00000015' }
         },
         {
           id: 'openai/gpt-4o-mini',
           name: 'GPT-4o mini',
-          supported_parameters: ['temperature', 'tools']
+          supported_parameters: ['temperature', 'tools', 'prompt_cache_key'],
+          pricing: { prompt: '0.00000015', completion: '0.0000006' }
+        },
+        {
+          id: 'deepseek/deepseek-v4-pro',
+          name: 'DeepSeek V4 Pro',
+          supported_parameters: ['temperature', 'tools', 'reasoning'],
+          pricing: { prompt: '0.000000435', completion: '0.00000087', input_cache_read: '0.000000003625' }
+        },
+        {
+          id: 'qwen/qwen3.5-plus-20260420',
+          name: 'Qwen 3.5 Plus',
+          supported_parameters: ['temperature', 'tools'],
+          pricing: { prompt: '0.0000004', completion: '0.0000024' }
         }
       ]
     });
@@ -30,8 +44,14 @@ describe('fetchOpenRouterModels', () => {
     if (!r.ok) return;
     const opus = r.value.find((m) => m.id === 'anthropic/claude-opus-4.7');
     const gpt = r.value.find((m) => m.id === 'openai/gpt-4o-mini');
+    const deepseek = r.value.find((m) => m.id === 'deepseek/deepseek-v4-pro');
+    const qwen = r.value.find((m) => m.id === 'qwen/qwen3.5-plus-20260420');
     expect(opus?.thinking).toEqual(['off', 'low', 'medium', 'high']);
     expect(gpt?.thinking).toEqual(['off']);
+    expect(opus?.promptCache).toBe('supported');
+    expect(gpt?.promptCache).toBe('supported');
+    expect(deepseek?.promptCache).toBe('supported');
+    expect(qwen?.promptCache).toBe('unsupported');
     expect(opus?.contextWindow).toBe(200_000);
   });
 
@@ -44,8 +64,8 @@ describe('fetchOpenRouterModels', () => {
 
 describe('thinkingLevelsFor', () => {
   const catalog: ModelInfo[] = [
-    { id: 'anthropic/claude-opus-4.7', label: '', thinking: ['off', 'low', 'medium', 'high', 'xhigh'], provider: 'openrouter' },
-    { id: 'claude-haiku-4-5', label: '', thinking: ['off', 'low', 'medium'], provider: 'anthropic' }
+    { id: 'anthropic/claude-opus-4.7', label: '', thinking: ['off', 'low', 'medium', 'high', 'xhigh'], promptCache: 'supported', provider: 'openrouter' },
+    { id: 'claude-haiku-4-5', label: '', thinking: ['off', 'low', 'medium'], promptCache: 'supported', provider: 'anthropic' }
   ];
   it('exact match', () => {
     expect(thinkingLevelsFor('anthropic/claude-opus-4.7', catalog)).toEqual([

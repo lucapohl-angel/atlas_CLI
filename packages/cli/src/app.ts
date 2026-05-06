@@ -12,7 +12,6 @@ import { runStatus } from './commands/status.js';
 import { runSearxng } from './commands/searxng.js';
 import { runVscodeSetup } from './commands/vscode-setup.js';
 import { runRepl } from './repl/repl.js';
-import { runTui } from './tui/runTui.js';
 
 const log = childLogger('cli');
 
@@ -103,6 +102,7 @@ export const buildProgram = (): Command => {
           tuiOpts.resume = typeof opts.resume === 'string' ? opts.resume : 'latest';
         }
         if (opts.ui === 'opentui' || opts.ui === 'ink') tuiOpts.ui = opts.ui;
+        const { runTui } = await import('./tui/runTui.js');
         const { exitCode } = await runTui(tuiOpts);
         if (exitCode !== 0) process.exitCode = exitCode;
       }

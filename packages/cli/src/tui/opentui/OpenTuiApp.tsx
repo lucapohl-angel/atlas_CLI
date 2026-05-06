@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   allowAllPolicy,
+  ATLAS_POWER_MODE_SPECS,
   saveLearnedSkill,
   ATLAS_VERSION,
   buildSystemPrompt,
@@ -69,6 +70,7 @@ import {
   type AgentRegistry,
   type ApprovalDecision,
   type ApprovalPolicy,
+  type AtlasPowerMode,
   type AtlasConfig,
   type HookRegistry,
   type InteractionRequest,
@@ -630,11 +632,14 @@ type OverlayKind =
   | 'config-mcp-add-confirm'
   | 'config-mcp-custom'
   | 'config-ship'
+  | 'config-atlas-power'
   | 'config-info'
   | 'mcps-manage'
   | 'mcps-actions'
   | 'sessions-list'
   | 'sessions-actions'
+  | 'sessions-delete-select'
+  | 'sessions-delete-confirm'
   | 'option-picker'
   | 'option-freeform'
   | 'tools-list'
@@ -1113,7 +1118,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'thinking', summary: 'set reasoning effort (model-aware)' },
   { name: 'config', summary: 'open the config menu (API keys, OAuth, integrations)' },
   { name: 'mcps', summary: 'list / add / enable / disable MCP servers' },
-  { name: 'sessions', summary: 'list saved sessions (use /resume <id> to restore)' },
+  { name: 'sessions', summary: 'list, resume, rename, or bulk-delete saved sessions' },
   { name: 'resume', summary: 'resume a session by id' },
   { name: 'compact', summary: 'auto-compaction status' },
   { name: 'learn', summary: 'distill current turn into a skill (use `/learn force` to override the heuristic)' },
@@ -1140,9 +1145,25 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
 const NOT_YET_PORTED = new Set<string>([]);
 
 const LOCAL_TOOL_MODE_ORDER: readonly LocalProviderToolMode[] = ['lite', 'hybrid', 'full'];
+const ATLAS_POWER_MODE_ORDER: readonly AtlasPowerMode[] = ['full', 'smart'];
 
 const isLocalProviderToolMode = (value: string): value is LocalProviderToolMode =>
   LOCAL_TOOL_MODE_ORDER.some((mode) => mode === value);
+
+const isAtlasPowerMode = (value: string): value is AtlasPowerMode =>
+  ATLAS_POWER_MODE_ORDER.some((mode) => mode === value);
+
+const promptCacheLabel = (model: ModelInfo | undefined): string => {
+  switch (model?.promptCache) {
+    case 'supported':
+      return 'cache: yes (cheaper)';
+    case 'unsupported':
+      return 'cache: no';
+    case 'unknown':
+    default:
+      return 'cache: unknown';
+  }
+};
 
 const providerTagFor = (
   model: string,
@@ -1185,6 +1206,7 @@ const saveProviderKey = async (
     defaultProvider: target,
     defaultModel: target === 'anthropic' ? 'claude-sonnet-4-5' : 'anthropic/claude-sonnet-4-5',
     fallbackModels: [],
+    atlasMode: 'full',
     providers: {
       openrouter: {
         baseUrl: 'https://openrouter.ai/api/v1',
@@ -1351,6 +1373,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // action overlay (`sessions-actions`) to know which session to
   // resume/rename/delete.
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
+  const [markedSessionIds, setMarkedSessionIds] = useState<readonly string[]>([]);
+  const [pendingDeleteSessionIds, setPendingDeleteSessionIds] = useState<readonly string[]>([]);
   // Active session id + title shown in the header. Initially seeded
   // from `props.initialSession` (when atlas was launched with
   // `--resume`/`--continue`); updated on resume from the modal and
@@ -1417,6 +1441,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     props.initialAgentName ?? null
   );
   const [activeModel, setActiveModel] = useState<string>(props.defaultModel);
+  const [activeAtlasMode, setActiveAtlasMode] = useState<AtlasPowerMode>(
+    props.config?.atlasMode ?? 'full'
+  );
   // Live provider runtime — switched whenever the user picks a model
   // from a different vendor (e.g. /model gpt-5.5 with Codex OAuth
   // configured swaps from Anthropic to Codex). Without this state
@@ -1707,6 +1734,10 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     return props.agents.get('atlas') ?? list[0] ?? null;
   }, [props.agents, activeAgentName]);
 
+  useEffect(() => {
+    setActiveAtlasMode(props.config?.atlasMode ?? 'full');
+  }, [props.config?.atlasMode]);
+
   // Switchable agents — mirrors the Ink TUI rule (App.tsx § switchableAgents):
   // the orchestrator (`atlas`) plus every user-added (non-framework) agent.
   // Framework specialists (Athena/Prometheus/…) are routed to by `atlas`,
@@ -1784,8 +1815,12 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
 
     const out: GroupedPickerEntry[] = [];
     const seenValues = new Set<string>();
-    const ctxLabel = (m: ModelInfo): string =>
-      m.contextWindow ? `${m.provider} \u00b7 ${Math.round(m.contextWindow / 1000)}k` : m.provider;
+    const ctxLabel = (m: ModelInfo): string => {
+      const parts: string[] = [m.provider];
+      if (m.contextWindow) parts.push(`${Math.round(m.contextWindow / 1000)}k`);
+      parts.push(promptCacheLabel(m));
+      return parts.join(' · ');
+    };
 
     for (const grp of groupOrder) {
       // Skip provider sections that have no live runtime AND no
@@ -1931,7 +1966,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           });
           for (const p of popularPicks) {
             const m = catalogList.find((c) => c.id === p.id);
-            addItem(p.id, p.label, m ? ctxLabel(m) : 'popular', true);
+            addItem(p.id, p.label, m ? ctxLabel(m) : 'popular · cache: unknown', true);
           }
         }
         // Rest of OpenRouter \u2014 catalog \u222a seed \u222a customs, alphabetised.
@@ -1945,11 +1980,11 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         }
         for (const id of seedHere) {
           if (groupSeen.has(id) || rest.has(id)) continue;
-          rest.set(id, { label: id, desc: 'seed' });
+          rest.set(id, { label: id, desc: 'seed · cache: unknown' });
         }
         for (const id of customsHere) {
           if (groupSeen.has(id) || rest.has(id)) continue;
-          rest.set(id, { label: id, desc: 'custom' });
+          rest.set(id, { label: id, desc: 'custom · cache: unknown' });
         }
         const sorted = [...rest.entries()].sort(([a], [b]) => a.localeCompare(b));
         for (const [id, meta] of sorted) addItem(id, meta.label, meta.desc);
@@ -1976,7 +2011,13 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       ]);
       for (const id of seed) {
         if (!id) continue;
-        out.push({ kind: 'item', key: `seed:${id}`, label: id, value: id });
+        out.push({
+          kind: 'item',
+          key: `seed:${id}`,
+          label: id,
+          value: id,
+          description: 'seed · cache: unknown'
+        });
       }
     }
     return out;
@@ -2460,6 +2501,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               }
               setSessionList(arr);
               setSelectedSession(null);
+              setMarkedSessionIds([]);
+              setPendingDeleteSessionIds([]);
               setOverlay('sessions-list');
             } catch (e) {
               pushItem('error', `sessions: ${(e as Error).message}`);
@@ -3625,6 +3668,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           historyMessages: messagesRef.current.length,
           registeredTools: props.tools.list().length,
           supportsToolCalling: activeProvider.supportsToolCalling !== false,
+          atlasMode: props.config?.atlasMode ?? 'full',
           localToolMode: props.config?.providers.local.toolMode ?? null
         },
         'opentui starting agent loop'
@@ -4358,6 +4402,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         }
         model={activeModel}
         providerTag={providerTagFor(activeModel, props.modelCatalog)}
+        atlasMode={activeAtlasMode}
         mode={mode}
         thinking={thinking}
         streaming={streaming}
@@ -4685,7 +4730,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             title="select model"
             entries={modelEntries}
             initialValue={activeModel}
-            hint="↑/↓ navigate · ★ popular · ↵ choose · Esc cancel"
+            hint="type to filter · ↑/↓ navigate · ★ popular · ↵ choose · Ctrl-U clear · Esc cancel"
             onChoose={(v) => {
               if (switchToModel(v)) {
                 pushItem('system', `→ model: ${v}`);
@@ -4847,6 +4892,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               const hasLocal = Boolean(props.providers?.local);
               const hasGithub = Boolean(cfg?.github?.token);
               const mcpCount = cfg?.mcp?.servers?.length ?? 0;
+              const atlasSpec = ATLAS_POWER_MODE_SPECS[activeAtlasMode];
               // Only show a description when the slot is connected;
               // disconnected items render with no badge so the green
               // ● connected reads cleanly. Mirrors the Ink TUI's
@@ -4874,6 +4920,11 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                   value: 'chatgpt',
                   label: 'Sign in with ChatGPT (browser, Codex)',
                   description: tag(hasChatGpt)
+                },
+                {
+                  value: 'atlas-power',
+                  label: 'Atlas power mode  (Full / Smart)',
+                  description: `● ${atlasSpec.label} · ${atlasSpec.costEstimate}`
                 },
                 {
                   value: 'local',
@@ -4933,6 +4984,10 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                 setOverlay('config-info');
                 return;
               }
+              if (v === 'atlas-power') {
+                setOverlay('config-atlas-power');
+                return;
+              }
               if (v === 'local') {
                 setOverlay('config-local');
                 return;
@@ -4958,6 +5013,86 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             onCancel={() => setOverlay(null)}
           />
         ) : null}
+        {overlay === 'config-atlas-power' ? (() => {
+          const currentMode: AtlasPowerMode = activeAtlasMode;
+          const modeInfo = ATLAS_POWER_MODE_ORDER.map((mode) => {
+            const spec = ATLAS_POWER_MODE_SPECS[mode];
+            return `${spec.label}
+  Cost: ${spec.costEstimate}
+  Pros: ${spec.pros}
+  Cons: ${spec.cons}`;
+          }).join('\n\n');
+          return (
+            <Picker
+              title="⚙  Atlas power mode"
+              descriptionColor={palette.success}
+              options={[
+                ...ATLAS_POWER_MODE_ORDER.map((mode): PickerOption => {
+                  const spec = ATLAS_POWER_MODE_SPECS[mode];
+                  return {
+                    value: `mode:${mode}`,
+                    label: `${currentMode === mode ? '[ACTIVE] ' : '[ ] '}${spec.label}`,
+                    description: `cost: ${spec.costEstimate}; pro: ${spec.pros}; con: ${spec.cons}`
+                  };
+                }),
+                {
+                  value: 'info',
+                  label: 'mode specs and cache guidance',
+                  description: 'use cache: yes models for cheaper repeated Full Atlas prompts'
+                },
+                { value: '__cancel', label: 'back', description: '' }
+              ]}
+              hint="↵ select · Esc back"
+              onChoose={(action) => {
+                if (action === '__cancel') {
+                  setOverlay('config');
+                  return;
+                }
+                if (action === 'info') {
+                  setInfoOverlay({
+                    title: 'Atlas power modes',
+                    body: `${modeInfo}
+
+Model picker cache labels:
+  cache: yes (cheaper)  provider reports or strongly supports prompt caching
+  cache: unknown        provider route may vary
+  cache: no             repeated prompt prefixes are billed normally
+
+Config file: ~/.atlas/config.yaml
+  atlasMode: ${currentMode}  # full | smart`,
+                    tone: 'info'
+                  });
+                  setOverlay('config-info');
+                  return;
+                }
+                if (action.startsWith('mode:')) {
+                  const mode = action.slice('mode:'.length);
+                  if (!isAtlasPowerMode(mode)) return;
+                  void (async () => {
+                    const current = props.config;
+                    if (!current) {
+                      pushItem('error', 'no config loaded — cannot change Atlas power mode');
+                      return;
+                    }
+                    const next: AtlasConfig = { ...current, atlasMode: mode };
+                    const r = await saveConfig(next);
+                    if (!r.ok) {
+                      pushItem('error', `save failed: ${r.error.message}`);
+                      return;
+                    }
+                    setActiveAtlasMode(mode);
+                    pushItem(
+                      'system',
+                      `✓ Atlas power mode set to ${ATLAS_POWER_MODE_SPECS[mode].label} — saved to ~/.atlas/config.yaml`
+                    );
+                    setOverlay(null);
+                  })();
+                }
+              }}
+              onCancel={() => setOverlay('config')}
+            />
+          );
+        })() : null}
         {overlay === 'config-action-openrouter' ? (
           <Picker
             title="⚙  OpenRouter — already connected"
@@ -5794,6 +5929,16 @@ Config file: ~/.atlas/config.yaml
                 label: '+ new session',
                 description: 'clear transcript and start fresh'
               });
+              opts.push({
+                value: '__delete_select__',
+                label: 'select sessions to delete',
+                description: 'mark multiple saved sessions, then delete together'
+              });
+              opts.push({
+                value: '__delete_all__',
+                label: 'delete all sessions',
+                description: `remove all ${sessionList.length} saved session${sessionList.length === 1 ? '' : 's'}`
+              });
               return opts;
             })()}
             hint="↵ pick · Esc back"
@@ -5807,6 +5952,17 @@ Config file: ~/.atlas/config.yaml
                 transcriptKey.current += 1;
                 pushItem('system', '✦ new session — transcript cleared.');
                 setOverlay(null);
+                return;
+              }
+              if (value === '__delete_select__') {
+                setMarkedSessionIds([]);
+                setPendingDeleteSessionIds([]);
+                setOverlay('sessions-delete-select');
+                return;
+              }
+              if (value === '__delete_all__') {
+                setPendingDeleteSessionIds(sessionList.map((s) => s.id));
+                setOverlay('sessions-delete-confirm');
                 return;
               }
               setSelectedSession(value);
@@ -5884,24 +6040,146 @@ Config file: ~/.atlas/config.yaml
                 return;
               }
               if (action === 'delete') {
-                setOverlay(null);
-                void (async () => {
-                  try {
-                    const r = await store.remove(target);
-                    if (!r.ok) {
-                      pushItem('error', `delete failed: ${r.error.message}`);
-                      return;
-                    }
-                    setSessionList((prev) => prev.filter((s) => s.id !== target));
-                    pushItem('system', `✦ deleted session ${target}`);
-                  } catch (e) {
-                    pushItem('error', `delete failed: ${(e as Error).message}`);
-                  }
-                })();
+                setPendingDeleteSessionIds([target]);
+                setOverlay('sessions-delete-confirm');
                 return;
               }
             }}
             onCancel={() => setOverlay('sessions-list')}
+          />
+        ) : null}
+        {overlay === 'sessions-delete-select' ? (
+          <Picker
+            title={`delete sessions · ${markedSessionIds.length}/${sessionList.length} selected`}
+            descriptionColor={palette.warning}
+            options={(() => {
+              const marked = new Set(markedSessionIds);
+              const opts: PickerOption[] = [
+                {
+                  value: '__delete_selected__',
+                  label: `delete selected (${markedSessionIds.length})`,
+                  description: markedSessionIds.length > 0 ? 'confirm before removing from disk' : 'mark at least one session first'
+                },
+                {
+                  value: '__select_all__',
+                  label: `select all ${sessionList.length}`,
+                  description: 'mark every saved session'
+                },
+                {
+                  value: '__clear__',
+                  label: 'clear selection',
+                  description: markedSessionIds.length > 0 ? 'unmark all sessions' : ''
+                }
+              ];
+              for (const s of sessionList.slice(0, 50)) {
+                const checked = marked.has(s.id);
+                const when = typeof s.updatedAt === 'string'
+                  ? s.updatedAt.slice(0, 19).replace('T', ' ')
+                  : '';
+                opts.push({
+                  value: `toggle:${s.id}`,
+                  label: `${checked ? '[x]' : '[ ]'} ${(s.title ?? s.id).padEnd(28)}`,
+                  description: when
+                });
+              }
+              opts.push({ value: '__back__', label: 'back to sessions', description: '' });
+              return opts;
+            })()}
+            hint="↵ toggle/apply · Esc back"
+            onChoose={(value) => {
+              if (value === '__back__') {
+                setOverlay('sessions-list');
+                return;
+              }
+              if (value === '__select_all__') {
+                setMarkedSessionIds(sessionList.map((s) => s.id));
+                return;
+              }
+              if (value === '__clear__') {
+                setMarkedSessionIds([]);
+                return;
+              }
+              if (value === '__delete_selected__') {
+                if (markedSessionIds.length === 0) {
+                  pushItem('error', 'mark one or more sessions before deleting');
+                  return;
+                }
+                setPendingDeleteSessionIds(markedSessionIds);
+                setOverlay('sessions-delete-confirm');
+                return;
+              }
+              if (value.startsWith('toggle:')) {
+                const id = value.slice('toggle:'.length);
+                setMarkedSessionIds((prev) =>
+                  prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+                );
+              }
+            }}
+            onCancel={() => setOverlay('sessions-list')}
+          />
+        ) : null}
+        {overlay === 'sessions-delete-confirm' && pendingDeleteSessionIds.length > 0 ? (
+          <Picker
+            title={`delete ${pendingDeleteSessionIds.length} session${pendingDeleteSessionIds.length === 1 ? '' : 's'}?`}
+            descriptionColor={palette.error}
+            options={[
+              {
+                value: 'no',
+                label: 'No — keep sessions',
+                description: 'return to sessions'
+              },
+              {
+                value: 'yes',
+                label: 'Yes — delete from disk',
+                description: 'cannot be undone'
+              }
+            ]}
+            hint="↵ choose · Esc cancel"
+            onChoose={(choice) => {
+              if (choice !== 'yes') {
+                setPendingDeleteSessionIds([]);
+                setOverlay('sessions-list');
+                return;
+              }
+              const store = props.sessionStore;
+              const ids = [...pendingDeleteSessionIds];
+              if (!store || ids.length === 0) {
+                setPendingDeleteSessionIds([]);
+                setOverlay('sessions-list');
+                return;
+              }
+              setOverlay(null);
+              setPendingDeleteSessionIds([]);
+              void (async () => {
+                let okCount = 0;
+                let failCount = 0;
+                for (const id of ids) {
+                  const r = await store.remove(id);
+                  if (r.ok) okCount += 1;
+                  else failCount += 1;
+                }
+                if (sessionId && ids.includes(sessionId)) {
+                  sessionRef.current = null;
+                  setSessionId(null);
+                  setSessionTitle(null);
+                }
+                setMarkedSessionIds([]);
+                const refreshed = await store.list();
+                if (refreshed.ok) {
+                  setSessionList(refreshed.value);
+                  if (refreshed.value.length > 0) setOverlay('sessions-list');
+                }
+                if (failCount === 0) {
+                  pushItem('system', `✦ deleted ${okCount} session${okCount === 1 ? '' : 's'}`);
+                } else {
+                  pushItem('error', `deleted ${okCount}; ${failCount} failed`);
+                }
+              })();
+            }}
+            onCancel={() => {
+              setPendingDeleteSessionIds([]);
+              setOverlay('sessions-list');
+            }}
           />
         ) : null}
         {overlay === 'sessions-rename' && selectedSession ? (

@@ -24,5 +24,7 @@ export const palette = {
   success: '#7fd88f',
   warning: '#f5a742',
   error: '#e06c75',
-  info: '#56b6c2'
+  info: '#56b6c2',
+  neonPower: '#ff315f',
+  neonSmart: '#39ff88'
 } as const;

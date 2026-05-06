@@ -27,6 +27,9 @@ token-optimization** track on top of it.
 
 ## In Progress
 
+- 1.7.2 prep: `/config` now has hosted Atlas Power Full / Atlas Smart Mode,
+  and model pickers surface prompt-cache support so cache-capable models are
+  easier to choose.
 - OpenTUI local-model mode picker now supports lite / hybrid / full;
   Ink still only writes local default `toolMode`, so mirror the picker
   there if Ink parity is required.

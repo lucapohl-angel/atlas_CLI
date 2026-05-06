@@ -21,6 +21,7 @@ describe('loadConfig', () => {
     if (!r.ok) return;
     expect(r.value.defaultProvider).toBe('openrouter');
     expect(r.value.defaultModel).toBe('anthropic/claude-sonnet-4');
+    expect(r.value.atlasMode).toBe('full');
     expect(r.value.providers.openrouter.apiKey).toBeUndefined();
     expect(r.value.providers.openrouter.baseUrl).toBe('https://openrouter.ai/api/v1');
   });
@@ -40,6 +41,15 @@ describe('loadConfig', () => {
     if (!r.ok) return;
     expect(r.value.defaultModel).toBe('anthropic/claude-opus-4');
     expect(r.value.providers.openrouter.apiKey).toBe('from-env');
+  });
+
+  it('reads hosted Atlas power mode', async () => {
+    const path = join(dir, 'config.yaml');
+    await writeFile(path, 'atlasMode: smart\n', 'utf8');
+    const r = await loadConfig({ path, env: {} });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.atlasMode).toBe('smart');
   });
 
   it('maps legacy local liteMode to explicit toolMode', async () => {

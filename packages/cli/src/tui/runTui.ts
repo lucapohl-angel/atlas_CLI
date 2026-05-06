@@ -108,11 +108,11 @@ type RuntimeProviders = Partial<Record<RuntimeProviderKind, Provider>>;
 // but the user hasn't configured a preferred model. Ordered by quality
 // within the constraint of being runnable on modest hardware.
 const LOCAL_RECOMMENDED_MODELS: readonly ModelInfo[] = [
-  { id: 'qwen2.5-coder:7b',  label: 'Qwen 2.5 Coder 7B (recommended)',  thinking: ['off'], provider: 'local' },
-  { id: 'qwen2.5-coder:3b',  label: 'Qwen 2.5 Coder 3B',                thinking: ['off'], provider: 'local' },
-  { id: 'qwen2.5-coder:1.5b',label: 'Qwen 2.5 Coder 1.5B (lightweight)',thinking: ['off'], provider: 'local' },
-  { id: 'llama3.1:8b',       label: 'Llama 3.1 8B',                     thinking: ['off'], provider: 'local' },
-  { id: 'deepseek-r1:7b',    label: 'DeepSeek R1 7B (reasoning)',        thinking: ['off', 'low', 'medium'], provider: 'local' },
+  { id: 'qwen2.5-coder:7b',  label: 'Qwen 2.5 Coder 7B (recommended)',  thinking: ['off'], provider: 'local', promptCache: 'unsupported' },
+  { id: 'qwen2.5-coder:3b',  label: 'Qwen 2.5 Coder 3B',                thinking: ['off'], provider: 'local', promptCache: 'unsupported' },
+  { id: 'qwen2.5-coder:1.5b',label: 'Qwen 2.5 Coder 1.5B (lightweight)',thinking: ['off'], provider: 'local', promptCache: 'unsupported' },
+  { id: 'llama3.1:8b',       label: 'Llama 3.1 8B',                     thinking: ['off'], provider: 'local', promptCache: 'unsupported' },
+  { id: 'deepseek-r1:7b',    label: 'DeepSeek R1 7B (reasoning)',        thinking: ['off', 'low', 'medium'], provider: 'local', promptCache: 'unsupported' },
 ];
 
 /**
@@ -800,6 +800,7 @@ const loadModelCatalog = async (
           id,
           label: id,
           thinking: inferLocalThinking(id),
+          promptCache: 'unsupported',
           provider: 'local' as const
         }));
         // Append recommended models that aren't already pulled. Mark

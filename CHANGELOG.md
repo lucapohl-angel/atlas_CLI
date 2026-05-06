@@ -6,6 +6,24 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-05-06
+
+### Added
+- `/config` now includes hosted Atlas power modes: Atlas Power Full and Atlas
+  Smart Mode, with cost estimates plus pros and cons.
+- Model catalogs now carry prompt-cache support metadata, and model pickers
+  show cache labels so users can choose cheaper cache-capable models. OpenRouter
+  cache labels are derived from live `/models` cache-pricing fields.
+- `/models` now shows a visible type-to-filter search field in the grouped
+  model picker.
+- `/sessions` now supports multi-select and delete-all cleanup for saved
+  transcripts.
+- The TUI top bar now shows the active hosted Atlas mode with bright Full/Smart
+  badges.
+
+### Changed
+- Package metadata is prepared for the `atlas-os@1.7.2` release line.
+
 ## [1.7.1] - 2026-05-06
 
 ### Added

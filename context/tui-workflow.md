@@ -21,7 +21,7 @@ inline `palette` near line 69).
 
 | Region        | Height  | Content                                                 |
 |---------------|---------|---------------------------------------------------------|
-| Header        | 1 row   | agent role · model [TAG] · mode · responsive chips      |
+| Header        | 1 row   | agent role · Atlas power badge · model [TAG] · mode · responsive chips |
 | Transcript    | flex    | wrapped text bubbles per role + markdown + code blocks  |
 | Sidebar       | 46 cols | activity log + cost + context-window bar (cols ≥ 100)   |
 | Slash popup   | ≤ 8 rows| command suggestions when input starts with `/` no space |
@@ -42,6 +42,9 @@ inline `palette` near line 69).
 - **Selected row** (any picker): `palette.success` (green) bold with
   `❯ ` prefix and inverted background.
 - **Provider tags** in header: OR=accent, AN=warning, CDX=success.
+- **Atlas power badge** in header: Full=`ATLAS POWER` in neon red,
+  Smart=`ATLAS SMART` in neon green. The badge updates immediately
+  after `/config -> Atlas power mode` saves.
 - **Mode** chip in header / status: plan=warning, build=success,
   autopilot=error bold.
 - **Phase** colors: idle=textMuted, discover=info, plan=accent,
@@ -96,7 +99,7 @@ When the user types `/` at the start of the input (no space yet), an
 | thinking  | `off\|low\|medium\|high\|xhigh`      | set reasoning effort (model-aware) |
 | config    | —                                    | open the config menu |
 | mcps      | `[add\|enable…\|disable…\|remove…]`  | list / add / toggle MCP servers |
-| sessions  | `[id]`                               | list / resume saved sessions |
+| sessions  | `[id]`                               | list / resume / rename / bulk-delete saved sessions |
 | resume    | `[id]`                               | resume a session (alias of /sessions) |
 | compact   | `[now\|status\|on\|off\|model\|threshold]` | auto-compaction controls |
 | learn     | `[on\|off\|status]`                  | self-improvement loop |
@@ -114,9 +117,24 @@ When the user types `/` at the start of the input (no space yet), an
 Stub unimplemented commands with a clear "not yet ported" message.
 Never fail silently.
 
+### `/sessions` saved transcript manager
+
+`/sessions` opens the saved-session manager. It must support:
+
+- resume a selected session;
+- rename a selected session;
+- delete a selected session with confirmation;
+- select multiple sessions for deletion;
+- select all saved sessions for deletion with confirmation;
+- start a fresh unsaved session via `new` / `+ new session`.
+
+OpenTUI may implement multi-select as a picker with `[ ]` / `[x]` rows plus
+`select all` and `delete selected`; Ink uses Space to mark, `a` for all, `d` to
+delete marked/current, and `D` for delete-all.
+
 ## `/config` menu (post-setup runtime)
 
-8 entries in fixed order, each with a connected/configured badge in
+9 entries in fixed order, each with a connected/configured badge in
 the description column:
 
 1. `OpenRouter API key  (sk-or-…)` — green ● connected when
@@ -128,15 +146,40 @@ the description column:
 4. `Sign in with ChatGPT (browser, Codex)` — connected when
    `props.providers['openai-codex']` is live. PKCE flow is
    browser-based; OpenTUI variant routes to `--ui=ink` until ported.
-5. `Local models        (Ollama, LM Studio, vLLM)` — connected when
+5. `Atlas power mode    (Full / Smart)` — always configured. Selecting
+  opens the hosted Atlas mode submenu.
+6. `Local models        (Ollama, LM Studio, vLLM)` — connected when
   the local provider runtime is detected. Selecting opens the local
   mode submenu.
-6. `GitHub token        (gh integration)` — connected when
+7. `GitHub token        (gh integration)` — connected when
    `config.github.token` is set.
-7. `MCP server          (model context protocol)` — count badge,
+8. `MCP server          (model context protocol)` — count badge,
    `● N configured`. Selecting opens the MCP submenu (catalog).
-8. `Ship: auto-merge    (current: <strategy>, prompt: on/off)` —
+9. `Ship: auto-merge    (current: <strategy>, prompt: on/off)` —
    currently info-only in OpenTUI; full editor in Ink.
+
+### Hosted Atlas mode submenu
+
+Selecting "Atlas power mode" opens a picker with exactly two mode rows
+plus setup/cache info/back. The selected row is marked `[ACTIVE]` and
+saving writes `atlasMode` to `~/.atlas/config.yaml`.
+
+| Mode | Cost estimate | Pros | Cons |
+|------|---------------|------|------|
+| Atlas Power Full | roughly 100k-250k input tokens on heavy turns before cache; cache-capable models make repeat turns much cheaper | maximum Atlas context, tools, MCP, hooks, and predictable behavior | no-cache models rebill the full prefix each message |
+| Atlas Smart Mode | roughly 20k-80k input tokens on normal hosted turns; complex turns can still pay Full Atlas costs | cost-aware default for daily hosted work; favors cache-friendly model choices | adaptive strategy; very complex work may still need the full prompt/tool surface |
+
+Config key: `atlasMode: full | smart`.
+
+Model picker rows must include prompt-cache support labels:
+`cache: yes (cheaper)`, `cache: unknown`, or `cache: no` in OpenTUI
+descriptions, and equivalent `[cache yes]` / `[cache unknown]` /
+`[cache no]` suffixes in Ink labels. For OpenRouter catalog rows, derive cache
+support from the live `/api/v1/models` pricing fields (`input_cache_read` /
+`input_cache_write`) or explicit cache parameters, not provider-name heuristics.
+
+`/models` must expose a visible search/filter line. Typing filters by model id
+or label; ↑/↓ navigates the filtered results; Enter selects the highlighted row.
 
 ### Local mode submenu
 

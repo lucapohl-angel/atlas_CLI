@@ -18,6 +18,7 @@ const STREAM_SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '�
 
 export type Mode = 'plan' | 'build' | 'autopilot';
 export type ThinkingEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
+export type AtlasPowerMode = 'full' | 'smart';
 
 const colorForAgent = (name: string): string => {
   // Stable hash → pick from a small Atlas-blue-friendly palette.
@@ -42,11 +43,17 @@ const modeColor = (m: Mode): string =>
       ? palette.secondary
       : palette.primary;
 
+const atlasModeChip = (m: AtlasPowerMode): { readonly label: string; readonly color: string } =>
+  m === 'smart'
+    ? { label: 'ATLAS SMART', color: palette.neonSmart }
+    : { label: 'ATLAS POWER', color: palette.neonPower };
+
 export interface HeaderProps {
   readonly agentName: string;
   readonly agentRole: string;
   readonly model: string;
   readonly providerTag: string;
+  readonly atlasMode: AtlasPowerMode;
   readonly mode: Mode;
   readonly thinking: ThinkingEffort;
   readonly streaming: boolean;
@@ -62,6 +69,7 @@ export interface HeaderProps {
 
 export const Header = (props: HeaderProps) => {
   const [spinIdx, setSpinIdx] = useState(0);
+  const powerChip = atlasModeChip(props.atlasMode);
   useEffect(() => {
     if (!props.streaming) return;
     const id = setInterval(
@@ -85,6 +93,8 @@ export const Header = (props: HeaderProps) => {
       }}
     >
       <text fg={colorForAgent(props.agentName)} attributes={BOLD}>{props.agentRole}</text>
+      <text fg={palette.textMuted}> · </text>
+      <text fg={powerChip.color} attributes={BOLD}>{powerChip.label}</text>
       <text fg={palette.textMuted}> · </text>
       <text fg={palette.text}>{props.model}</text>
       <text fg={props.notConnected ? palette.warning : palette.accent}>

@@ -4,7 +4,8 @@
  *
  * For OpenRouter we hit the public `/models` endpoint (no auth needed)
  * and use `supported_parameters` to derive whether the model accepts
- * extended-thinking / reasoning options.
+ * extended-thinking / reasoning options. Prompt-cache support comes
+ * from the same live model rows via cache pricing fields.
  *
  * For Anthropic we hit `/v1/models` with whatever credential the user
  * has (api key or OAuth bearer). Anthropic doesn't advertise reasoning
@@ -23,6 +24,7 @@ import { childLogger } from '../logger.js';
 const log = childLogger('catalog');
 
 export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
+export type PromptCacheSupport = 'supported' | 'unsupported' | 'unknown';
 
 export type ModelProviderKind = 'openrouter' | 'anthropic' | 'openai-codex' | 'local';
 
@@ -35,6 +37,8 @@ export interface ModelInfo {
   readonly thinking: readonly ThinkingLevel[];
   /** Optional context window in tokens (informational). */
   readonly contextWindow?: number;
+  /** Whether Atlas can expect cheaper repeated prefixes via provider prompt caching. */
+  readonly promptCache: PromptCacheSupport;
   /**
    * Which provider exposes this model. Drives picker grouping and the
    * provider tag in the TUI header.
@@ -43,18 +47,34 @@ export interface ModelInfo {
 }
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const CACHE_SCHEMA_VERSION = 2;
 
 const cachePath = (provider: string): string =>
   path.join(os.homedir(), '.atlas', 'cache', `${provider}-models.json`);
 
+const isPromptCacheSupport = (value: unknown): value is PromptCacheSupport =>
+  value === 'supported' || value === 'unsupported' || value === 'unknown';
+
 const readCache = async (provider: string): Promise<readonly ModelInfo[] | null> => {
   try {
     const raw = await fs.readFile(cachePath(provider), 'utf8');
-    const parsed = JSON.parse(raw) as { ts: number; models: ModelInfo[] };
+    const parsed = JSON.parse(raw) as {
+      schemaVersion?: number;
+      ts?: number;
+      models?: ModelInfo[];
+    };
+    if (parsed.schemaVersion !== CACHE_SCHEMA_VERSION) return null;
+    if (typeof parsed.ts !== 'number' || !Array.isArray(parsed.models)) return null;
     if (Date.now() - parsed.ts > CACHE_TTL_MS) return null;
     // Caches written by older builds lack the `provider` discriminator
     // and would be invisible in the grouped picker. Treat them as stale.
-    if (parsed.models.some((m) => typeof m.provider !== 'string')) return null;
+    if (
+      parsed.models.some(
+        (m) => typeof m.provider !== 'string' || !isPromptCacheSupport(m.promptCache)
+      )
+    ) {
+      return null;
+    }
     return parsed.models;
   } catch {
     return null;
@@ -66,7 +86,7 @@ const writeCache = async (provider: string, models: readonly ModelInfo[]): Promi
     await fs.mkdir(path.dirname(cachePath(provider)), { recursive: true });
     await fs.writeFile(
       cachePath(provider),
-      JSON.stringify({ ts: Date.now(), models }, null, 2),
+      JSON.stringify({ schemaVersion: CACHE_SCHEMA_VERSION, ts: Date.now(), models }, null, 2),
       'utf8'
     );
   } catch (e) {
@@ -81,6 +101,33 @@ const openRouterThinking = (supported: readonly string[]): readonly ThinkingLeve
     return ['off', 'low', 'medium', 'high'];
   }
   return ['off'];
+};
+
+const openRouterPromptCache = (
+  raw: Record<string, unknown>,
+  supported: readonly string[]
+): PromptCacheSupport => {
+  const normalized = supported.map((s) => s.toLowerCase());
+  if (
+    normalized.some(
+      (s) => s.includes('cache') || s === 'cache_control' || s === 'prompt_cache_key'
+    )
+  ) {
+    return 'supported';
+  }
+  const pricing = raw['pricing'];
+  if (!pricing || typeof pricing !== 'object') return 'unknown';
+  const row = pricing as Record<string, unknown>;
+  const has = (key: string): boolean => Object.prototype.hasOwnProperty.call(row, key);
+  if (
+    has('input_cache_read') ||
+    has('input_cache_write') ||
+    has('cache_read') ||
+    has('cache_write')
+  ) {
+    return 'supported';
+  }
+  return 'unsupported';
 };
 
 /** Heuristic: map an Anthropic model id family to thinking levels. */
@@ -149,6 +196,7 @@ export const fetchOpenRouterModels = async (
       id,
       label: name,
       thinking: openRouterThinking(supported),
+      promptCache: openRouterPromptCache(r, supported),
       provider: 'openrouter',
       ...(ctx !== undefined ? { contextWindow: ctx } : {})
     });
@@ -218,6 +266,7 @@ export const fetchAnthropicModels = async (
       id,
       label: name,
       thinking: anthropicThinking(id),
+      promptCache: 'supported',
       provider: 'anthropic'
     });
   }
@@ -319,6 +368,7 @@ export const fetchCodexModels = async (
           id: slug,
           label: display,
           thinking: thinking.length > 1 ? thinking : codexThinking(slug),
+          promptCache: 'supported',
           provider: 'openai-codex',
           ...(ctx !== undefined ? { contextWindow: ctx } : {})
         });
@@ -353,12 +403,14 @@ const codexFallbackCatalog = (): readonly ModelInfo[] => [
     id: 'gpt-5',
     label: 'GPT-5',
     thinking: codexThinking('gpt-5'),
+    promptCache: 'supported',
     provider: 'openai-codex'
   },
   {
     id: 'gpt-5-mini',
     label: 'GPT-5 Mini',
     thinking: codexThinking('gpt-5-mini'),
+    promptCache: 'supported',
     provider: 'openai-codex'
   }
 ];

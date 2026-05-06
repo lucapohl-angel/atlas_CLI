@@ -13,7 +13,7 @@
  * via stack order — OpenTUI doesn't have a true z-index, so the
  * picker is mounted last in the tree, after the chat layout.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TextareaRenderable } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 import { palette } from './palette.js';
@@ -280,39 +280,20 @@ export interface GroupedPickerProps {
 }
 
 /**
- * GroupedPicker — list with section headers. Mirrors the Ink TUI's
- * grouped model picker (Anthropic / OpenAI Codex / OpenRouter
- * sections, with a "★ Popular" sub-header inside OpenRouter).
- *
- * Headers are rendered in-line with `──` markers and the focused
- * `<select>` will land on them, but pressing Enter on a header is a
- * no-op — the user just keeps arrowing. There is no native
- * disabled/separator support in OpenTUI's `<select>`.
+ * GroupedPicker — searchable list with section headers. Mirrors the
+ * Ink TUI's grouped model picker (Anthropic / OpenAI Codex /
+ * OpenRouter sections, with a "★ Popular" sub-header inside
+ * OpenRouter).
  */
 export const GroupedPicker = (props: GroupedPickerProps) => {
   const { width: cols } = useTerminalDimensions();
   const pos = centeredOverlayStyle(cols, { top: 1, maxWidth: 80 });
+  const searchRef = useRef<TextareaRenderable | null>(null);
 
-  // Type-to-search filter. Captured via useKeyboard so the user can
-  // start typing immediately — no search box to focus first. The
-  // <select> below stays `focused` and continues to consume arrow /
-  // enter keys; we only react to printable chars and backspace.
   const [filter, setFilter] = useState('');
-  useKeyboard((key) => {
-    if (key.name === 'backspace') {
-      if (filter.length > 0) setFilter((f) => f.slice(0, -1));
-      return;
-    }
-    if (
-      typeof key.sequence === 'string' &&
-      key.sequence.length === 1 &&
-      !key.ctrl &&
-      !key.meta &&
-      key.sequence.charCodeAt(0) >= 0x20
-    ) {
-      setFilter((f) => f + key.sequence);
-    }
-  });
+  const [selectedValue, setSelectedValue] = useState<string | null>(
+    props.initialValue ?? null
+  );
 
   // Filter entries by label / value substring. Headers are emitted
   // only when their section has at least one matching item, so empty
@@ -341,45 +322,65 @@ export const GroupedPicker = (props: GroupedPickerProps) => {
     return out;
   }, [props.entries, filter]);
 
-  const items = useMemo(
-    () =>
-      filteredEntries.map((e) => {
-        if (e.kind === 'header') {
-          return {
-            name: e.label,
-            description: '',
-            value: `__hdr_${e.key}`
-          };
-        }
-        return {
-          name: e.label,
-          description: e.description ?? '',
-          value: e.value
-        };
-      }),
+  const selectableEntries = useMemo(
+    () => filteredEntries.filter((e): e is Extract<GroupedPickerEntry, { readonly kind: 'item' }> => e.kind === 'item'),
     [filteredEntries]
   );
-  const initialIndex = useMemo(() => {
-    // While filtering, jump to the first matching item so Enter picks it.
-    if (filter.length > 0) {
-      const i = filteredEntries.findIndex((e) => e.kind === 'item');
-      return i < 0 ? 0 : i;
-    }
-    if (!props.initialValue) {
-      const i = filteredEntries.findIndex((e) => e.kind === 'item');
-      return i < 0 ? 0 : i;
-    }
-    const i = filteredEntries.findIndex(
-      (e) => e.kind === 'item' && e.value === props.initialValue
-    );
-    return i < 0 ? 0 : i;
-  }, [filteredEntries, props.initialValue, filter]);
 
-  const visibleRows = Math.min(Math.max(items.length, 1), 16);
-  const showDescriptions = items.some((it) => it.description.length > 0);
-  const rowHeight = showDescriptions ? 2 : 1;
-  const selectHeight = Math.max(1, visibleRows * rowHeight);
-  const noMatches = filter.length > 0 && items.length === 0;
+  useEffect(() => {
+    const first = selectableEntries[0]?.value ?? null;
+    if (first === null) {
+      if (selectedValue !== null) setSelectedValue(null);
+      return;
+    }
+    if (!selectedValue || !selectableEntries.some((e) => e.value === selectedValue)) {
+      setSelectedValue(first);
+    }
+  }, [selectableEntries, selectedValue]);
+
+  const chooseSelected = useCallback((): void => {
+    const chosen =
+      selectableEntries.find((e) => e.value === selectedValue) ?? selectableEntries[0];
+    if (chosen) props.onChoose(chosen.value);
+  }, [props, selectableEntries, selectedValue]);
+
+  useKeyboard((key) => {
+    if (key.name === 'escape') {
+      props.onCancel();
+      return;
+    }
+    if (key.name !== 'up' && key.name !== 'down') return;
+    if (selectableEntries.length === 0) return;
+    const delta = key.name === 'up' ? -1 : 1;
+    setSelectedValue((current) => {
+      const currentIndex = Math.max(
+        0,
+        selectableEntries.findIndex((e) => e.value === current)
+      );
+      const nextIndex =
+        (currentIndex + delta + selectableEntries.length) % selectableEntries.length;
+      return selectableEntries[nextIndex]?.value ?? current;
+    });
+  });
+
+  const selectedEntryIndex = Math.max(
+    0,
+    filteredEntries.findIndex(
+      (e) => e.kind === 'item' && e.value === selectedValue
+    )
+  );
+  const maxVisibleEntries = 16;
+  const visibleStart = Math.max(
+    0,
+    Math.min(
+      selectedEntryIndex - Math.floor(maxVisibleEntries / 2),
+      Math.max(0, filteredEntries.length - maxVisibleEntries)
+    )
+  );
+  const visibleEntries = filteredEntries.slice(visibleStart, visibleStart + maxVisibleEntries);
+  const noMatches = filter.length > 0 && selectableEntries.length === 0;
+  const hasMoreAbove = visibleStart > 0;
+  const hasMoreBelow = visibleStart + maxVisibleEntries < filteredEntries.length;
 
   return (
     <box
@@ -399,19 +400,37 @@ export const GroupedPicker = (props: GroupedPickerProps) => {
       <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}>
         <text fg={palette.primaryBright}>{props.title}</text>
       </box>
-      {/* Live search line — always visible so the user discovers it.
-          Shows the current query (or a placeholder hint when empty). */}
       <box
         style={{
           flexDirection: 'row',
-          backgroundColor: palette.backgroundElement
+          backgroundColor: palette.backgroundElement,
+          borderStyle: 'single',
+          borderColor: palette.border,
+          paddingLeft: 1,
+          paddingRight: 1,
+          marginTop: 1,
+          marginBottom: 1
         }}
       >
-        <text fg={palette.textMuted}>
-          {filter.length > 0
-            ? `🔎 ${filter}_`
-            : 'type to filter…'}
-        </text>
+        <text fg={palette.textMuted}>search </text>
+        <textarea
+          ref={searchRef}
+          focused
+          placeholder="type a model name"
+          placeholderColor={palette.textDim}
+          backgroundColor={palette.backgroundElement}
+          focusedBackgroundColor={palette.backgroundElement}
+          textColor={palette.text}
+          focusedTextColor={palette.text}
+          cursorColor={palette.primaryBright}
+          wrapMode="char"
+          keyBindings={[{ name: 'return', action: 'submit' }]}
+          onContentChange={() => {
+            setFilter((searchRef.current?.plainText ?? '').replace(/\r?\n/g, ' '));
+          }}
+          onSubmit={chooseSelected}
+          style={{ width: '100%', height: 1 }}
+        />
       </box>
       {noMatches ? (
         <box
@@ -423,42 +442,52 @@ export const GroupedPicker = (props: GroupedPickerProps) => {
           <text fg={palette.warning}>{`no matches for "${filter}"`}</text>
         </box>
       ) : (
-        <select
-          // `key` forces the <select> to remount when the filter
-          // changes, which resets its internal cursor to
-          // `selectedIndex` — otherwise it keeps a stale index that
-          // can land out of bounds after the list shrinks.
-          key={`gp-${filter}`}
-          focused
-          options={items}
-          selectedIndex={initialIndex}
-          showDescription={showDescriptions}
-          showScrollIndicator
-          wrapSelection
+        <box
           style={{
             width: '100%',
-            height: selectHeight,
+            flexDirection: 'column',
             backgroundColor: palette.backgroundElement,
-            focusedBackgroundColor: palette.backgroundElement,
-            textColor: palette.text,
-            focusedTextColor: palette.text,
-            selectedBackgroundColor: palette.primary,
-            selectedTextColor: palette.background,
-            descriptionColor: palette.textMuted,
-            selectedDescriptionColor: palette.text
+            height: Math.max(1, visibleEntries.length * 2)
           }}
-          onSelect={(_idx, opt) => {
-            if (!opt) return;
-            const v = (opt as unknown as { value?: string }).value;
-            if (typeof v !== 'string') return;
-            if (v.startsWith('__hdr_')) return;
-            props.onChoose(v);
-          }}
-        />
+        >
+          {visibleEntries.map((entry) => {
+            if (entry.kind === 'header') {
+              return (
+                <box
+                  key={entry.key}
+                  style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}
+                >
+                  <text fg={palette.primaryBright}>{entry.label}</text>
+                </box>
+              );
+            }
+            const selected = entry.value === selectedValue;
+            const bg = selected ? palette.primary : palette.backgroundElement;
+            const fg = selected
+              ? palette.background
+              : entry.popular
+                ? palette.warning
+                : palette.text;
+            return (
+              <box
+                key={entry.key}
+                style={{ flexDirection: 'column', backgroundColor: bg }}
+              >
+                <text fg={fg}>{`${selected ? '>' : ' '} ${entry.label}`}</text>
+                <text fg={selected ? palette.text : palette.textMuted}>
+                  {`  ${entry.description ?? ''}`}
+                </text>
+              </box>
+            );
+          })}
+        </box>
       )}
       <box style={{ flexDirection: 'row', backgroundColor: palette.backgroundElement }}>
         <text fg={palette.textMuted}>
-          {props.hint ?? '↑/↓ navigate · ↵ choose · type to filter · ⌫ clear · Esc cancel'}
+          {props.hint ?? 'type to filter · ↑/↓ navigate · ↵ choose · Esc cancel'}
+          {hasMoreAbove || hasMoreBelow
+            ? ` · showing ${visibleStart + 1}-${visibleStart + visibleEntries.length} of ${filteredEntries.length}`
+            : ''}
         </text>
       </box>
     </box>
@@ -1115,9 +1144,9 @@ export interface ColoredGroupedPickerProps {
  */
 export const ColoredGroupedPicker = (props: ColoredGroupedPickerProps) => {
   const { width: cols, height: termRows } = useTerminalDimensions();
-  const max = props.maxVisible ?? 14;
-  // Box height = title (1) + visible rows + hint (1) + border/pad (4).
-  const boxHeight = max + 6;
+  const max = Math.max(4, Math.min(props.maxVisible ?? 14, Math.max(4, termRows - 9)));
+  // Box height = title + search + visible rows + hint + border/pad.
+  const boxHeight = max + 8;
   const pos = centeredOverlayStyle(cols, {
     top: 1,
     maxWidth: 84,
@@ -1125,9 +1154,31 @@ export const ColoredGroupedPicker = (props: ColoredGroupedPickerProps) => {
     height: boxHeight
   });
 
-  // Pre-compute a flat row list (headers + items, preserving order)
-  // and an index of selectable items so navigation can skip headers.
-  const rows = props.entries;
+  const [filter, setFilter] = useState('');
+  const normalizedFilter = filter.trim().toLowerCase();
+  const rows = useMemo(() => {
+    if (normalizedFilter.length === 0) return props.entries;
+    const nextRows: GroupedPickerEntry[] = [];
+    let pendingHeader: Extract<GroupedPickerEntry, { readonly kind: 'header' }> | null = null;
+    for (const entry of props.entries) {
+      if (entry.kind === 'header') {
+        pendingHeader = entry;
+        continue;
+      }
+      const description = entry.description ?? '';
+      const matches =
+        entry.label.toLowerCase().includes(normalizedFilter) ||
+        entry.value.toLowerCase().includes(normalizedFilter) ||
+        description.toLowerCase().includes(normalizedFilter);
+      if (!matches) continue;
+      if (pendingHeader) {
+        nextRows.push(pendingHeader);
+        pendingHeader = null;
+      }
+      nextRows.push(entry);
+    }
+    return nextRows;
+  }, [props.entries, normalizedFilter]);
   const itemIndices = useMemo(
     () =>
       rows
@@ -1147,13 +1198,10 @@ export const ColoredGroupedPicker = (props: ColoredGroupedPickerProps) => {
   const [cursor, setCursor] = useState<number>(initialItemIdx);
   const [scrollOffset, setScrollOffset] = useState<number>(0);
 
-  // Keep cursor in sync if entries change shape (rare).
   useEffect(() => {
-    setCursor((c) => {
-      if (rows[c]?.kind === 'item') return c;
-      return initialItemIdx;
-    });
-  }, [rows, initialItemIdx]);
+    setCursor(initialItemIdx);
+    setScrollOffset(0);
+  }, [normalizedFilter, initialItemIdx]);
 
   // Auto-scroll: keep the visible window covering the cursor. We
   // also clamp generously when wrapping (cursor jumped from end →
@@ -1205,6 +1253,24 @@ export const ColoredGroupedPicker = (props: ColoredGroupedPickerProps) => {
   useKeyboard((key) => {
     if (key.name === 'escape') {
       props.onCancel();
+      return;
+    }
+    if (key.ctrl && key.name === 'u') {
+      setFilter('');
+      return;
+    }
+    if (key.name === 'backspace' || key.name === 'delete') {
+      setFilter((current) => current.slice(0, -1));
+      return;
+    }
+    if (
+      typeof key.sequence === 'string' &&
+      key.sequence.length === 1 &&
+      !key.ctrl &&
+      !key.meta &&
+      key.sequence.charCodeAt(0) >= 0x20
+    ) {
+      setFilter((current) => current + key.sequence);
       return;
     }
     if (key.name === 'return') {
@@ -1271,8 +1337,34 @@ export const ColoredGroupedPicker = (props: ColoredGroupedPickerProps) => {
       >
         <text fg={palette.primaryBright}>{props.title}</text>
       </box>
-      {visible.map((row, i) => {
-        const realIdx = scrollOffset + i;
+      <box
+        style={{
+          flexDirection: 'row',
+          backgroundColor: palette.backgroundPanel,
+          borderStyle: 'single',
+          borderColor: palette.border,
+          paddingLeft: 1,
+          paddingRight: 1,
+          marginTop: 1,
+          marginBottom: 1
+        }}
+      >
+        <text fg={filter.length > 0 ? palette.text : palette.textMuted}>
+          {filter.length > 0 ? `search: ${filter}_` : 'search: type a model name'}
+        </text>
+      </box>
+      {itemIndices.length === 0 && filter.length > 0 ? (
+        <box
+          style={{
+            flexDirection: 'row',
+            backgroundColor: palette.backgroundElement
+          }}
+        >
+          <text fg={palette.warning}>{`no matches for "${filter}"`}</text>
+        </box>
+      ) : null}
+      {visible.map((row, rowIndex) => {
+        const realIdx = scrollOffset + rowIndex;
         const active = realIdx === cursor;
         if (row.kind === 'header') {
           return (
@@ -1328,7 +1420,7 @@ export const ColoredGroupedPicker = (props: ColoredGroupedPickerProps) => {
       >
         <text fg={palette.textMuted}>
           {props.hint ??
-            `↑/↓ navigate · ↵ choose · Esc cancel${totalItems > 0 ? `  ·  ${itemPosition}/${totalItems}` : ''}`}
+            `type to filter · ↑/↓ navigate · ↵ choose · Ctrl-U clear · Esc cancel${totalItems > 0 ? `  ·  ${itemPosition}/${totalItems}` : ''}`}
         </text>
       </box>
     </box>

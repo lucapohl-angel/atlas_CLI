@@ -59,8 +59,9 @@ export interface LocalProviderOptions {
    */
   readonly liteMode?: boolean;
   /**
-   * Hard timeout per request in milliseconds. Defaults to 120 000 (2 min).
-   * After this delay the fetch is aborted and a friendly error is shown.
+   * Idle timeout per request in milliseconds. The timer resets on every
+   * byte received from the server, so it only fires when the connection
+   * truly stalls. Defaults to 300 000 (5 min) to handle cold model loads.
    */
   readonly requestTimeoutMs?: number;
 }
@@ -182,6 +183,11 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
           return base;
         }),
         stream: true,
+        // Keep the model resident in RAM/VRAM for 30 min between requests
+        // so the second prompt feels as instant as `ollama run` does in a
+        // REPL. Ollama-specific field; the OpenAI shim forwards it. Other
+        // OpenAI-compat servers (LM Studio, vLLM) ignore unknown fields.
+        keep_alive: '30m',
         ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
         ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
         ...(!isLite && request.tools && request.tools.length > 0
@@ -199,27 +205,47 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
           : {})
       });
 
-      // Combine a hard timeout with any caller-supplied AbortSignal so the
-      // request always resolves, even when Ollama is slow to load/prefill.
-      const timeoutMs = options.requestTimeoutMs ?? 120_000;
+      // Idle-based timeout: a single AbortController re-armed every time
+      // we get bytes from the server. Cold-loading a 7 b model on slow
+      // hardware can take minutes — we only abort when the connection
+      // truly stalls. Combined with the caller's signal so user
+      // cancellation still wins.
+      const idleMs = options.requestTimeoutMs ?? 300_000;
+      const idleCtl = new AbortController();
+      let idleTimer: ReturnType<typeof setTimeout> = setTimeout(
+        () => idleCtl.abort(new Error('IDLE_TIMEOUT')),
+        idleMs
+      );
+      const armIdle = (): void => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(
+          () => idleCtl.abort(new Error('IDLE_TIMEOUT')),
+          idleMs
+        );
+      };
+      const disarmIdle = (): void => {
+        clearTimeout(idleTimer);
+      };
       const fetchSignal = request.signal
-        ? AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)])
-        : AbortSignal.timeout(timeoutMs);
+        ? AbortSignal.any([request.signal, idleCtl.signal])
+        : idleCtl.signal;
 
       let response: Response;
       try {
         response = await doFetch(url, { method: 'POST', headers, body, signal: fetchSignal });
+        armIdle();
       } catch (e) {
+        disarmIdle();
         if (request.signal?.aborted) {
           yield { type: 'error', error: atlasError('CANCELLED', 'request cancelled') };
           return;
         }
-        if (e instanceof Error && e.name === 'TimeoutError') {
+        if (idleCtl.signal.aborted) {
           yield {
             type: 'error',
             error: atlasError(
               'PROVIDER_NETWORK',
-              `local model did not respond within ${Math.round(timeoutMs / 1000)}s — try enabling liteMode in ~/.atlas/config.yaml (providers.local.liteMode: true) to reduce prompt size`,
+              `local model server at ${baseUrl} did not respond within ${Math.round(idleMs / 1000)}s — model is likely cold-loading. Try \`ollama run ${request.model}\` once in a terminal to warm it up, then retry.`,
               { cause: e }
             )
           };
@@ -261,7 +287,8 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
       const thinkState = createThinkExtractor();
 
       try {
-        for await (const event of parseSseStream(response.body, request.signal)) {
+        for await (const event of parseSseStream(response.body, fetchSignal)) {
+          armIdle(); // re-arm: bytes are flowing
           if (event === SSE_DONE) {
             sawDone = true;
             break;
@@ -326,16 +353,17 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
           }
         }
       } catch (e) {
+        disarmIdle();
         if (request.signal?.aborted) {
           yield { type: 'error', error: atlasError('CANCELLED', 'request cancelled') };
           return;
         }
-        if (e instanceof Error && e.name === 'TimeoutError') {
+        if (idleCtl.signal.aborted) {
           yield {
             type: 'error',
             error: atlasError(
               'PROVIDER_NETWORK',
-              `local model stream timed out after ${Math.round(timeoutMs / 1000)}s`,
+              `local model stream stalled (no bytes for ${Math.round(idleMs / 1000)}s) — the model may have crashed or run out of memory`,
               { cause: e }
             )
           };
@@ -347,6 +375,7 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
         };
         return;
       }
+      disarmIdle();
 
       // Flush any tail text that was inside an unterminated <think> tag.
       for (const segment of thinkState.flush()) {

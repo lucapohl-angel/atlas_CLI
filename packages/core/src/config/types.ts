@@ -188,11 +188,12 @@ export const LocalProviderConfigSchema = z
      */
     liteMode: z.boolean().default(true),
     /**
-     * Hard timeout for each local model request in milliseconds.
-     * Defaults to 120 000 (2 minutes). Raise for very slow hardware;
-     * lower for faster failure detection.
+     * Idle timeout per local model request, in milliseconds. The timer
+     * resets on every byte received from the server, so this only fires
+     * if the connection truly stalls. Defaults to 300 000 (5 minutes) to
+     * accommodate cold model loads on low-RAM machines.
      */
-    requestTimeoutMs: z.number().int().positive().default(120_000)
+    requestTimeoutMs: z.number().int().positive().default(300_000)
   })
   .default({});
 

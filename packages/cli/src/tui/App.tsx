@@ -3866,7 +3866,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
               autoDetect: true,
               customModels: [],
               liteMode: true,
-              requestTimeoutMs: 120_000
+              requestTimeoutMs: 300_000
             }
           },
           mcp: { servers: [], builtinsSeeded: false },
@@ -3972,7 +3972,7 @@ export const TuiApp = (props: TuiAppProps): React.JSX.Element => {
           autoDetect: true,
           customModels: [],
           liteMode: true,
-          requestTimeoutMs: 120_000
+          requestTimeoutMs: 300_000
         }
       },
       mcp: { servers: [], builtinsSeeded: false },

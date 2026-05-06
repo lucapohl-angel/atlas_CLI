@@ -778,13 +778,21 @@ const loadModelCatalog = async (
         const reachable = await probeLocalProvider(lo.baseUrl);
         if (!reachable) {
           // Server not running — still expose recommended presets so the
-          // user can see what to pull, but mark them as local.
-          return LOCAL_RECOMMENDED_MODELS;
+          // user can see what to pull, marked as not pulled.
+          return LOCAL_RECOMMENDED_MODELS.map((m) => ({
+            ...m,
+            label: `${m.id} — not pulled`
+          }));
         }
         const pulledIds = await listLocalModels(lo.baseUrl,
           lo.apiKey ? { apiKey: lo.apiKey } : {}
         );
-        if (!pulledIds || pulledIds.length === 0) return LOCAL_RECOMMENDED_MODELS;
+        if (!pulledIds || pulledIds.length === 0) {
+          return LOCAL_RECOMMENDED_MODELS.map((m) => ({
+            ...m,
+            label: `${m.id} — not pulled`
+          }));
+        }
         // Build ModelInfo for each pulled model. Infer thinking support
         // from the model name family.
         const pulledSet = new Set(pulledIds);
@@ -794,8 +802,13 @@ const loadModelCatalog = async (
           thinking: inferLocalThinking(id),
           provider: 'local' as const
         }));
-        // Append recommended models that aren't already pulled.
-        const extras = LOCAL_RECOMMENDED_MODELS.filter((m) => !pulledSet.has(m.id));
+        // Append recommended models that aren't already pulled. Mark
+        // them so the picker can render them dimmer / with a hint to
+        // pull first. We do this by suffixing the label — the picker
+        // shows label, not id, for non-openrouter rows.
+        const extras: ModelInfo[] = LOCAL_RECOMMENDED_MODELS
+          .filter((m) => !pulledSet.has(m.id))
+          .map((m) => ({ ...m, label: `${m.id} — not pulled` }));
         return [...pulled, ...extras];
       })()
     );

@@ -1025,7 +1025,8 @@ const STATIC_MODELS: readonly string[] = [
 const PROVIDER_TAG: Record<string, string> = {
   openrouter: 'OR',
   anthropic: 'AN',
-  'openai-codex': 'CDX'
+  'openai-codex': 'CDX',
+  local: 'LCL'
 };
 
 interface SlashCommand {
@@ -1144,6 +1145,9 @@ const providerTagFor = (
   const m = model.toLowerCase();
   if (/^claude/.test(m)) return 'AN';
   if (/^(gpt-|codex-|o[1-9])/.test(m)) return 'CDX';
+  // Local model id heuristic: `family:tag` (e.g. qwen2.5-coder:1.5b)
+  // — ollama-style ids never contain `/`.
+  if (/:/.test(model)) return 'LCL';
   return 'OR';
 };
 
@@ -1936,7 +1940,11 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         for (const [id, meta] of sorted) addItem(id, meta.label, meta.desc);
       } else {
         const sorted = [...catalogList].sort((a, b) => a.id.localeCompare(b.id));
-        for (const m of sorted) addItem(m.id, m.id, ctxLabel(m));
+        for (const m of sorted) {
+          // Use m.label for local so "— not pulled" suffix surfaces.
+          const label = grp === 'local' && m.label !== m.id ? m.label : m.id;
+          addItem(m.id, label, ctxLabel(m));
+        }
       }
     }
 

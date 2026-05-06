@@ -19,7 +19,7 @@ npx atlas-os@latest
 
 **Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, or OpenRouter.**
 
-![Atlas·OS terminal](https://raw.githubusercontent.com/lucapohl-angel/ATLAS_OS/main/assets/atlas-os-splash.png)
+![Atlas·OS terminal](https://raw.githubusercontent.com/lucapohl-angel/ATLAS_OS/main/assets/atlasOS_TERMINAL.png)
 
 ---
 

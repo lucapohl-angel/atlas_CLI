@@ -22,7 +22,7 @@ npx atlas-os@latest
 
 <br>
 
-![Atlas·OS terminal](assets/atlas-os-splash.png)
+![Atlas·OS terminal](assets/atlasOS_TERMINAL.png)
 
 <br>
 

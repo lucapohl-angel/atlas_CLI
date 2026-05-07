@@ -18,7 +18,7 @@ with a Greek pantheon of specialist agents doing the work.
 npx atlas-os@latest
 ```
 
-**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, OpenRouter, OpenCode Zen/Go, or local models.**
+**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic Claude, OpenAI GPT, OpenRouter, OpenCode Zen, OpenCode Go, or run local Llama / Qwen / DeepSeek models through Ollama, LM Studio, vLLM, or llama.cpp.**
 
 <br>
 
@@ -53,7 +53,7 @@ and persistent project state.
 
 | Capability | **ATLAS·OS** | Claude Code | OpenCode | Gemini CLI | Kilo Code |
 |---|---|---|---|---|---|
-| Provider choice | Anthropic · OpenAI · OpenRouter · OpenCode Zen/Go | Claude-focused | Provider-agnostic | Gemini-focused | Kilo router |
+| Provider choice | Anthropic Claude · OpenAI GPT · OpenRouter · OpenCode Zen · OpenCode Go · local Llama/Qwen/DeepSeek via Ollama · LM Studio · vLLM · llama.cpp | Claude-focused | Provider-agnostic | Gemini-focused | Kilo router |
 | Multi-agent orchestration | Built-in Greek pantheon, routed by project state | Agent teams + subagents | Build / Plan + subagent | Subagents | Modes |
 | Spec-driven pipeline | Built-in PRD -> architecture -> stories -> implementation -> QA -> release | Bring your own | Bring your own | Bring your own | Bring your own |
 | Lifecycle hooks | Typed TypeScript hooks around tools/messages | Hook system | Plugins / MCP | Hooks | Plugins / MCP |

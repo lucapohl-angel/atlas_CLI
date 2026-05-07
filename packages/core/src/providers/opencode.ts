@@ -264,7 +264,20 @@ const buildBody = (
   return {
     model,
     messages: request.messages.map((m) => {
-      const base: Record<string, unknown> = { role: m.role, content: m.content };
+      // Chat Completions convention: when an assistant turn called
+      // tools, `content` is empty/null in the persisted history.
+      // Several third-party models served behind this wire format
+      // (DeepSeek, GLM, Kimi, Qwen, …) are trained on that
+      // convention and will *re-emit* any pre-tool narration in the
+      // next round if we feed it back to them — producing two ATLAS
+      // replies in a row. The pre-tool text was already streamed
+      // live to the user, so dropping it here is loss-free.
+      const isAssistantToolCall =
+        m.role === 'assistant' && Boolean(m.toolCalls && m.toolCalls.length > 0);
+      const base: Record<string, unknown> = {
+        role: m.role,
+        content: isAssistantToolCall ? '' : m.content
+      };
       if (m.toolCallId) base['tool_call_id'] = m.toolCallId;
       if (m.name) base['name'] = m.name;
       if (m.toolCalls && m.toolCalls.length > 0) {

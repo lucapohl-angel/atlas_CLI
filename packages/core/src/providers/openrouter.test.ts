@@ -338,4 +338,38 @@ describe('OpenRouter provider', () => {
     expect(messages[1]?.['tool_calls']).toBeDefined();
     expect(messages[2]?.['tool_call_id']).toBe('c1');
   });
+
+  it('blanks assistant content when toolCalls are present (prevents duplicate replies)', async () => {
+    // Regression: feeding the model its own pre-tool narration back
+    // alongside `tool_calls` causes some models to re-emit the same
+    // prefix in the next round, surfacing as two ATLAS replies in a
+    // row in the TUI. Canonical convention is content="" on assistant
+    // messages with tool_calls.
+    const fakeFetch = vi.fn(async () =>
+      new Response(sseBody(['data: [DONE]\n\n']), { status: 200 })
+    );
+    const provider = createOpenRouterProvider({
+      apiKey: 'sk',
+      fetch: fakeFetch as unknown as typeof fetch
+    });
+    await collect(
+      provider.stream({
+        model: 'm',
+        messages: [
+          { role: 'user', content: 'go' },
+          {
+            role: 'assistant',
+            content: 'Sure, let me look that up for you.',
+            toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }]
+          },
+          { role: 'tool', content: 'ok', toolCallId: 'c1', name: 'echo' }
+        ]
+      })
+    );
+    const init = fakeFetch.mock.calls[0]![1] as RequestInit;
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    const messages = body['messages'] as ReadonlyArray<Record<string, unknown>>;
+    expect(messages[1]?.['content']).toBe('');
+    expect(messages[1]?.['tool_calls']).toBeDefined();
+  });
 });

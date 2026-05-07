@@ -17,7 +17,7 @@ with a Greek pantheon of specialist agents doing the work.
 npx atlas-os@latest
 ```
 
-**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, OpenRouter, OpenCode Zen/Go, or local models.**
+**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic Claude, OpenAI GPT, OpenRouter, OpenCode Zen, OpenCode Go, or run local Llama / Qwen / DeepSeek models through Ollama, LM Studio, vLLM, or llama.cpp.**
 
 ![Atlas·OS terminal](https://raw.githubusercontent.com/lucapohl-angel/ATLAS_OS/main/assets/atlasOS_TERMINAL.png)
 

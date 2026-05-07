@@ -119,6 +119,43 @@ describe('OpenCode provider', () => {
     if (rate?.type === 'error') expect(rate.error.code).toBe('PROVIDER_RATE_LIMITED');
   });
 
+  it('blanks assistant content when toolCalls are present (chat-completions wire format)', async () => {
+    // Regression: third-party Chat Completions models (DeepSeek/GLM/
+    // Kimi/Qwen) re-emit the prior round's pre-tool narration when
+    // we feed it back alongside `tool_calls`, producing duplicate
+    // ATLAS replies. The canonical convention is content="" on
+    // assistant messages with tool_calls.
+    const fakeFetch = vi.fn(
+      async () => new Response(sseBody(['data: [DONE]\n\n']), { status: 200 })
+    );
+    const provider = createOpenCodeProvider({
+      plan: 'go',
+      apiKey: 'k',
+      fetch: fakeFetch as unknown as typeof fetch
+    });
+    await collect(
+      provider.stream({
+        model: 'opencode-go/kimi-k2.6',
+        messages: [
+          { role: 'user', content: 'hi' },
+          {
+            role: 'assistant',
+            content: "Okay, I'll check that for you.",
+            toolCalls: [{ id: 'c1', name: 'echo', arguments: '{"v":"hi"}' }]
+          },
+          { role: 'tool', content: 'result', toolCallId: 'c1', name: 'echo' }
+        ]
+      })
+    );
+    const [, init] = fakeFetch.mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string) as {
+      messages: ReadonlyArray<{ role: string; content: unknown; tool_calls?: unknown }>;
+    };
+    const assistant = body.messages.find((m) => m.role === 'assistant');
+    expect(assistant?.content).toBe('');
+    expect(assistant?.tool_calls).toBeDefined();
+  });
+
   it('honors AbortSignal during request', async () => {
     const fakeFetch = vi.fn(async () => {
       throw new Error('aborted');

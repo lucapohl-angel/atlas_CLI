@@ -106,7 +106,21 @@ export const createOpenRouterProvider = (
         messages: request.messages.map((m) => {
           // OpenAI/OpenRouter wire format: tool_calls on assistant messages,
           // tool_call_id on tool-role replies.
-          const base: Record<string, unknown> = { role: m.role, content: m.content };
+          //
+          // When an assistant turn called tools, the canonical
+          // Chat Completions convention is `content: ""` (or null).
+          // Echoing the model's pre-tool narration back to it in
+          // the next round confuses third-party models trained on
+          // that convention into re-emitting the same prefix — the
+          // visible "ATLAS replies twice in a row" bug. The text
+          // was already streamed live to the user, so dropping it
+          // here is loss-free.
+          const isAssistantToolCall =
+            m.role === 'assistant' && Boolean(m.toolCalls && m.toolCalls.length > 0);
+          const base: Record<string, unknown> = {
+            role: m.role,
+            content: isAssistantToolCall ? '' : m.content
+          };
           if (m.toolCallId) base['tool_call_id'] = m.toolCallId;
           if (m.name) base['name'] = m.name;
           if (m.toolCalls && m.toolCalls.length > 0) {

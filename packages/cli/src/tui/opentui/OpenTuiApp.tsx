@@ -110,6 +110,10 @@ import {
   type LearnedSkillDraft
 } from '../learn.js';
 import type { AtlasUpdateNotice } from '../update-notice.js';
+import {
+  assistantBoundaryAction,
+  isAssistantToolCallMessage
+} from '../transcript.js';
 
 const BOLD_ATTR = createTextAttributes({ bold: true });
 const ITALIC_ATTR = createTextAttributes({ italic: true });
@@ -1454,6 +1458,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     const seed = props.initialSession?.messages ?? [];
     return seed.flatMap<TranscriptItem>((m, i) => {
       if (m.role !== 'user' && m.role !== 'assistant') return [];
+      if (isAssistantToolCallMessage(m)) return [];
       const raw = typeof m.content === 'string' ? m.content : '';
       const text =
         m.role === 'assistant' ? renderVisibleAssistant(raw) : raw;
@@ -1766,6 +1771,11 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   const shipResolveResolverRef = useRef<
     ((v: { strategy: 'abort' | 'ours' | 'theirs' | 'ai'; persist: boolean } | null) => void) | null
   >(null);
+  // Resolver for the built-in `clarify` tool. When set, the
+  // option-picker / option-freeform overlay routes the user's pick
+  // back to the in-flight tool call instead of submitting it as a
+  // new user turn. `null` payload = user dismissed (Esc).
+  const clarifyResolverRef = useRef<((v: string | null) => void) | null>(null);
   // Auto-learn starts on; `/learn off` disables post-turn reflection.
   const learnEnabledRef = useRef<boolean>(DEFAULT_AUTO_LEARN_ENABLED);
   // Per-turn telemetry that the auto-learn heuristic reads after
@@ -2641,19 +2651,22 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                   pushItem('error', `resume failed: ${r.error.message}`);
                   return;
                 }
-                const items = r.value.messages.map((m, i) => ({
-                  kind:
-                    m.role === 'user'
-                      ? ('user' as const)
-                      : m.role === 'assistant'
-                        ? ('assistant' as const)
-                        : ('system' as const),
-                  text:
+                const items = r.value.messages.flatMap<TranscriptItem>((m, i) => {
+                  if (m.role !== 'user' && m.role !== 'assistant') return [];
+                  if (isAssistantToolCallMessage(m)) return [];
+                  const text =
                     m.role === 'assistant'
                       ? renderVisibleAssistant(m.content)
-                      : m.content,
-                  key: `r${transcriptKey.current}_${i}`
-                }));
+                      : m.content;
+                  if (text.length === 0) return [];
+                  return [
+                    {
+                      kind: m.role === 'user' ? ('user' as const) : ('assistant' as const),
+                      text,
+                      key: `r${transcriptKey.current}_${i}`
+                    }
+                  ];
+                });
                 setTranscript(items);
                 transcriptKey.current += 1;
                 messagesRef.current = [...r.value.messages];
@@ -3783,11 +3796,11 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       }
     }
 
-    // After a `turn_end`, the next delta starts a NEW assistant
-    // entry instead of overwriting the just-committed one. This is
-    // critical for multi-round responses: round 1 produces text,
-    // round 2 (post-tool-call) produces more text — both must
-    // appear, not the second replacing the first.
+    // After a `turn_end`, the next distinct delta starts a NEW
+    // assistant entry. Some providers/models repeat the previous
+    // tool-call round as the prefix of the final round; merge those
+    // back into one visible reply instead of showing duplicate ATLAS
+    // blocks.
     const turnBoundary = { current: false };
 
     const flushAssistant = (): void => {
@@ -3797,20 +3810,24 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       const visible = renderVisibleAssistant(assistantBuffer);
       setTranscript((prev) => {
         const last = prev[prev.length - 1];
-        if (
-          last &&
-          last.kind === 'assistant' &&
-          last.author === author &&
-          !turnBoundary.current
-        ) {
-          if (last.text === visible) return prev;
-          // Never overwrite a previously-rendered assistant body
-          // with empty text — that was producing a bare "ATLAS"
-          // header with no content at the bottom of multi-round
-          // turns whose final round was just an `<atlas:question>`
-          // block (visible strips down to "" after extraction).
-          if (visible.length === 0) return prev;
-          return [...prev.slice(0, -1), { ...last, text: visible }];
+        if (last && last.kind === 'assistant' && last.author === author) {
+          if (turnBoundary.current) {
+            const action = assistantBoundaryAction(last.text, visible);
+            if (action === 'ignore') return prev;
+            if (action === 'replace') {
+              turnBoundary.current = false;
+              return [...prev.slice(0, -1), { ...last, text: visible }];
+            }
+          } else {
+            if (last.text === visible) return prev;
+            // Never overwrite a previously-rendered assistant body
+            // with empty text — that was producing a bare "ATLAS"
+            // header with no content at the bottom of multi-round
+            // turns whose final round was just an `<atlas:question>`
+            // block (visible strips down to "" after extraction).
+            if (visible.length === 0) return prev;
+            return [...prev.slice(0, -1), { ...last, text: visible }];
+          }
         }
         if (visible.length === 0) return prev;
         // Crossing a turn boundary clears the flag — subsequent
@@ -3914,6 +3931,39 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                 persist: false
               });
               setOverlay('ship-conflict');
+            }),
+          // clarify tool — pop the option picker (or freeform input
+          // when no choices) and resolve the tool call with the
+          // user's answer. Cancelling throws so the tool surfaces a
+          // clean TOOL_EXECUTION_FAILED instead of hanging.
+          clarifyAsk: (question, choices, signal) =>
+            new Promise<string>((resolve, reject) => {
+              const onAbort = () => {
+                clarifyResolverRef.current = null;
+                setOverlay(null);
+                setInteractionRequest(null);
+                reject(new Error('clarify cancelled'));
+              };
+              if (signal?.aborted) {
+                onAbort();
+                return;
+              }
+              signal?.addEventListener('abort', onAbort, { once: true });
+              clarifyResolverRef.current = (answer) => {
+                signal?.removeEventListener('abort', onAbort);
+                if (answer === null) {
+                  reject(new Error('clarify dismissed by user'));
+                  return;
+                }
+                resolve(answer);
+              };
+              const opts = (choices ?? []).map((c) => ({ label: c, value: c }));
+              setInteractionRequest({
+                prompt: question,
+                options: opts,
+                allowFreeform: true
+              });
+              setOverlay(opts.length > 0 ? 'option-picker' : 'option-freeform');
             }),
           callingAgent: { name: activeAgent.name },
           signal: ac.signal
@@ -5078,6 +5128,14 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               }
               setOverlay(null);
               setInteractionRequest(null);
+              // If a clarify tool call is waiting, route the answer
+              // back to it instead of starting a new user turn.
+              const resolver = clarifyResolverRef.current;
+              if (resolver) {
+                clarifyResolverRef.current = null;
+                resolver(v);
+                return;
+              }
               setInput(v);
               const ta = composerRef.current as unknown as {
                 setText?: (s: string) => void;
@@ -5088,6 +5146,11 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             onCancel={() => {
               setOverlay(null);
               setInteractionRequest(null);
+              const resolver = clarifyResolverRef.current;
+              if (resolver) {
+                clarifyResolverRef.current = null;
+                resolver(null);
+              }
             }}
           />
         ) : null}
@@ -5100,6 +5163,16 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               const value = v.trim();
               setOverlay(null);
               setInteractionRequest(null);
+              const resolver = clarifyResolverRef.current;
+              if (resolver) {
+                clarifyResolverRef.current = null;
+                if (!value) {
+                  resolver(null);
+                  return;
+                }
+                resolver(value);
+                return;
+              }
               if (!value) return;
               setInput(value);
               const ta = composerRef.current as unknown as {
@@ -5111,6 +5184,11 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             onCancel={() => {
               setOverlay(null);
               setInteractionRequest(null);
+              const resolver = clarifyResolverRef.current;
+              if (resolver) {
+                clarifyResolverRef.current = null;
+                resolver(null);
+              }
             }}
           />
         ) : null}

@@ -9,6 +9,7 @@ import type { AtlasConfig } from '../config/types.js';
 import { createOpenRouterProvider } from './openrouter.js';
 import { createAnthropicProvider } from './anthropic.js';
 import { createLocalProvider } from './local.js';
+import { createOpenCodeProvider } from './opencode.js';
 import { loadClaudeCodeCredentials } from './claude-code.js';
 import type { Provider } from './types.js';
 
@@ -21,6 +22,7 @@ export * from './pricing.js';
 export * from './catalog.js';
 export * from './codex-oauth.js';
 export * from './codex.js';
+export * from './opencode.js';
 
 /**
  * Synchronous provider factory.
@@ -82,6 +84,30 @@ export const providerFromConfig = (cfg: AtlasConfig): Result<Provider, AtlasErro
           requestTimeoutMs: lo.requestTimeoutMs
         })
       );
+    }
+    case 'opencode-zen': {
+      const zen = cfg.providers.opencode.zen;
+      if (!zen.apiKey) {
+        return err(
+          atlasError(
+            'PROVIDER_AUTH_FAILED',
+            'OpenCode Zen API key missing - set OPENCODE_ZEN_API_KEY or providers.opencode.zen.apiKey'
+          )
+        );
+      }
+      return ok(createOpenCodeProvider({ plan: 'zen', apiKey: zen.apiKey, baseUrl: zen.baseUrl }));
+    }
+    case 'opencode-go': {
+      const go = cfg.providers.opencode.go;
+      if (!go.apiKey) {
+        return err(
+          atlasError(
+            'PROVIDER_AUTH_FAILED',
+            'OpenCode Go API key missing - set OPENCODE_GO_API_KEY or providers.opencode.go.apiKey'
+          )
+        );
+      }
+      return ok(createOpenCodeProvider({ plan: 'go', apiKey: go.apiKey, baseUrl: go.baseUrl }));
     }
     default:
       return err(

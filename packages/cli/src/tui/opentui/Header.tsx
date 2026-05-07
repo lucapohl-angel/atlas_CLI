@@ -2,12 +2,8 @@
 /**
  * Header — top chip bar.
  *
- * Mirrors the Ink TUI's `Header` component (App.tsx ~line 5971): role
- * (colored by agent), model + provider tag, mode, thinking effort.
- * Phase 2 of the OpenTUI port: phase / session / git / streaming
- * chips are intentionally omitted — they require state we don't yet
- * surface in the OpenTUI variant. Width-responsive collapsing is also
- * deferred.
+ * Shows role (colored by agent), model + provider tag, mode, thinking
+ * effort, phase/session/git/streaming chips, and responsive collapse.
  */
 import { useEffect, useState } from 'react';
 import { createTextAttributes } from '@opentui/core';
@@ -22,7 +18,6 @@ export type AtlasPowerMode = 'full' | 'smart';
 
 const colorForAgent = (name: string): string => {
   // Stable hash → pick from a small Atlas-blue-friendly palette.
-  // Same algorithm as the Ink TUI so the same agent gets the same color.
   const palettePool = [
     palette.primary,
     palette.primaryBright,

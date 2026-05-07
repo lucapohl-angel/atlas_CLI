@@ -24,6 +24,8 @@ describe('loadConfig', () => {
     expect(r.value.atlasMode).toBe('full');
     expect(r.value.providers.openrouter.apiKey).toBeUndefined();
     expect(r.value.providers.openrouter.baseUrl).toBe('https://openrouter.ai/api/v1');
+    expect(r.value.providers.opencode.zen.baseUrl).toBe('https://opencode.ai/zen/v1');
+    expect(r.value.providers.opencode.go.baseUrl).toBe('https://opencode.ai/zen/go/v1');
   });
 
   it('reads YAML file and applies env overrides', async () => {
@@ -41,6 +43,39 @@ describe('loadConfig', () => {
     if (!r.ok) return;
     expect(r.value.defaultModel).toBe('anthropic/claude-opus-4');
     expect(r.value.providers.openrouter.apiKey).toBe('from-env');
+  });
+
+  it('reads OpenCode YAML and applies env overrides', async () => {
+    const path = join(dir, 'config.yaml');
+    await writeFile(
+      path,
+      [
+        'defaultProvider: opencode-go',
+        'providers:',
+        '  opencode:',
+        '    zen:',
+        '      apiKey: zen-file',
+        '    go:',
+        '      apiKey: go-file'
+      ].join('\n'),
+      'utf8'
+    );
+    const r = await loadConfig({
+      path,
+      env: {
+        OPENCODE_ZEN_API_KEY: 'zen-env',
+        OPENCODE_ZEN_BASE_URL: 'https://example.test/zen/v1',
+        OPENCODE_GO_API_KEY: 'go-env',
+        OPENCODE_GO_BASE_URL: 'https://example.test/go/v1'
+      }
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.defaultProvider).toBe('opencode-go');
+    expect(r.value.providers.opencode.zen.apiKey).toBe('zen-env');
+    expect(r.value.providers.opencode.zen.baseUrl).toBe('https://example.test/zen/v1');
+    expect(r.value.providers.opencode.go.apiKey).toBe('go-env');
+    expect(r.value.providers.opencode.go.baseUrl).toBe('https://example.test/go/v1');
   });
 
   it('reads hosted Atlas power mode', async () => {

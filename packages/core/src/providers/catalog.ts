@@ -20,13 +20,24 @@ import os from 'node:os';
 import { atlasError, type AtlasError } from '../errors.js';
 import { err, ok, type Result } from '../result.js';
 import { childLogger } from '../logger.js';
+import {
+  openCodeRouteForModel,
+  stripOpenCodeAtlasPrefix,
+  type OpenCodePlan
+} from './opencode.js';
 
 const log = childLogger('catalog');
 
 export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
 export type PromptCacheSupport = 'supported' | 'unsupported' | 'unknown';
 
-export type ModelProviderKind = 'openrouter' | 'anthropic' | 'openai-codex' | 'local';
+export type ModelProviderKind =
+  | 'openrouter'
+  | 'anthropic'
+  | 'openai-codex'
+  | 'local'
+  | 'opencode-zen'
+  | 'opencode-go';
 
 export interface ModelInfo {
   /** Provider-native id (no provider/ prefix for native Anthropic). */
@@ -143,6 +154,10 @@ const anthropicThinking = (id: string): readonly ThinkingLevel[] => {
 interface FetchOptions {
   readonly fetch?: typeof fetch;
   readonly forceRefresh?: boolean;
+}
+
+interface OpenCodeFetchOptions extends FetchOptions {
+  readonly baseUrl?: string;
 }
 
 export const fetchOpenRouterModels = async (
@@ -275,6 +290,138 @@ export const fetchAnthropicModels = async (
   await writeCache('anthropic', models);
   return ok(models);
 };
+
+const openCodeThinking = (id: string): readonly ThinkingLevel[] => {
+  const m = id.toLowerCase();
+  if (/claude/i.test(m)) return anthropicThinking(m);
+  if (/gpt-|codex|^o[1-9]/.test(m)) return ['off', 'low', 'medium', 'high'];
+  return ['off'];
+};
+
+const openCodePromptCache = (raw: Record<string, unknown>): PromptCacheSupport => {
+  const fields = [raw['pricing'], raw['cache'], raw['metadata']].filter(
+    (v): v is Record<string, unknown> => typeof v === 'object' && v !== null
+  );
+  for (const row of fields) {
+    const keys = Object.keys(row).map((k) => k.toLowerCase());
+    if (keys.some((k) => k.includes('cache'))) return 'supported';
+  }
+  return 'unknown';
+};
+
+const rowsFromOpenCodeBody = (body: unknown): readonly unknown[] => {
+  if (!body || typeof body !== 'object') return [];
+  const data = (body as { data?: unknown }).data;
+  if (Array.isArray(data)) return data;
+  const models = (body as { models?: unknown }).models;
+  if (Array.isArray(models)) return models;
+  if (models && typeof models === 'object') return Object.values(models as Record<string, unknown>);
+  return [];
+};
+
+const numberField = (raw: Record<string, unknown>, keys: readonly string[]): number | undefined => {
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  const limit = raw['limit'];
+  if (limit && typeof limit === 'object') {
+    const context = (limit as Record<string, unknown>)['context'];
+    if (typeof context === 'number' && Number.isFinite(context)) return context;
+  }
+  return undefined;
+};
+
+const fetchOpenCodeModels = async (
+  plan: OpenCodePlan,
+  apiKey: string,
+  options: OpenCodeFetchOptions = {}
+): Promise<Result<readonly ModelInfo[], AtlasError>> => {
+  const provider: Extract<ModelProviderKind, 'opencode-zen' | 'opencode-go'> =
+    plan === 'zen' ? 'opencode-zen' : 'opencode-go';
+  if (!options.forceRefresh) {
+    const cached = await readCache(provider);
+    if (cached) return ok(cached);
+  }
+  const baseUrl = (
+    options.baseUrl ??
+    (plan === 'zen' ? 'https://opencode.ai/zen/v1' : 'https://opencode.ai/zen/go/v1')
+  ).replace(/\/$/, '');
+  const doFetch = options.fetch ?? fetch;
+  let res: Response;
+  try {
+    res = await doFetch(`${baseUrl}/models`, {
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        accept: 'application/json'
+      }
+    });
+  } catch (e) {
+    return err(
+      atlasError('PROVIDER_NETWORK', `failed to reach ${provider} /models`, { cause: e })
+    );
+  }
+  if (!res.ok) {
+    return err(
+      atlasError('PROVIDER_INVALID_RESPONSE', `${provider} /models HTTP ${res.status}`, {
+        context: { status: res.status }
+      })
+    );
+  }
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch (e) {
+    return err(atlasError('PROVIDER_INVALID_RESPONSE', `${provider} /models bad JSON`, { cause: e }));
+  }
+  const rows = rowsFromOpenCodeBody(body);
+  const prefix = plan === 'zen' ? 'opencode' : 'opencode-go';
+  const models: ModelInfo[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const raw = row as Record<string, unknown>;
+    const rowId =
+      typeof raw['id'] === 'string'
+        ? raw['id']
+        : typeof raw['slug'] === 'string'
+          ? raw['slug']
+          : null;
+    if (!rowId) continue;
+    const bare = stripOpenCodeAtlasPrefix(rowId);
+    if (!openCodeRouteForModel(plan, bare)) continue;
+    const id = `${prefix}/${bare}`;
+    const label =
+      typeof raw['name'] === 'string'
+        ? raw['name']
+        : typeof raw['display_name'] === 'string'
+          ? raw['display_name']
+          : typeof raw['label'] === 'string'
+            ? raw['label']
+            : bare;
+    const contextWindow = numberField(raw, ['context_length', 'context_window', 'contextWindow']);
+    models.push({
+      id,
+      label,
+      thinking: openCodeThinking(bare),
+      promptCache: openCodePromptCache(raw),
+      provider,
+      ...(contextWindow !== undefined ? { contextWindow } : {})
+    });
+  }
+  models.sort((a, b) => a.id.localeCompare(b.id));
+  await writeCache(provider, models);
+  return ok(models);
+};
+
+export const fetchOpenCodeZenModels = async (
+  apiKey: string,
+  options: OpenCodeFetchOptions = {}
+): Promise<Result<readonly ModelInfo[], AtlasError>> => fetchOpenCodeModels('zen', apiKey, options);
+
+export const fetchOpenCodeGoModels = async (
+  apiKey: string,
+  options: OpenCodeFetchOptions = {}
+): Promise<Result<readonly ModelInfo[], AtlasError>> => fetchOpenCodeModels('go', apiKey, options);
 
 /** Look up thinking levels for a model id, with provider-aware fallback. */
 export const thinkingLevelsFor = (

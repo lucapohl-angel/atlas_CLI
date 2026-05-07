@@ -77,6 +77,38 @@ describe('startup model selection', () => {
       })
     ).toBe(runtime);
   });
+
+  it('routes OpenCode-prefixed startup models to OpenCode runtimes', () => {
+    const zen = provider('opencode-zen');
+    const go = provider('opencode-go');
+    expect(
+      providerForStartupModel('opencode/gpt-5.5', undefined, {
+        'opencode-zen': zen
+      })
+    ).toBe(zen);
+    expect(
+      providerForStartupModel('opencode-go/kimi-k2.6', undefined, {
+        'opencode-go': go
+      })
+    ).toBe(go);
+  });
+
+  it('uses deterministic connected-provider fallback order', () => {
+    expect(
+      chooseStartupModel({
+        configuredModel: 'claude-sonnet-4-5',
+        providers: {
+          openrouter: provider('openrouter'),
+          'opencode-go': provider('opencode-go')
+        },
+        fallbackPool: ['anthropic/claude-sonnet-4-5'],
+        modelCatalog: [
+          model('openai/gpt-5', 'openrouter'),
+          model('opencode-go/kimi-k2.6', 'opencode-go')
+        ]
+      })
+    ).toBe('opencode-go/kimi-k2.6');
+  });
 });
 
 describe('startup session selection', () => {
@@ -124,5 +156,23 @@ describe('runtime provider construction', () => {
     expect(providers.local?.supportsToolCalling).toBe(true);
     expect(providers.local?.allowedToolNames).toContain('read_file');
     expect(providers.local?.allowedToolNames).not.toContain('browser');
+  });
+
+  it('builds OpenCode providers when keys exist', async () => {
+    const cfg = ConfigSchema.parse({
+      defaultProvider: 'opencode-go',
+      defaultModel: 'opencode-go/kimi-k2.6',
+      providers: {
+        opencode: {
+          zen: { apiKey: 'zen-key' },
+          go: { apiKey: 'go-key' }
+        }
+      }
+    }) satisfies AtlasConfig;
+
+    const providers = await buildAllProviders(cfg);
+
+    expect(providers['opencode-zen']?.name).toBe('opencode-zen');
+    expect(providers['opencode-go']?.name).toBe('opencode-go');
   });
 });

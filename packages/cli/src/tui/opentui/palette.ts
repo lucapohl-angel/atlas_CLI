@@ -1,12 +1,10 @@
 /**
- * Atlas palette — Atlas-blue navy variant for the OpenTUI port.
+ * Atlas palette — Atlas-blue navy variant for OpenTUI.
  *
- * The Ink TUI ships on `#0a0a0a` (near-black) because it relies on the
- * terminal's own dark theme. The OpenTUI variant paints every cell
- * itself, so we use a navy base that reads as Atlas-branded rather
- * than as "the user's terminal bg." All three surface tones step up
- * from the same hue family so panels, elements, and borders remain
- * cohesive.
+ * OpenTUI paints every cell itself, so we use a navy base that reads as
+ * Atlas-branded rather than as "the user's terminal bg." All three
+ * surface tones step up from the same hue family so panels, elements,
+ * and borders remain cohesive.
  */
 export const palette = {
   background: '#0b1220',        // navy base — main canvas

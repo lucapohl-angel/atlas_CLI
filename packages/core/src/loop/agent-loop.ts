@@ -17,9 +17,9 @@ import { runHooks, type HookRegistry } from '../hooks/index.js';
 import { childLogger } from '../logger.js';
 import {
   invokeTool,
-  type ToolContext,
   type ToolRegistry
-} from '../tools/index.js';
+} from '../tools/registry.js';
+import type { ToolContext } from '../tools/types.js';
 import type {
   CompletionRequest,
   Message,

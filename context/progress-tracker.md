@@ -22,17 +22,16 @@ token-optimization** track on top of it.
 
 ## Current Goal
 
-- Maintain the internal project context docs so every Atlas session starts
-  from the same documented state without re-summarizing.
+- Stabilize the OpenTUI-only runtime, first-class OpenCode Zen/Go provider
+  support, and the first VS Code extension host skeleton.
 
 ## In Progress
 
-- 1.7.2 prep: `/config` now has hosted Atlas Power Full / Atlas Smart Mode,
-  and model pickers surface prompt-cache support so cache-capable models are
-  easier to choose.
-- OpenTUI local-model mode picker now supports lite / hybrid / full;
-  Ink still only writes local default `toolMode`, so mirror the picker
-  there if Ink parity is required.
+- 1.7.3 prep: OpenTUI is the only maintained full-screen TUI, with hosted
+  Atlas Power modes, local-model mode controls, prompt-cache labels, and
+  OpenCode Zen/Go provider wiring plus a dismissible npm update notice.
+- VS Code extension Phase 2.B: `packages/vscode` now has a local session host
+  and `Atlas: Run Turn` smoke path; VS Code-native tools are still pending.
 
 ## Next Up (recommended order)
 
@@ -41,24 +40,19 @@ token-optimization** track on top of it.
    `/model`, add `/local` slash command for zero-config UX. Also
    serves any OpenAI-compatible endpoint (LM Studio, vLLM,
    llama.cpp) via `providers.local.baseUrl`.
-2. **Ink parity for local modes** — mirror the OpenTUI lite / hybrid /
-  full picker and hardware guidance in the Ink `/config` menu, or
-  explicitly retire Ink parity for this local-model flow.
-3. **VS Code extension** — see
-   [`vscode-extension-plan.md`](vscode-extension-plan.md) for the
-   full design. New `packages/vscode/` host that embeds
-   `@atlas/core`; webview UI mirrors the TUI workflow.
-4. Wire a hook (or contributor docs) so `progress-tracker.md` gets a
+2. **VS Code extension Phase 2.B tools** — replace generic core filesystem /
+  edit / terminal tools with VS Code-native adapters.
+3. Wire a hook (or contributor docs) so `progress-tracker.md` gets a
    one-liner appended automatically after each commit on `main`.
-5. Pull the performance-track items into `CHANGELOG.md` under an
+4. Pull the performance-track items into `CHANGELOG.md` under an
    `Unreleased` heading.
-6. Decide: do we resurrect post-1.0 phase 12 (installer + module
+5. Decide: do we resurrect post-1.0 phase 12 (installer + module
    system), or formally close it as out of scope and update the README
    phase table to "🚫 deferred"?
-7. Audit existing tools for `whenToUse` / `outputContract` /
+6. Audit existing tools for `whenToUse` / `outputContract` /
    `blockedOps` / `examples` completeness — anything missing reduces
    tool-routing quality.
-8. Wire `routerModel` into the remaining background paths
+7. Wire `routerModel` into the remaining background paths
    (`summarizeToolArgs` in the TUI, todo extraction, slash-parsing
    helpers) — only compaction + skill-learning reflection are wired
    today.
@@ -80,6 +74,14 @@ token-optimization** track on top of it.
 
 > Append newest at the top. One line each: `[shortsha] one-line summary`.
 
+- `[pending]` OpenTUI is the only maintained TUI; OpenCode Zen/Go BYO-key
+  providers are wired through config, catalog, runtime, and `/config`.
+- `[pending]` VS Code extension Phase 2.A starts in `packages/vscode` with a
+  local side-bar webview host and typed bridge.
+- `[pending]` VS Code extension Phase 2.B smoke path runs one local Atlas core
+  turn from the command palette or side-bar bridge.
+- `[pending]` Atlas checks npm on TUI open and shows a dismissible update
+  notice when `atlas-os` is behind.
 - `[e02d9b7]` workspace installs OpenTUI native optional deps for all release
   targets and package metadata points at `ATLAS_OS`.
 - `[371ef5b]` terminal tool now kills POSIX process groups on timeout/abort,

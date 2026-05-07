@@ -3,10 +3,9 @@
  * Picker — generic centered overlay with a `<select>` list.
  *
  * Used by the Tab agent picker, Ctrl-O model picker, Ctrl-T thinking
- * picker, and Ctrl-P mode picker. Mirrors the Ink TUI's overlay
- * convention: single bordered box, accent border, title, hint line at
- * the bottom. Submitting (`enter`) calls `onChoose`; `escape` calls
- * `onCancel`.
+ * picker, and Ctrl-P mode picker. Atlas overlays use a single bordered
+ * box, accent border, title, and hint line at the bottom. Submitting
+ * (`enter`) calls `onChoose`; `escape` calls `onCancel`.
  *
  * Positioning: rendered with absolute layout coordinates so it floats
  * over the chat without re-flowing it. The parent sets `zIndex` high
@@ -19,10 +18,9 @@ import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 import { palette } from './palette.js';
 
 /**
- * Compute a centered, narrow overlay box position. Mirrors the Ink
- * TUI convention of *not* spanning the full terminal width — popups
- * read as modals, not as full-screen takeovers. Width caps at 72
- * cols (slightly wider than a typical email-line) and the box is
+ * Compute a centered, narrow overlay box position. Popups do not span
+ * the full terminal width, so they read as modals rather than
+ * full-screen takeovers. Width caps at 72 cols and the box is
  * horizontally centered. When `rows` is supplied AND `height` is
  * set, the box is **vertically centered** as well; otherwise `top`
  * defaults to 2 to leave the header visible.
@@ -77,9 +75,8 @@ export type GroupedPickerEntry =
       readonly value: string;
       readonly description?: string;
       /**
-       * When true, the row is highlighted as a "★ Popular" pick
-       * (warning color when not selected). Mirrors the Ink TUI's
-       * yellow tint on curated popular models.
+      * When true, the row is highlighted as a "★ Popular" pick
+      * (warning color when not selected).
        */
       readonly popular?: boolean;
     };
@@ -206,8 +203,7 @@ export interface ConfirmProps {
  * Confirm — small two-button overlay used for destructive or
  * elevated-permission flows (e.g. switching into autopilot). The
  * focused `<select>` exposes the two choices so the user can navigate
- * with arrow keys and confirm with Enter, mirroring the Ink TUI's
- * autopilot prompt UX.
+ * with arrow keys and confirm with Enter.
  */
 export const Confirm = (props: ConfirmProps) => {
   const { width: cols } = useTerminalDimensions();
@@ -280,10 +276,8 @@ export interface GroupedPickerProps {
 }
 
 /**
- * GroupedPicker — searchable list with section headers. Mirrors the
- * Ink TUI's grouped model picker (Anthropic / OpenAI Codex /
- * OpenRouter sections, with a "★ Popular" sub-header inside
- * OpenRouter).
+ * GroupedPicker — searchable list with section headers for provider
+ * groups and popular-model subheaders.
  */
 export const GroupedPicker = (props: GroupedPickerProps) => {
   const { width: cols } = useTerminalDimensions();
@@ -593,6 +587,8 @@ export interface InfoOverlayProps {
   readonly body: string;
   readonly onClose: () => void;
   readonly tone?: 'info' | 'warn' | 'error';
+  readonly closeLabel?: string;
+  readonly closeDescription?: string;
 }
 
 /**
@@ -641,7 +637,12 @@ export const InfoOverlay = (props: InfoOverlayProps) => {
       </box>
       <select
         focused
-        options={[{ name: 'OK', description: '↵ / Esc to close' }]}
+        options={[
+          {
+            name: props.closeLabel ?? 'OK',
+            description: props.closeDescription ?? '↵ / Esc to close'
+          }
+        ]}
         selectedIndex={0}
         showDescription
         style={{
@@ -700,9 +701,8 @@ export interface MultiSelectProps {
  * `Space` toggles, `↑/↓` navigate, `a` selects all, `n` clears all.
  * `Tab` (or `↓` from the last item) drops focus into the action row;
  * `Tab`/`←/→` rotate actions, `Enter` invokes the active one. This
- * is a light reimplementation of the multi-select pattern Atlas's
- * Ink TUI does *not* expose — OpenTUI's native `<select>` only
- * does single-select.
+ * is a light multi-select implementation because OpenTUI's native
+ * `<select>` only does single-select.
  */
 export const MultiSelect = (props: MultiSelectProps) => {
   const { width: cols, height: rows } = useTerminalDimensions();
@@ -1031,11 +1031,10 @@ export interface SlashAutocompleteProps {
 
 /**
  * SlashAutocomplete — inline command-name dropdown that appears above
- * the composer when the user types `/` (no space yet). Mirrors the
- * Ink TUI's SlashAutocomplete component (App.tsx:6908). The rendering
- * is non-interactive (no focus stolen from the composer); the parent
- * App handles ↑/↓ Tab Enter via the global keyboard listener and
- * passes back `highlightIndex`.
+ * the composer when the user types `/` (no space yet). The rendering is
+ * non-interactive (no focus stolen from the composer); the parent App
+ * handles ↑/↓ Tab Enter via the global keyboard listener and passes
+ * back `highlightIndex`.
  */
 export const SlashAutocomplete = (props: SlashAutocompleteProps) => {
   const { width: cols } = useTerminalDimensions();
@@ -1079,8 +1078,7 @@ export const SlashAutocomplete = (props: SlashAutocompleteProps) => {
         const prefix = active ? '❯ ' : '  ';
         const nameColor = active ? palette.primaryBright : palette.primary;
         const descColor = active ? palette.text : palette.textMuted;
-        // Pad the slash command name so descriptions line up across
-        // rows, mirroring the Ink TUI's column alignment.
+        // Pad the slash command name so descriptions line up across rows.
         const padded = `/${s.name}`.padEnd(longestName + 1);
         return (
           <box
@@ -1127,8 +1125,7 @@ export interface ColoredGroupedPickerProps {
 
 /**
  * ColoredGroupedPicker — like GroupedPicker but renders each row
- * with explicit per-row foreground colors so we can mirror the Ink
- * TUI's palette:
+ * with explicit per-row foreground colors:
  *   - Headers (Anthropic / OpenAI / OpenRouter / ★ Popular):
  *       palette.accent (magenta)  bold
  *   - Popular items (unselected):     palette.warning (yellow)  ★

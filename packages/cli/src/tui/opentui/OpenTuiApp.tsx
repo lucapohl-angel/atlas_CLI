@@ -15,9 +15,8 @@
  *
  * Behavior parity for the heavier overlays (setup wizard, autopilot
  * confirm, sessions, MCP, ship-conflict, full live telemetry, markdown
- * transcript) lands in subsequent slices. This file remains the entry
- * point for the OpenTUI runtime and is feature-flagged behind
- * `--ui=opentui`.
+ * transcript) lands in subsequent slices. This file is the maintained
+ * full-screen Atlas runtime.
  *
  * Runtime requirement: OpenTUI uses `node:ffi`, which is only
  * available in Bun. The dispatcher (`launcher.mjs`) routes users to
@@ -37,6 +36,7 @@ import {
   clearActiveTask,
   compactIfNeeded,
   consumeDiscoverWarnings,
+  beginCodexLogin,
   denyAllPolicy,
   estimateCost,
   estimateOnboardCost,
@@ -44,6 +44,8 @@ import {
   type OnboardingDocCandidate,
   fetchAnthropicModels,
   fetchCodexModels,
+  fetchOpenCodeGoModels,
+  fetchOpenCodeZenModels,
   fetchOpenRouterModels,
   formatPhaseLine,
   isFrameworkAgent,
@@ -95,6 +97,8 @@ import {
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 import type { TextareaRenderable } from '@opentui/core';
 import { createTextAttributes } from '@opentui/core';
+import { spawn } from 'node:child_process';
+import { platform } from 'node:os';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import {
   buildReflectionMessages,
@@ -105,6 +109,7 @@ import {
   shouldOfferLearn,
   type LearnedSkillDraft
 } from '../learn.js';
+import type { AtlasUpdateNotice } from '../update-notice.js';
 
 const BOLD_ATTR = createTextAttributes({ bold: true });
 const ITALIC_ATTR = createTextAttributes({ italic: true });
@@ -135,10 +140,10 @@ export interface OpenTuiAppProps {
   readonly provider: Provider | null;
   /**
    * Live per-provider runtimes built from config (openrouter / anthropic
-   * / openai-codex). Drives the /config menu's connection badges and
-   * the model-picker section visibility — same contract as the Ink TUI.
+    * / openai-codex / opencode). Drives the /config menu's connection
+    * badges and the model-picker section visibility.
    */
-  readonly providers?: Partial<Record<'openrouter' | 'anthropic' | 'openai-codex' | 'local', Provider>>;
+  readonly providers?: Partial<Record<ModelInfo['provider'], Provider>>;
   readonly agents: AgentRegistry;
   readonly skills: SkillRegistry;
   readonly tools: ToolRegistry;
@@ -148,10 +153,10 @@ export interface OpenTuiAppProps {
   readonly fallbackModels?: readonly string[];
   readonly availableModels?: readonly string[];
   /**
-   * Live model catalog (OpenRouter / Anthropic / Codex) — same shape
-   * the Ink TUI consumes. Drives model-picker grouping, thinking-level
-   * filtering, context-window sizing, and the provider tag in the
-   * header. Optional: the picker falls back to a static seed list.
+    * Live model catalog (OpenRouter / Anthropic / Codex / OpenCode).
+    * Drives model-picker grouping, thinking-level filtering,
+    * context-window sizing, and the provider tag in the header. Optional:
+    * the picker falls back to a static seed list.
    */
   readonly modelCatalog?: readonly ModelInfo[];
   readonly initialAgentName?: string;
@@ -161,8 +166,8 @@ export interface OpenTuiAppProps {
   /**
    * Resumed session restored at startup (when invoked with
    * `--resume <id>` or `--continue`). The full record is passed in
-   * (not just id+title) so the OpenTUI variant can hydrate the
-   * transcript and messagesRef on mount, matching Ink behaviour.
+  * (not just id+title) so OpenTUI can hydrate the transcript and
+  * messagesRef on mount.
    */
   readonly initialSession?: SessionRecord;
   /** MCP server startup status (running + failed). Surfaced via `/mcps`. */
@@ -173,11 +178,12 @@ export interface OpenTuiAppProps {
   /**
    * The active workflow task (if any) restored from
    * `.atlas/active-task.json`. Drives `/status`, `/back`, `/skip`,
-   * `/abort`. The OpenTUI variant doesn't yet auto-advance phases on
-   * each turn (the Ink TUI's classifyIntent router is heavy state);
-   * the user can drive it manually via the four phase commands.
+  * `/abort`. Phase advancement is also observed during each turn;
+  * these commands remain the manual controls.
    */
   readonly initialActiveTask?: TaskState | null;
+  readonly checkForUpdate?: () => Promise<AtlasUpdateNotice | null>;
+  readonly dismissUpdateNotice?: (latestVersion: string) => Promise<void>;
   /** Called when the user requests exit (Ctrl-D twice / Ctrl-C / Esc on empty input). */
   readonly onExit?: () => void;
 }
@@ -202,7 +208,7 @@ interface TranscriptItem {
 interface TurnStep {
   readonly id: string;
   readonly kind: 'thinking' | 'tool' | 'note';
-  /** Verb-prefixed label, e.g. "Reading App.tsx" or "Thinking…". */
+  /** Verb-prefixed label, e.g. "Reading file.ts" or "Thinking…". */
   readonly label: string;
   readonly status: 'running' | 'ok' | 'error';
   readonly startedAt: number;
@@ -626,6 +632,8 @@ type OverlayKind =
   | 'config'
   | 'config-key-openrouter'
   | 'config-key-anthropic'
+  | 'config-key-opencode-zen'
+  | 'config-key-opencode-go'
   | 'config-mcp'
   | 'config-mcp-action'
   | 'config-mcp-add-env'
@@ -657,8 +665,11 @@ type OverlayKind =
   | 'sessions-rename'
   | 'config-action-openrouter'
   | 'config-action-anthropic'
+  | 'config-action-opencode-zen'
+  | 'config-action-opencode-go'
   | 'config-local'
   | 'learn-confirm'
+  | 'update-notice'
   | 'ship-conflict';
 
 /**
@@ -886,7 +897,92 @@ const LearnDraftReviewOverlay = (props: LearnDraftReviewOverlayProps) => {
   );
 };
 
-type ProviderKindLabel = 'openrouter' | 'anthropic' | 'openai-codex' | 'local' | 'unknown';
+type ProviderKindLabel = ModelInfo['provider'] | 'unknown';
+type ConfigKeyTarget = 'openrouter' | 'anthropic' | 'opencode-zen' | 'opencode-go';
+
+const createDefaultConfig = (
+  defaultProvider: AtlasConfig['defaultProvider'],
+  defaultModel: string
+): AtlasConfig => ({
+  defaultProvider,
+  defaultModel,
+  fallbackModels: [],
+  atlasMode: 'full',
+  providers: {
+    openrouter: {
+      baseUrl: 'https://openrouter.ai/api/v1',
+      title: 'Atlas CLI',
+      apiKeys: [],
+      customModels: []
+    },
+    anthropic: {
+      baseUrl: 'https://api.anthropic.com',
+      useClaudeCodeOauth: true,
+      apiKeys: []
+    },
+    openai: {
+      codex: {},
+      baseUrl: 'https://chatgpt.com/backend-api/codex'
+    },
+    opencode: {
+      zen: {
+        baseUrl: 'https://opencode.ai/zen/v1',
+        customModels: []
+      },
+      go: {
+        baseUrl: 'https://opencode.ai/zen/go/v1',
+        customModels: []
+      }
+    },
+    local: {
+      baseUrl: 'http://localhost:11434/v1',
+      headers: {},
+      autoDetect: true,
+      customModels: [],
+      toolMode: 'lite',
+      liteMode: true,
+      requestTimeoutMs: 300_000
+    }
+  },
+  mcp: { servers: [], builtinsSeeded: false },
+  github: {},
+  compaction: { enabled: true, threshold: 0.8, contextTokens: 200_000 },
+  guardrails: {
+    enabled: true,
+    dangerousCommand: true,
+    pathSafety: true,
+    secretRedaction: true,
+    promptInjectionDetector: true,
+    discoverGuardrails: true,
+    progressTracker: true,
+    extraDeniedPaths: [],
+    extraDeniedCommands: []
+  },
+  ship: { autoResolve: 'abort', promptOnConflict: true }
+});
+
+const openInBrowser = async (url: string): Promise<void> => {
+  const plat = platform();
+  let cmd: string;
+  let args: string[];
+  if (plat === 'darwin') {
+    cmd = 'open';
+    args = [url];
+  } else if (plat === 'win32') {
+    cmd = 'cmd';
+    args = ['/c', 'start', '""', url];
+  } else {
+    cmd = 'xdg-open';
+    args = [url];
+  }
+  try {
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+    child.on('error', () => undefined);
+    child.unref();
+  } catch {
+    // The URL is also shown in the UI, so browser-open failures are non-fatal.
+  }
+};
 
 const withSelectedDefaultModel = (
   cfg: AtlasConfig,
@@ -895,18 +991,20 @@ const withSelectedDefaultModel = (
 ): AtlasConfig => ({
   ...cfg,
   defaultModel: modelId,
-  ...(kind === 'openrouter' || kind === 'anthropic' || kind === 'local'
+  ...(kind === 'openrouter' ||
+  kind === 'anthropic' ||
+  kind === 'local' ||
+  kind === 'opencode-zen' ||
+  kind === 'opencode-go'
     ? { defaultProvider: kind }
     : {})
 });
 
 /**
- * Resolve the provider that should run a given model id. Mirrors
- * `providerKindFor` in App.tsx — first the live catalog, then a
- * shape heuristic. Critical: without this the OpenTUI variant would
- * keep sending OpenAI / OpenRouter ids to whatever provider happened
- * to be active at boot (often Anthropic via Claude Code OAuth) and
- * 404 on the first turn.
+ * Resolve the provider that should run a given model id: first the
+ * live catalog, then a shape heuristic. Critical: without this OpenTUI
+ * would keep sending OpenAI / OpenRouter ids to whatever provider
+ * happened to be active at boot and 404 on the first turn.
  */
 const providerKindFor = (
   modelId: string,
@@ -914,6 +1012,8 @@ const providerKindFor = (
 ): ProviderKindLabel => {
   const hit = catalog?.find((m) => m.id === modelId);
   if (hit) return hit.provider;
+  if (modelId.startsWith('opencode-go/')) return 'opencode-go';
+  if (modelId.startsWith('opencode/')) return 'opencode-zen';
   if (modelId.includes('/')) return 'openrouter';
   const m = modelId.toLowerCase();
   if (/^claude/.test(m)) return 'anthropic';
@@ -930,6 +1030,10 @@ const providerLongLabel = (kind: ProviderKindLabel): string => {
       return 'Anthropic';
     case 'openai-codex':
       return 'OpenAI (ChatGPT/Codex backend)';
+    case 'opencode-zen':
+      return 'OpenCode Zen';
+    case 'opencode-go':
+      return 'OpenCode Go';
     case 'local':
       return 'Local (Ollama / LM Studio)';
     case 'unknown':
@@ -939,14 +1043,13 @@ const providerLongLabel = (kind: ProviderKindLabel): string => {
 
 // Default context window for the right-sidebar token chip when the
 // active model isn't recognised. 200k matches Claude Sonnet 4.5 — the
-// Atlas default. The Ink TUI uses the same fallback.
+// Atlas default fallback.
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 /**
- * Per-model context window resolver. Mirrors `contextWindowFor` in
- * App.tsx: prefer the live catalog (so multi-key users get the
- * correct chip for whichever provider exposes the model), fall back
- * to id-shape heuristics for offline / custom ids.
+ * Per-model context window resolver. Prefer the live catalog (so
+ * multi-key users get the correct chip for whichever provider exposes
+ * the model), then fall back to id-shape heuristics for offline/custom ids.
  */
 const contextWindowFor = (
   modelId: string,
@@ -966,10 +1069,8 @@ const contextWindowFor = (
 
 /**
  * Strip every `<atlas:question>...</atlas:question>` block from a
- * string. Mirrors `stripInteractionBlocks` in App.tsx — used to keep
- * the protocol noise out of the transcript and out of message
- * history (so the next turn doesn't quote a stale question back at
- * the model).
+ * string. Used to keep protocol noise out of the transcript and message
+ * history so the next turn doesn't quote a stale question back at the model.
  */
 const stripInteractionBlocks = (s: string): string =>
   s.replace(/<atlas:question>[\s\S]*?<\/atlas:question>/g, '').trim();
@@ -977,8 +1078,7 @@ const stripInteractionBlocks = (s: string): string =>
 /**
  * Strip *complete* interaction blocks AND hide an *in-progress*
  * (still-streaming) opener so the live transcript stays free of raw
- * protocol noise while the model is mid-question. Same contract as
- * App.tsx's `renderVisibleAssistant`.
+ * protocol noise while the model is mid-question.
  */
 const renderVisibleAssistant = (buf: string): string => {
   const stripped = buf.replace(
@@ -999,7 +1099,7 @@ const buildReasoning = (
 };
 
 // Minimum width before we mount the right-side activity sidebar. Below
-// this the chat column gets the full row. Mirrors the Ink TUI cutoff.
+// this the chat column gets the full row.
 const SIDEBAR_MIN_COLS = 110;
 
 const THINKING_OPTIONS_ALL: readonly PickerOption[] = [
@@ -1038,6 +1138,8 @@ const PROVIDER_TAG: Record<string, string> = {
   openrouter: 'OR',
   anthropic: 'AN',
   'openai-codex': 'CDX',
+  'opencode-zen': 'ZEN',
+  'opencode-go': 'GO',
   local: 'LCL'
 };
 
@@ -1057,10 +1159,8 @@ interface McpCatalogEntry {
   readonly docs?: string;
 }
 
-// Curated MCP catalog mirroring the Ink TUI's `/config → MCP server`
-// add wizard. Keep in sync with packages/cli/src/tui/App.tsx (the
-// MCP_CATALOG constant near `mcpCatalog`). When you add an entry
-// here, mirror it in Ink so both variants surface the same set.
+// Curated MCP catalog for `/config → MCP server`. Keep this in sync
+// with `context/tui-workflow.md` when adding or removing entries.
 const MCP_CATALOG: readonly McpCatalogEntry[] = [
   {
     id: 'filesystem',
@@ -1134,9 +1234,8 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'exit', summary: 'leave atlas' }
 ];
 
-// Slash commands not yet ported — surfaced with a clear message instead
-// of failing silently. Mirrors the Ink TUI's behavior for the same
-// commands once Atlas was upgraded but the OpenTUI variant trailed.
+// Slash commands not yet implemented are surfaced with a clear message
+// instead of failing silently.
 //
 // Round 5 (May 2026): emptied. Every slash command in SLASH_COMMANDS
 // now has a real handler. The set is kept (empty) so the dispatch
@@ -1169,11 +1268,12 @@ const providerTagFor = (
   model: string,
   catalog: readonly ModelInfo[] | undefined
 ): string => {
-  // Prefer the live catalog — same heuristic the Ink TUI uses, so
-  // multi-provider users see the correct backend chip even for
-  // ambiguous ids like `gpt-5` (OpenRouter vs Codex OAuth).
+  // Prefer the live catalog so multi-provider users see the correct
+  // backend chip even for ambiguous ids like `gpt-5`.
   const hit = catalog?.find((m) => m.id === model);
   if (hit) return PROVIDER_TAG[hit.provider] ?? 'OR';
+  if (model.startsWith('opencode-go/')) return 'GO';
+  if (model.startsWith('opencode/')) return 'ZEN';
   if (model.includes('/')) return 'OR';
   const m = model.toLowerCase();
   if (/^claude/.test(m)) return 'AN';
@@ -1192,7 +1292,7 @@ const providerTagFor = (
  * Atlas without any prior `atlas init` step.
  */
 const saveProviderKey = async (
-  target: 'openrouter' | 'anthropic',
+  target: ConfigKeyTarget,
   key: string,
   current: AtlasConfig | undefined
 ): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
@@ -1202,53 +1302,15 @@ const saveProviderKey = async (
   const parts = trimmed.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
   const primary = parts[0] ?? trimmed;
   const fallbacks = parts.slice(1);
-  const baseCfg: AtlasConfig = current ?? {
-    defaultProvider: target,
-    defaultModel: target === 'anthropic' ? 'claude-sonnet-4-5' : 'anthropic/claude-sonnet-4-5',
-    fallbackModels: [],
-    atlasMode: 'full',
-    providers: {
-      openrouter: {
-        baseUrl: 'https://openrouter.ai/api/v1',
-        title: 'Atlas CLI',
-        apiKeys: [],
-        customModels: []
-      },
-      anthropic: {
-        baseUrl: 'https://api.anthropic.com',
-        useClaudeCodeOauth: true,
-        apiKeys: []
-      },
-      openai: {
-        codex: {},
-        baseUrl: 'https://chatgpt.com/backend-api/codex'
-      },
-      local: {
-        baseUrl: 'http://localhost:11434/v1',
-        headers: {},
-        autoDetect: true,
-        customModels: [],
-        toolMode: 'lite',
-        liteMode: true,
-        requestTimeoutMs: 300_000
-      }
-    },
-    mcp: { servers: [], builtinsSeeded: false },
-    github: {},
-    compaction: { enabled: true, threshold: 0.8, contextTokens: 200_000 },
-    guardrails: {
-      enabled: true,
-      dangerousCommand: true,
-      pathSafety: true,
-      secretRedaction: true,
-      promptInjectionDetector: true,
-      discoverGuardrails: true,
-      progressTracker: true,
-      extraDeniedPaths: [],
-      extraDeniedCommands: []
-    },
-    ship: { autoResolve: 'abort', promptOnConflict: true }
-  };
+  const defaultModel =
+    target === 'anthropic'
+      ? 'claude-sonnet-4-5'
+      : target === 'opencode-zen'
+        ? 'opencode/gpt-5.5'
+        : target === 'opencode-go'
+          ? 'opencode-go/kimi-k2.6'
+          : 'anthropic/claude-sonnet-4-5';
+  const baseCfg: AtlasConfig = current ?? createDefaultConfig(target, defaultModel);
   const next: AtlasConfig =
     target === 'openrouter'
       ? {
@@ -1262,17 +1324,45 @@ const saveProviderKey = async (
             }
           }
         }
-      : {
-          ...baseCfg,
-          providers: {
-            ...baseCfg.providers,
-            anthropic: {
-              ...baseCfg.providers.anthropic,
-              apiKey: primary,
-              apiKeys: fallbacks
+      : target === 'opencode-zen'
+        ? {
+            ...baseCfg,
+            providers: {
+              ...baseCfg.providers,
+              opencode: {
+                ...baseCfg.providers.opencode,
+                zen: {
+                  ...baseCfg.providers.opencode.zen,
+                  apiKey: primary
+                }
+              }
             }
           }
-        };
+        : target === 'opencode-go'
+          ? {
+              ...baseCfg,
+              providers: {
+                ...baseCfg.providers,
+                opencode: {
+                  ...baseCfg.providers.opencode,
+                  go: {
+                    ...baseCfg.providers.opencode.go,
+                    apiKey: primary
+                  }
+                }
+              }
+            }
+          : {
+              ...baseCfg,
+              providers: {
+                ...baseCfg.providers,
+                anthropic: {
+                  ...baseCfg.providers.anthropic,
+                  apiKey: primary,
+                  apiKeys: fallbacks
+                }
+              }
+            };
   const saved = await saveConfig(next);
   if (!saved.ok) return { ok: false, error: saved.error.message };
   return { ok: true, path: saved.value.path };
@@ -1286,7 +1376,7 @@ const saveProviderKey = async (
  * TUI's disconnect flow.
  */
 const removeProviderKey = async (
-  target: 'openrouter' | 'anthropic',
+  target: ConfigKeyTarget,
   current: AtlasConfig | undefined
 ): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
   if (!current) return { ok: false, error: 'no config to modify' };
@@ -1303,17 +1393,45 @@ const removeProviderKey = async (
             }
           }
         }
-      : {
-          ...current,
-          providers: {
-            ...current.providers,
-            anthropic: {
-              ...current.providers.anthropic,
-              apiKey: undefined,
-              apiKeys: []
+      : target === 'opencode-zen'
+        ? {
+            ...current,
+            providers: {
+              ...current.providers,
+              opencode: {
+                ...current.providers.opencode,
+                zen: {
+                  ...current.providers.opencode.zen,
+                  apiKey: undefined
+                }
+              }
             }
           }
-        };
+        : target === 'opencode-go'
+          ? {
+              ...current,
+              providers: {
+                ...current.providers,
+                opencode: {
+                  ...current.providers.opencode,
+                  go: {
+                    ...current.providers.opencode.go,
+                    apiKey: undefined
+                  }
+                }
+              }
+            }
+          : {
+              ...current,
+              providers: {
+                ...current.providers,
+                anthropic: {
+                  ...current.providers.anthropic,
+                  apiKey: undefined,
+                  apiKeys: []
+                }
+              }
+            };
   const saved = await saveConfig(next);
   if (!saved.ok) return { ok: false, error: saved.error.message };
   return { ok: true, path: saved.value.path };
@@ -1357,6 +1475,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   const [mode, setMode] = useState<Mode>('build');
   const [thinking, setThinking] = useState<ThinkingEffort>('medium');
   const [overlay, setOverlay] = useState<OverlayKind | null>(null);
+  const [updateNotice, setUpdateNotice] = useState<AtlasUpdateNotice | null>(null);
   // Server name selected in `mcps-manage` — used by the per-row
   // action overlay (`mcps-actions`) to know which entry to
   // enable/disable/remove.
@@ -1388,8 +1507,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // Mutable mirror of the active session record. Used for per-turn
   // writes (we mutate `messages` in place and fire-and-forget the
   // disk write) and to know whether the next user turn should lazily
-  // create a fresh session record on disk. Mirrors Ink's
-  // `sessionRef` pattern (App.tsx:615).
+  // create a fresh session record on disk.
   const sessionRef = useRef<SessionRecord | null>(props.initialSession ?? null);
   // Draft string the user is typing in the rename overlay.
   const [renameDraft, setRenameDraft] = useState<string>('');
@@ -1399,7 +1517,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     readonly { id: string; updatedAt?: string; title?: string }[]
   >([]);
   // Onboarding wizard draft — populated by `estimateOnboardCost` and
-  // mutated step-by-step. Mirrors Ink's `OnboardDraft`.
+  // mutated step-by-step.
   type OnboardMode = 'full' | 'cost-reduction' | 'map-only';
   type OnboardStrategy = 'same-model' | 'cheap-fallback' | 'manual';
   interface OnboardDraft {
@@ -1462,7 +1580,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
    * append the model's committed `assistantMessage`. Sent verbatim
    * to `runAgentLoop` so the model sees prior turns — without this
    * Atlas would feel amnesiac (every reply ignores the previous
-   * exchange). Mirrors `messagesRef` in App.tsx.
+  * exchange).
    */
   const messagesRef = useRef<Message[]>(
     // Seed with the resumed session's prior messages on mount so the
@@ -1581,14 +1699,33 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // Resets to 0 every time the input changes. The list itself is
   // computed below as `slashSuggestions`.
   const [slashCursor, setSlashCursor] = useState<number>(0);
+  useEffect(() => {
+    const check = props.checkForUpdate;
+    if (!check) return;
+    let cancelled = false;
+    void check()
+      .then((notice) => {
+        if (cancelled || !notice) return;
+        setUpdateNotice(notice);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [props.checkForUpdate]);
+  useEffect(() => {
+    if (!updateNotice) return;
+    if (overlay !== null) return;
+    setOverlay('update-notice');
+  }, [overlay, updateNotice]);
   // Workflow phase task — restored on launch, mutated by /back, /skip,
-  // /abort. Mirrors the Ink TUI's `activeTask` state.
+  // /abort.
   const [activeTask, setActiveTask] = useState<TaskState | null>(
     props.initialActiveTask ?? null
   );
   // Track the active task in a ref too so the background phase
   // classifier in submit() reads the latest value without depending
-  // on React's render cycle. Mirrors `activeTaskRef` in App.tsx.
+  // on React's render cycle.
   const activeTaskRef = useRef<TaskState | null>(activeTask);
   useEffect(() => {
     activeTaskRef.current = activeTask;
@@ -1596,8 +1733,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // Structured-question protocol — when the model emits an
   // `<atlas:question>` block we extract it, hide the raw block from
   // the transcript, and pop a picker overlay so the user picks one
-  // of the suggested options (or types freeform). Mirrors the Ink
-  // TUI's option-picker / option-freeform overlay pair.
+  // of the suggested options (or types freeform).
   const [interactionRequest, setInteractionRequest] =
     useState<InteractionRequest | null>(null);
   // Cumulative spend for this session (USD). Computed from the
@@ -1609,12 +1745,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   const [sessionTokensUsed, setSessionTokensUsed] = useState<number>(0);
   // Ship-conflict config — fed straight into toolContext.shipDefaults
   // so `ship_apply` doesn't crash with an unhandled prompt and the
-  // user-configured strategy actually applies. The OpenTUI variant
-  // doesn't pop the conflict overlay yet (it falls back to the
-  // configured strategy automatically), so the prompt callback just
-  // returns the default. This is still a parity improvement —
-  // before, ship_apply would call into a missing `shipResolveAsk`
-  // and the loop would block.
+  // user-configured strategy actually applies.
   const shipAutoResolveRef = useRef<'abort' | 'ours' | 'theirs' | 'ai'>(
     props.config?.ship?.autoResolve ?? 'abort'
   );
@@ -1639,8 +1770,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   const learnEnabledRef = useRef<boolean>(DEFAULT_AUTO_LEARN_ENABLED);
   // Per-turn telemetry that the auto-learn heuristic reads after
   // each `done` event. Reset on submit, mutated by tool_call_done +
-  // done. Mirrors App.tsx { turnRoundsRef, turnToolErrorsRef,
-  // lastUserMessageRef }.
+  // done.
   const turnRoundsRef = useRef<number>(0);
   const turnToolErrorsRef = useRef<number>(0);
   const lastUserMessageRef = useRef<string>('');
@@ -1665,8 +1795,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   );
   // Per-agent model bindings — `/agent <name> <model>` records the
   // pairing so future routing-only flips between agents stay on the
-  // model the user picked for that agent. Mirrors Ink's
-  // `agentModels` Map<string,string>.
+  // model the user picked for that agent.
   const [agentModels, setAgentModels] = useState<Map<string, string>>(
     () => new Map()
   );
@@ -1678,8 +1807,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // Anthropic OAuth health: when the user signed into Claude Code
   // and the token has since expired (and there's no fallback API
   // key), the model picker hides Anthropic models and surfaces a
-  // refresh hint instead. Mirrors what the Ink TUI's setup menu
-  // shows when the user opens the Claude Code panel.
+  // refresh hint instead.
   const [anthropicOAuthExpired, setAnthropicOAuthExpired] =
     useState<boolean>(false);
   useEffect(() => {
@@ -1738,7 +1866,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     setActiveAtlasMode(props.config?.atlasMode ?? 'full');
   }, [props.config?.atlasMode]);
 
-  // Switchable agents — mirrors the Ink TUI rule (App.tsx § switchableAgents):
+  // Switchable agents:
   // the orchestrator (`atlas`) plus every user-added (non-framework) agent.
   // Framework specialists (Athena/Prometheus/…) are routed to by `atlas`,
   // never picked manually — so on a default install only `atlas` is
@@ -1759,7 +1887,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
 
   // Thinking levels filtered to what the active model actually supports.
   // `thinkingLevelsFor` walks the live catalog first, then falls back to
-  // id-shape heuristics — same source the Ink TUI consumes.
+  // id-shape heuristics.
   const thinkingOptions = useMemo<readonly PickerOption[]>(() => {
     const allowed = new Set<ThinkingLevel>(
       thinkingLevelsFor(activeModel, props.modelCatalog ?? [])
@@ -1775,10 +1903,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     );
   }, [thinkingOptions]);
 
-  // Grouped model entries \u2014 mirrors the Ink TUI's `(() => { … })()`
-  // grouped picker (App.tsx, model overlay). Sections in fixed order:
-  // Anthropic, OpenAI (ChatGPT/Codex), then OpenRouter \u2014 with a
-  // "\u2605 Popular" sub-header inside OR seeded by curated patterns. Each
+  // Grouped model entries. Sections appear in fixed provider order,
+  // with a "\u2605 Popular" sub-header inside OpenRouter seeded by
+  // curated patterns. Each
   // section only appears when its provider runtime is active or when
   // there's at least one entry to show. Entries surface alongside the
   // provider's context window in the description column.
@@ -1786,6 +1913,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     const catalog = catalogOverride ?? props.modelCatalog ?? [];
     const providers = props.providers ?? {};
     const customModels = props.config?.providers.openrouter.customModels ?? [];
+    const customZenModels = props.config?.providers.opencode.zen.customModels ?? [];
+    const customGoModels = props.config?.providers.opencode.go.customModels ?? [];
     const seedOR = [
       ...(props.availableModels ?? []),
       ...(props.fallbackModels ?? []),
@@ -1799,16 +1928,20 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       byProvider.set(m.provider, list);
     }
 
-    const groupOrder: readonly ('local' | 'anthropic' | 'openai-codex' | 'openrouter')[] = [
+    const groupOrder: readonly ModelInfo['provider'][] = [
       'local',
       'anthropic',
       'openai-codex',
+      'opencode-go',
+      'opencode-zen',
       'openrouter'
     ];
     const groupLabel = (k: string): string => {
       if (k === 'local') return '\u2500\u2500 Local (Ollama / LM Studio) \u2500\u2500';
       if (k === 'anthropic') return '\u2500\u2500 Anthropic \u2500\u2500';
       if (k === 'openai-codex') return '\u2500\u2500 OpenAI (ChatGPT / Codex) \u2500\u2500';
+      if (k === 'opencode-go') return '\u2500\u2500 OpenCode Go \u2500\u2500';
+      if (k === 'opencode-zen') return '\u2500\u2500 OpenCode Zen \u2500\u2500';
       if (k === 'openrouter') return '\u2500\u2500 OpenRouter \u2500\u2500';
       return `\u2500\u2500 ${k} \u2500\u2500`;
     };
@@ -1824,13 +1957,19 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
 
     for (const grp of groupOrder) {
       // Skip provider sections that have no live runtime AND no
-      // catalog/seed entries. Mirrors Ink's `if (!props.providers?.[grp]) continue;`
-      // guard but with a softer fallback so users can still see a
+      // catalog/seed entries, with a soft fallback so users can still see a
       // first-launch model list before any key is configured.
       const hasRuntime = Boolean(providers[grp]);
       const catalogList = byProvider.get(grp) ?? [];
-      const customsHere = grp === 'openrouter' ? customModels : [];
-      const seedHere = grp === 'openrouter' ? seedOR : [];
+      const customsHere =
+        grp === 'openrouter'
+          ? customModels
+          : grp === 'opencode-zen'
+            ? customZenModels
+            : grp === 'opencode-go'
+              ? customGoModels
+              : [];
+      const seedHere = seedOR.filter((id) => providerKindFor(id, catalog) === grp);
       // Anthropic OAuth gate: when the Claude Code token expired AND
       // we don't have a fallback API key, hide the Anthropic models
       // and surface a refresh hint. Continuing to list models we
@@ -1989,11 +2128,24 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         const sorted = [...rest.entries()].sort(([a], [b]) => a.localeCompare(b));
         for (const [id, meta] of sorted) addItem(id, meta.label, meta.desc);
       } else {
-        const sorted = [...catalogList].sort((a, b) => a.id.localeCompare(b.id));
-        for (const m of sorted) {
-          // Use m.label for local so "— not pulled" suffix surfaces.
-          const label = grp === 'local' && m.label !== m.id ? m.label : m.id;
-          addItem(m.id, label, ctxLabel(m));
+        const rest = new Map<string, { label: string; desc?: string }>();
+        for (const m of catalogList) {
+          rest.set(m.id, {
+            label: grp === 'local' && m.label !== m.id ? m.label : m.id,
+            desc: ctxLabel(m)
+          });
+        }
+        for (const id of seedHere) {
+          if (groupSeen.has(id) || rest.has(id)) continue;
+          rest.set(id, { label: id, desc: 'seed · cache: unknown' });
+        }
+        for (const id of customsHere) {
+          if (groupSeen.has(id) || rest.has(id)) continue;
+          rest.set(id, { label: id, desc: 'custom · cache: unknown' });
+        }
+        const sorted = [...rest.entries()].sort(([a], [b]) => a.localeCompare(b));
+        for (const [id, meta] of sorted) {
+          addItem(id, meta.label, meta.desc);
         }
       }
     }
@@ -2007,6 +2159,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         props.defaultModel,
         ...(props.fallbackModels ?? []),
         ...customModels,
+        ...customZenModels,
+        ...customGoModels,
         ...STATIC_MODELS
       ]);
       for (const id of seed) {
@@ -2055,9 +2209,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // Slash-command autocomplete — when the input begins with `/` and
   // contains no space yet (i.e. the user is still typing the command
   // name), filter SLASH_COMMANDS by case-insensitive prefix and show
-  // the dropdown above the composer. Mirrors the Ink TUI's
-  // SlashAutocomplete contract (App.tsx:6908). Returns the empty
-  // array when the popup should be hidden.
+  // the dropdown above the composer. Returns the empty array when the
+  // popup should be hidden.
   const slashSuggestions = useMemo<readonly SlashSuggestion[]>(() => {
     if (overlay !== null) return [];
     if (!input.startsWith('/')) return [];
@@ -2096,6 +2249,15 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     },
     []
   );
+
+  const dismissCurrentUpdateNotice = useCallback((): void => {
+    const latestVersion = updateNotice?.latestVersion;
+    setUpdateNotice(null);
+    setOverlay(null);
+    if (!latestVersion) return;
+    if (!props.dismissUpdateNotice) return;
+    void props.dismissUpdateNotice(latestVersion);
+  }, [props.dismissUpdateNotice, updateNotice]);
 
   /**
    * Resolve a model id to its provider runtime and switch to it.
@@ -2193,10 +2355,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         case 'agent':
           if (arg) {
             // `/agent <name> [model]` — switch agents and optionally
-            // bind a model. The Ink TUI does fuzzy resolution on the
-            // model id; here we accept exact ids only and validate
-            // against the catalog (same fall-through warning as
-            // `/model`).
+            // bind a model. Accept exact model ids and validate against
+            // the catalog with the same fall-through warning as `/model`.
             const tokens = arg.split(/\s+/).filter((s) => s.length > 0);
             const nameArg = tokens[0] ?? '';
             const modelArg = tokens.slice(1).join(' ');
@@ -2272,11 +2432,10 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           return true;
         case 'model':
           if (arg) {
-            // `/model + <id>` — add a custom model id to the OpenRouter
-            // catalog (persisted under providers.openrouter.customModels)
-            // and switch to it. Mirrors the Ink TUI's model-freeform
-            // overlay; lets users name a brand-new OR id without
-            // waiting for the catalog cache to refresh.
+            // `/model + <id>` — add a custom model id to the matching
+            // provider custom list and switch to it. This lets users
+            // name a brand-new id without waiting for the catalog cache
+            // to refresh.
             if (arg.startsWith('+')) {
               const newId = arg.slice(1).trim();
               if (!newId) {
@@ -2285,17 +2444,53 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               }
               const baseCfg = props.config;
               if (baseCfg) {
-                const customs = baseCfg.providers.openrouter.customModels ?? [];
-                const next: AtlasConfig = {
-                  ...withSelectedDefaultModel(baseCfg, newId, 'openrouter'),
-                  providers: {
-                    ...baseCfg.providers,
-                    openrouter: {
-                      ...baseCfg.providers.openrouter,
-                      customModels: customs.includes(newId) ? customs : [...customs, newId]
+                const kind = providerKindFor(newId, props.modelCatalog);
+                const selectedKind = kind === 'unknown' ? 'openrouter' : kind;
+                const baseNext = withSelectedDefaultModel(baseCfg, newId, selectedKind);
+                let next: AtlasConfig;
+                if (selectedKind === 'opencode-zen') {
+                  const customs = baseCfg.providers.opencode.zen.customModels ?? [];
+                  next = {
+                    ...baseNext,
+                    providers: {
+                      ...baseNext.providers,
+                      opencode: {
+                        ...baseNext.providers.opencode,
+                        zen: {
+                          ...baseNext.providers.opencode.zen,
+                          customModels: customs.includes(newId) ? customs : [...customs, newId]
+                        }
+                      }
                     }
-                  }
-                };
+                  };
+                } else if (selectedKind === 'opencode-go') {
+                  const customs = baseCfg.providers.opencode.go.customModels ?? [];
+                  next = {
+                    ...baseNext,
+                    providers: {
+                      ...baseNext.providers,
+                      opencode: {
+                        ...baseNext.providers.opencode,
+                        go: {
+                          ...baseNext.providers.opencode.go,
+                          customModels: customs.includes(newId) ? customs : [...customs, newId]
+                        }
+                      }
+                    }
+                  };
+                } else {
+                  const customs = baseCfg.providers.openrouter.customModels ?? [];
+                  next = {
+                    ...baseNext,
+                    providers: {
+                      ...baseNext.providers,
+                      openrouter: {
+                        ...baseNext.providers.openrouter,
+                        customModels: customs.includes(newId) ? customs : [...customs, newId]
+                      }
+                    }
+                  };
+                }
                 void saveConfig(next).then((r) => {
                   if (!r.ok) {
                     pushItem('error', `save failed: ${r.error.message}`);
@@ -2310,10 +2505,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               }
               return true;
             }
-            // Validate against the catalog — same gate the Ink TUI
-            // applies. Unknown ids are still accepted (with a hint)
-            // because OpenRouter ships new models faster than the
-            // catalog cache refreshes; warn but don't block.
+            // Validate against the catalog. Unknown ids are still
+            // accepted (with a hint) because providers ship new models
+            // faster than the catalog cache refreshes; warn but don't block.
             const known = modelOptions.some((m) => m.value === arg);
             // switchToModel resolves the provider for this model id
             // and refuses with a friendly message when that provider
@@ -2345,14 +2539,12 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         case 'mcp': {
           const tokens = arg.split(/\s+/).filter((s) => s.length > 0);
           const sub = (tokens[0] ?? '').toLowerCase();
-          // /mcps add → open the catalog overlay (the same one /config
-          // routes to). Mirrors the Ink TUI's `mcp-add` overlay.
+          // /mcps add → open the same catalog overlay /config routes to.
           if (sub === 'add') {
             setOverlay('config-mcp');
             return true;
           }
-          // /mcps remove|rm <name> → strip from config.mcp.servers and
-          // persist. Same pattern as Ink's removeMcp helper.
+          // /mcps remove|rm <name> → strip from config.mcp.servers and persist.
           if (sub === 'remove' || sub === 'rm' || sub === 'enable' || sub === 'disable') {
             const target = tokens[1];
             if (!target) {
@@ -2410,10 +2602,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             });
             return true;
           }
-          // No sub-command → open the interactive manage overlay
-          // (mirrors Ink's `mcp-list` / `mcp-manage` modal). Click a
-          // row to enable/disable/remove. Default catalog entries
-          // can't be removed, only toggled.
+          // No sub-command → open the interactive manage overlay.
+          // Click a row to enable/disable/remove. Default catalog
+          // entries can't be removed, only toggled.
           setSelectedMcp(null);
           setOverlay('mcps-manage');
           return true;
@@ -2425,9 +2616,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             pushItem('error', 'session store not available');
             return true;
           }
-          // `/sessions new` — clear the in-memory transcript and start
-          // fresh. Mirrors Ink's `sessionRef.current = null;
-          // messagesRef.current = []; setTranscript([])` reset.
+          // `/sessions new` — clear the in-memory transcript and start fresh.
           if (arg.toLowerCase() === 'new' && cmd === 'sessions') {
             setTranscript([]);
             messagesRef.current = [];
@@ -2484,9 +2673,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             })();
             return true;
           }
-          // Best-effort listing — open the interactive sessions
-          // modal. Mirrors Ink's `session-picker` overlay. Click a
-          // row to resume / rename / delete.
+          // Best-effort listing — open the interactive sessions modal.
+          // Click a row to resume / rename / delete.
           void (async () => {
             try {
               const listRes = await store.list();
@@ -2511,8 +2699,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           return true;
         }
         case 'tools': {
-          // Open the tools manage modal. Mirrors Ink's
-          // `tools-list` + `tools-manage` overlays. Probes catalog
+          // Open the tools manage modal. Probes catalog
           // status (web-search docker container, browser playwright
           // chromium, etc.) and lets the user enable/disable/install
           // /start/stop/restart per tool.
@@ -2534,8 +2721,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           const sub = (tokens[0] ?? '').toLowerCase();
           // /skills enable|disable <name|fuzzy> — toggle the
           // `disabled:` flag in the SKILL.md frontmatter so the next
-          // session loads/skips it. Mirrors Ink's behavior at
-          // App.tsx:1127.
+          // session loads/skips it.
           if (sub === 'enable' || sub === 'disable') {
             const target = tokens.slice(1).join(' ').trim();
             if (!target) {
@@ -2592,9 +2778,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
             `tools used ${toolCount}`,
             `streaming  ${streaming ? 'yes' : 'no'}`
           ];
-          // Workflow phase line — same shape the Ink TUI prints for
-          // `/status`. Async because readSignals() hits the disk; the
-          // base status block flushes immediately.
+          // Workflow phase line for `/status`. Async because readSignals()
+          // hits the disk; the base status block flushes immediately.
           pushItem('system', lines.join('\n'));
           if (activeTask) {
             void (async (): Promise<void> => {
@@ -2639,10 +2824,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         case 'next': {
           // Stage `*next` in the composer so the next Enter sends it
           // to the orchestrator (which interprets the leading `*` as
-          // a workflow control message). Mirrors the Ink TUI's
-          // behavior — there it submits inline because submit() is
-          // in scope; here we stage to keep handleSlash decoupled
-          // from the model-loop wiring.
+          // a workflow control message) while keeping handleSlash
+          // decoupled from the model-loop wiring.
           const ta = composerRef.current as unknown as {
             setText?: (s: string) => void;
           } | null;
@@ -2709,6 +2892,24 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                 fetchCodexModels(codexAuth.accessToken, opts).then((r) =>
                   r.ok ? r.value : []
                 )
+              );
+            }
+            const zenKey = cfg?.providers.opencode.zen.apiKey;
+            if (zenKey) {
+              tasks.push(
+                fetchOpenCodeZenModels(zenKey, {
+                  forceRefresh: true,
+                  baseUrl: cfg?.providers.opencode.zen.baseUrl
+                }).then((r) => (r.ok ? r.value : []))
+              );
+            }
+            const goKey = cfg?.providers.opencode.go.apiKey;
+            if (goKey) {
+              tasks.push(
+                fetchOpenCodeGoModels(goKey, {
+                  forceRefresh: true,
+                  baseUrl: cfg?.providers.opencode.go.baseUrl
+                }).then((r) => (r.ok ? r.value : []))
               );
             }
             try {
@@ -2926,11 +3127,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           return true;
         }
         case 'onboard': {
-          // Brownfield onboarding wizard. Mirrors Ink's
-          // `launchOnboardWizard()` + 6-stage `onboard` overlay.
-          // Sequence: loading → mode → strategy → pick-model →
-          // confirm → running. The running stage calls writeRepoMap
-          // then submits the `*onboard` planning prompt.
+          // Brownfield onboarding wizard. Sequence: loading → mode →
+          // strategy → pick-model → confirm → running. The running stage
+          // calls writeRepoMap then submits the `*onboard` planning prompt.
           setOnboardStatus('estimating cost…');
           setOverlay('onboard-loading');
           void (async () => {
@@ -3100,9 +3299,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   /**
    * Persist a confirmed learned-skill draft. Writes
    * `~/.atlas/skills/<slug>/SKILL.md` with `kind: learned` and adds
-   * the skill to the live registry so framework agents see it on
-   * their next turn (without restarting the CLI). Mirrors
-   * App.tsx § saveLearnedSkillDraft.
+  * the skill to the live registry so framework agents see it on
+  * their next turn without restarting the CLI.
    */
   const saveLearnedSkillDraft = useCallback(
     async (draft: LearnedSkillDraft, reason: string): Promise<void> => {
@@ -3267,9 +3465,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   );
 
   /**
-   * Run the meta-LLM reflection sub-call against the active provider
-   * and surface the draft (or "nothing to learn") in the
-   * learn-confirm overlay. Mirrors App.tsx § launchLearnReflection.
+  * Run the meta-LLM reflection sub-call against the active provider
+  * and surface the draft (or "nothing to learn") in the
+  * learn-confirm overlay.
    * Token cost is bounded — reuses the active provider's `stream`
    * API for a single non-tool round-trip and prefers the cheap
    * `routerModel` when configured.
@@ -3317,9 +3515,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     };
 
     // When the slash autocomplete popup has matches, Enter picks the
-    // highlighted command (and ignores any partial typing). Mirrors
-    // the Ink TUI's behavior where `/he<Enter>` runs `/help` if it's
-    // the highlighted suggestion.
+    // highlighted command and ignores any partial typing.
     if (slashSuggestions.length > 0 && text.startsWith('/')) {
       const pick = slashSuggestions[slashCursor] ?? slashSuggestions[0];
       if (pick) text = `/${pick.name}`;
@@ -3356,7 +3552,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     // Background phase classifier — runs in parallel with the model
     // turn so a slow disk write never blocks chat. The router only
     // advances *forward*; `/back`, `/skip`, `/abort` are explicit user
-    // overrides. Mirrors App.tsx § classifyIntent integration.
+    // overrides.
     void (async (): Promise<void> => {
       try {
         const cwd = props.toolContext.cwd;
@@ -3462,8 +3658,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
 
     // Lazy session creation: the first user message is what brings a
     // session into existence. Opening Atlas just to swap with
-    // `/sessions` no longer creates an empty record on disk. Mirrors
-    // App.tsx:1705.
+    // `/sessions` no longer creates an empty record on disk.
     if (props.sessionStore && !sessionRef.current) {
       const created = await props.sessionStore.create({
         cwd: process.cwd(),
@@ -3544,8 +3739,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
     const toolStartedAt = new Map<string, number>();
     // Reasoning option built from the user's `/thinking` pick. Off
     // means we omit the field entirely so the provider uses its
-    // default; xhigh maps to `effort: high` plus a generous max-tokens
-    // budget. Mirrors App.tsx (§ reasoningOpt).
+    // default; xhigh maps to `effort: high` plus a generous max-tokens budget.
     const reasoningOpt = buildReasoning(thinking as ThinkingLevel);
 
     // Auto-compaction — if enabled and the running message count is
@@ -3598,9 +3792,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
 
     const flushAssistant = (): void => {
       // Strip any complete `<atlas:question>` blocks and hide an
-      // in-progress (still-streaming) opener so the raw protocol
-      // never flashes into the live transcript. Mirrors Ink's
-      // flushDelta at App.tsx:1935.
+      // in-progress opener so the raw protocol never flashes into the
+      // live transcript.
       const visible = renderVisibleAssistant(assistantBuffer);
       setTranscript((prev) => {
         const last = prev[prev.length - 1];
@@ -3785,9 +3978,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
         case 'turn_end': {
           // Use the model's final committed message as the source of
           // truth — some providers don't emit deltas for short
-          // responses, others batch the whole reply into a single
-          // chunk after `tool_call_done`. Mirrors the Ink TUI's
-          // safety net at App.tsx:2103.
+          // responses, others batch the whole reply into a single chunk
+          // after `tool_call_done`.
           const finalText =
             typeof ev.assistantMessage.content === 'string'
               ? ev.assistantMessage.content
@@ -3881,8 +4073,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           // conversation later just works. We mutate the record in
           // place (it's a private ref, never read across renders) and
           // fire-and-forget the disk write — sessions are best-effort,
-          // a write failure is logged but doesn't break the chat
-          // loop. Mirrors App.tsx:2141.
+          // a write failure is logged but doesn't break the chat loop.
           if (props.sessionStore && sessionRef.current) {
             const rec = sessionRef.current;
             rec.messages = [...messagesRef.current];
@@ -3998,7 +4189,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
           // Flip the matching timeline step to past tense + ok/error,
           // and surface the first line of the result/error as the
           // step's secondary detail line. This is what gives the
-          // strip the "Read App.tsx · 1.2s · 142 lines" feel.
+          // strip the "Read file.ts · 1.2s · 142 lines" feel.
           const stepId = `step-${id}`;
           const detailRaw =
             ev.outcome.type === 'error'
@@ -4099,6 +4290,12 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // arrows, paste) are handled by the focused `<textarea>`.
   useKeyboard((key) => {
     if (overlay) {
+      if (overlay === 'update-notice') {
+        if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+          dismissCurrentUpdateNotice();
+          return;
+        }
+      }
       // Ship-conflict overlay swallows all input — number keys (1-4)
       // jump to a strategy, ↑/↓ move the cursor, p / space toggles
       // persist, ↵ confirms, Esc resolves with null (the agent loop
@@ -4340,9 +4537,9 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
       scrollboxRef.current?.scrollBy(1, 'content');
       return;
     }
-    // Shift+Up / Shift+Down — single-line scroll, parity with the
-    // Ink TUI. Works regardless of composer focus so users can
-    // skim the transcript without losing their input draft.
+    // Shift+Up / Shift+Down — single-line scroll. Works regardless of
+    // composer focus so users can skim the transcript without losing
+    // their input draft.
     if (key.shift && key.name === 'up') {
       scrollboxRef.current?.scrollBy(-1, 'absolute');
       return;
@@ -4413,8 +4610,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
   // Always pull focus back to the composer when no overlay is open.
   // Without this, a fresh terminal launch leaves the renderable
   // unfocused until the user clicks — typing immediately just dropped
-  // characters. Mirrors the Ink TUI where the chat input is the
-  // implicit focus target on every redraw.
+  // characters. The chat input is the implicit focus target on every redraw.
   useEffect(() => {
     if (overlay === null) {
       composerRef.current?.focus();
@@ -4630,8 +4826,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               scrollbox above has flexGrow:1 and shrinks to make
               room) — same UX VS Code's chat input has when lines
               break. Border turns bright yellow while the model is
-              streaming so the user can see "I'm working" at a
-              glance — mirrors the Ink TUI.
+              streaming so the user can see "I'm working" at a glance.
 
               Note on Shift-Enter: most terminals collapse Shift
               modifiers on Return into a bare CR, so the
@@ -4927,6 +5122,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               const cfg = props.config;
               const hasOR = Boolean(props.providers?.openrouter);
               const hasAnthKey = Boolean(cfg?.providers.anthropic.apiKey);
+              const hasOpenCodeZen = Boolean(cfg?.providers.opencode.zen.apiKey);
+              const hasOpenCodeGo = Boolean(cfg?.providers.opencode.go.apiKey);
               const hasClaudeCode = Boolean(props.providers?.anthropic) && !hasAnthKey;
               const hasChatGpt = Boolean(props.providers?.['openai-codex']);
               const hasLocal = Boolean(props.providers?.local);
@@ -4935,9 +5132,7 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
               const atlasSpec = ATLAS_POWER_MODE_SPECS[activeAtlasMode];
               // Only show a description when the slot is connected;
               // disconnected items render with no badge so the green
-              // ● connected reads cleanly. Mirrors the Ink TUI's
-              // /config palette (App.tsx — `tag()` returns ''  for
-              // disconnected).
+              // ● connected reads cleanly.
               const tag = (on: boolean, note = 'connected'): string =>
                 on ? `● ${note}` : '';
               const opts: PickerOption[] = [
@@ -4950,6 +5145,16 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                   value: 'anthropic',
                   label: 'Anthropic API key   (sk-ant-…)',
                   description: tag(hasAnthKey)
+                },
+                {
+                  value: 'opencode-go',
+                  label: 'OpenCode Go key     (BYO key)',
+                  description: tag(hasOpenCodeGo)
+                },
+                {
+                  value: 'opencode-zen',
+                  label: 'OpenCode Zen key    (BYO key)',
+                  description: tag(hasOpenCodeZen)
                 },
                 {
                   value: 'claude-code',
@@ -5004,6 +5209,16 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                 setOverlay(hasAnthKey ? 'config-action-anthropic' : 'config-key-anthropic');
                 return;
               }
+              if (v === 'opencode-go') {
+                const hasGoKey = Boolean(props.config?.providers.opencode.go.apiKey);
+                setOverlay(hasGoKey ? 'config-action-opencode-go' : 'config-key-opencode-go');
+                return;
+              }
+              if (v === 'opencode-zen') {
+                const hasZenKey = Boolean(props.config?.providers.opencode.zen.apiKey);
+                setOverlay(hasZenKey ? 'config-action-opencode-zen' : 'config-key-opencode-zen');
+                return;
+              }
               if (v === 'claude-code') {
                 setInfoOverlay({
                   title: 'Claude Code OAuth',
@@ -5016,12 +5231,63 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                 return;
               }
               if (v === 'chatgpt') {
-                setInfoOverlay({
-                  title: 'Sign in with ChatGPT',
-                  body: 'Browser-based sign-in is available from the classic interface for now.\n\nRun `atlas chat --ui=ink`, open /config, and complete ChatGPT sign-in there. The saved tokens in ~/.atlas/config.yaml will work here after restart.',
-                  tone: 'warn'
-                });
-                setOverlay('config-info');
+                void (async () => {
+                  const handle = beginCodexLogin({
+                    openBrowser: async (url) => {
+                      await openInBrowser(url);
+                    }
+                  });
+                  setInfoOverlay({
+                    title: 'Sign in with ChatGPT',
+                    body:
+                      'Opening your browser to sign in with ChatGPT…\n\nIf nothing opens, visit:\n  ' +
+                      handle.authorizeUrl +
+                      '\n\nWaiting for callback on http://127.0.0.1:1455 …\nPress Esc to cancel.',
+                    tone: 'info'
+                  });
+                  setOverlay('config-info');
+                  const result = await handle.tokens;
+                  if (!result.ok) {
+                    pushItem('error', `ChatGPT login failed: ${result.error.message}`);
+                    setOverlay(null);
+                    setInfoOverlay(null);
+                    return;
+                  }
+                  const baseCfg: AtlasConfig = props.config ?? createDefaultConfig('openrouter', props.defaultModel);
+                  const nextCfg: AtlasConfig = {
+                    ...baseCfg,
+                    providers: {
+                      ...baseCfg.providers,
+                      openai: {
+                        ...baseCfg.providers.openai,
+                        codex: {
+                          accessToken: result.value.accessToken,
+                          ...(result.value.refreshToken !== undefined
+                            ? { refreshToken: result.value.refreshToken }
+                            : {}),
+                          ...(result.value.idToken !== undefined ? { idToken: result.value.idToken } : {}),
+                          ...(result.value.accountId !== undefined
+                            ? { accountId: result.value.accountId }
+                            : {}),
+                          expiresAt: result.value.expiresAt
+                        }
+                      }
+                    }
+                  };
+                  const saved = await saveConfig(nextCfg);
+                  if (!saved.ok) {
+                    pushItem('error', `failed to save config: ${saved.error.message}`);
+                    setOverlay(null);
+                    setInfoOverlay(null);
+                    return;
+                  }
+                  pushItem(
+                    'system',
+                    `Signed in to ChatGPT. Tokens saved to ${saved.value.path}. Restart atlas to start chatting with OpenAI models.`
+                  );
+                  setOverlay(null);
+                  setInfoOverlay(null);
+                })();
                 return;
               }
               if (v === 'atlas-power') {
@@ -5332,6 +5598,98 @@ Config file: ~/.atlas/config.yaml
             onCancel={() => setOverlay('config')}
           />
         ) : null}
+        {overlay === 'config-action-opencode-go' ? (
+          <Picker
+            title="⚙  OpenCode Go — already connected"
+            descriptionColor={palette.success}
+            options={[
+              {
+                value: 'replace',
+                label: 'set new key',
+                description: 'replace the saved OpenCode Go key'
+              },
+              {
+                value: 'remove',
+                label: 'disconnect / remove key',
+                description: 'wipe the saved key from ~/.atlas/config.yaml'
+              },
+              { value: '__cancel', label: 'cancel', description: '' }
+            ]}
+            hint="↵ apply · Esc back"
+            onChoose={(action) => {
+              if (action === '__cancel') {
+                setOverlay('config');
+                return;
+              }
+              if (action === 'replace') {
+                setOverlay('config-key-opencode-go');
+                return;
+              }
+              if (action === 'remove') {
+                setOverlay(null);
+                void (async () => {
+                  const r = await removeProviderKey('opencode-go', props.config);
+                  if (!r.ok) {
+                    pushItem('error', `disconnect failed: ${r.error}`);
+                    return;
+                  }
+                  pushItem(
+                    'system',
+                    `✓ removed OpenCode Go key from ${r.path}. Restart atlas to apply.`
+                  );
+                })();
+                return;
+              }
+            }}
+            onCancel={() => setOverlay('config')}
+          />
+        ) : null}
+        {overlay === 'config-action-opencode-zen' ? (
+          <Picker
+            title="⚙  OpenCode Zen — already connected"
+            descriptionColor={palette.success}
+            options={[
+              {
+                value: 'replace',
+                label: 'set new key',
+                description: 'replace the saved OpenCode Zen key'
+              },
+              {
+                value: 'remove',
+                label: 'disconnect / remove key',
+                description: 'wipe the saved key from ~/.atlas/config.yaml'
+              },
+              { value: '__cancel', label: 'cancel', description: '' }
+            ]}
+            hint="↵ apply · Esc back"
+            onChoose={(action) => {
+              if (action === '__cancel') {
+                setOverlay('config');
+                return;
+              }
+              if (action === 'replace') {
+                setOverlay('config-key-opencode-zen');
+                return;
+              }
+              if (action === 'remove') {
+                setOverlay(null);
+                void (async () => {
+                  const r = await removeProviderKey('opencode-zen', props.config);
+                  if (!r.ok) {
+                    pushItem('error', `disconnect failed: ${r.error}`);
+                    return;
+                  }
+                  pushItem(
+                    'system',
+                    `✓ removed OpenCode Zen key from ${r.path}. Restart atlas to apply.`
+                  );
+                })();
+                return;
+              }
+            }}
+            onCancel={() => setOverlay('config')}
+          />
+        ) : null}
         {overlay === 'config-key-openrouter' ? (
           <KeyEntry
             title="⚙  OpenRouter API key"
@@ -5389,6 +5747,62 @@ Config file: ~/.atlas/config.yaml
             onCancel={() => setOverlay(null)}
           />
         ) : null}
+        {overlay === 'config-key-opencode-go' ? (
+          <KeyEntry
+            title="⚙  OpenCode Go API key"
+            help={
+              'Paste your OpenCode Go BYO key. Saved to ~/.atlas/config.yaml.\n' +
+              'Default endpoint: https://opencode.ai/zen/go/v1'
+            }
+            placeholder="oc-…"
+            mask
+            {...(configError ? { errorMessage: configError } : {})}
+            onSubmit={(v) => {
+              void (async () => {
+                const result = await saveProviderKey('opencode-go', v, props.config);
+                if (!result.ok) {
+                  setConfigError(result.error);
+                  return;
+                }
+                setConfigError(null);
+                pushItem(
+                  'system',
+                  `✓ saved OpenCode Go key to ${result.path}. Restart atlas to activate.`
+                );
+                setOverlay(null);
+              })();
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay === 'config-key-opencode-zen' ? (
+          <KeyEntry
+            title="⚙  OpenCode Zen API key"
+            help={
+              'Paste your OpenCode Zen BYO key. Saved to ~/.atlas/config.yaml.\n' +
+              'Default endpoint: https://opencode.ai/zen/v1'
+            }
+            placeholder="oc-…"
+            mask
+            {...(configError ? { errorMessage: configError } : {})}
+            onSubmit={(v) => {
+              void (async () => {
+                const result = await saveProviderKey('opencode-zen', v, props.config);
+                if (!result.ok) {
+                  setConfigError(result.error);
+                  return;
+                }
+                setConfigError(null);
+                pushItem(
+                  'system',
+                  `✓ saved OpenCode Zen key to ${result.path}. Restart atlas to activate.`
+                );
+                setOverlay(null);
+              })();
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : null}
         {overlay === 'config-info' && infoOverlay ? (
           <InfoOverlay
             title={infoOverlay.title}
@@ -5398,6 +5812,24 @@ Config file: ~/.atlas/config.yaml
               setOverlay(null);
               setInfoOverlay(null);
             }}
+          />
+        ) : null}
+        {overlay === 'update-notice' && updateNotice ? (
+          <InfoOverlay
+            title="Atlas update available"
+            body={[
+              `${updateNotice.packageName} ${updateNotice.latestVersion} is available.`,
+              `You are running ${updateNotice.currentVersion}.`,
+              '',
+              'Update command:',
+              `  ${updateNotice.updateCommand}`,
+              '',
+              `Dismiss hides this notice for ${updateNotice.latestVersion}.`
+            ].join('\n')}
+            tone="warn"
+            closeLabel="Dismiss"
+            closeDescription="↵ / Esc"
+            onClose={dismissCurrentUpdateNotice}
           />
         ) : null}
         {overlay === 'config-mcp' ? (
@@ -5494,8 +5926,8 @@ Config file: ~/.atlas/config.yaml
                     lines.push(
                       '',
                       'Tip: this server supports OAuth via the `gh` CLI.',
-                      'For the guided OAuth flow, run `atlas chat --ui=ink`',
-                      'and open /config. Otherwise paste a PAT below.'
+                      'Run `gh auth login` in another terminal, then re-open /config.',
+                      'Otherwise paste a PAT below.'
                     );
                   }
                   setInfoOverlay({
@@ -5523,9 +5955,7 @@ Config file: ~/.atlas/config.yaml
           <InfoOverlay
             title="Add a custom MCP server"
             body={[
-              'The guided custom-server wizard is available from the',
-              'classic interface for now: `atlas chat --ui=ink`, then',
-              '/config -> MCP server -> custom.',
+              'Custom MCP servers can be added manually for now.',
               '',
               'Manual setup:',
               '',

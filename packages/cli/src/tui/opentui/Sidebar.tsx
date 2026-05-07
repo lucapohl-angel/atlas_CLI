@@ -2,10 +2,9 @@
 /**
  * Sidebar — right-hand activity panel.
  *
- * Mirrors the Ink TUI sidebar: token usage chip on top, recent
- * activity list below. The activity list is wired to the OpenTUI
- * variant's tool-call telemetry — `OpenTuiApp` pushes the last N
- * tool names + a streaming flag into `recentTools`.
+ * Token usage chip on top, recent activity list below. The activity
+ * list is wired to OpenTUI tool-call telemetry — `OpenTuiApp` pushes
+ * the last N tool names + a streaming flag into `recentTools`.
  *
  * When the agent has produced a todo list (via the `todo` tool), we
  * surface that *instead of* the recent-tools list — a live checklist
@@ -99,8 +98,7 @@ export const Sidebar = (props: SidebarProps) => {
         ? palette.warning
         : palette.success;
 
-  // Cap the visible list. The Ink TUI shows the last ~8 entries; same
-  // here so the sidebar never overflows on short terminals.
+  // Cap the visible list so the sidebar never overflows on short terminals.
   const recent = (props.recentTools ?? []).slice(-8).reverse();
 
   return (

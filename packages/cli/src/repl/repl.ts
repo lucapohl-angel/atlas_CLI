@@ -5,8 +5,8 @@
  * (`/exit`, `/clear`, `/help`, `/model <id>`), and Ctrl-C mid-stream
  * cancellation that does NOT exit the REPL.
  *
- * (An Ink TUI is a future polish concern; the contract is "interactive
- * REPL with cancellation", which readline meets without 5k LOC of UI.)
+ * Plain fallback for users who pass `--no-tui`; the full-screen runtime
+ * lives in OpenTUI.
  */
 import { createInterface, type Interface } from 'node:readline';
 import {

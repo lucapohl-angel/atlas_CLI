@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { fetchOpenRouterModels, thinkingLevelsFor, type ModelInfo } from './catalog.js';
+import {
+  fetchOpenCodeGoModels,
+  fetchOpenCodeZenModels,
+  fetchOpenRouterModels,
+  thinkingLevelsFor,
+  type ModelInfo
+} from './catalog.js';
 
 const makeFetch = (status: number, body: unknown): typeof fetch =>
   (async () =>
@@ -62,10 +68,70 @@ describe('fetchOpenRouterModels', () => {
   });
 });
 
+describe('fetchOpenCode models', () => {
+  it('parses Zen models, prefixes ids, filters unsupported routes, and sends auth', async () => {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const f = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), headers: init?.headers as Record<string, string> });
+      return new Response(
+        JSON.stringify({
+          data: [
+            { id: 'gpt-5.5', name: 'GPT 5.5', context_length: 1_000_000 },
+            { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6', pricing: { input_cache_read: '1' } },
+            { id: 'gemini-3-flash', name: 'Gemini 3 Flash' }
+          ]
+        }),
+        { status: 200 }
+      );
+    }) as unknown as typeof fetch;
+    const r = await fetchOpenCodeZenModels('zen-key', {
+      fetch: f,
+      forceRefresh: true,
+      baseUrl: 'https://example.test/zen/v1/'
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(calls[0]?.url).toBe('https://example.test/zen/v1/models');
+    expect(calls[0]?.headers['authorization']).toBe('Bearer zen-key');
+    expect(r.value.map((m) => m.id)).toEqual([
+      'opencode/claude-sonnet-4-6',
+      'opencode/gpt-5.5'
+    ]);
+    expect(r.value.find((m) => m.id === 'opencode/gpt-5.5')?.thinking).toEqual([
+      'off',
+      'low',
+      'medium',
+      'high'
+    ]);
+    expect(r.value.find((m) => m.id === 'opencode/claude-sonnet-4-6')?.promptCache).toBe(
+      'supported'
+    );
+  });
+
+  it('parses Go models from models[] and strips existing prefixes', async () => {
+    const f = makeFetch(200, {
+      models: [
+        { id: 'opencode-go/kimi-k2.6', label: 'Kimi K2.6' },
+        { id: 'minimax-m2.7', name: 'MiniMax M2.7' },
+        { id: 'claude-sonnet-4-6', name: 'Unsupported on Go' }
+      ]
+    });
+    const r = await fetchOpenCodeGoModels('go-key', { fetch: f, forceRefresh: true });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.map((m) => m.id)).toEqual([
+      'opencode-go/kimi-k2.6',
+      'opencode-go/minimax-m2.7'
+    ]);
+    expect(r.value.every((m) => m.provider === 'opencode-go')).toBe(true);
+  });
+});
+
 describe('thinkingLevelsFor', () => {
   const catalog: ModelInfo[] = [
     { id: 'anthropic/claude-opus-4.7', label: '', thinking: ['off', 'low', 'medium', 'high', 'xhigh'], promptCache: 'supported', provider: 'openrouter' },
-    { id: 'claude-haiku-4-5', label: '', thinking: ['off', 'low', 'medium'], promptCache: 'supported', provider: 'anthropic' }
+    { id: 'claude-haiku-4-5', label: '', thinking: ['off', 'low', 'medium'], promptCache: 'supported', provider: 'anthropic' },
+    { id: 'opencode/gpt-5.5', label: '', thinking: ['off', 'low', 'medium', 'high'], promptCache: 'unknown', provider: 'opencode-zen' }
   ];
   it('exact match', () => {
     expect(thinkingLevelsFor('anthropic/claude-opus-4.7', catalog)).toEqual([
@@ -87,5 +153,10 @@ describe('thinkingLevelsFor', () => {
   });
   it('off-only for unknown non-reasoning id', () => {
     expect(thinkingLevelsFor('mistral/mistral-large', [])).toEqual(['off']);
+  });
+  it('matches OpenCode prefixed ids exactly', () => {
+    expect(thinkingLevelsFor('opencode/gpt-5.5', catalog)).toEqual([
+      'off', 'low', 'medium', 'high'
+    ]);
   });
 });

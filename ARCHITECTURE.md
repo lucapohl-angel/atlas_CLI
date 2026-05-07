@@ -22,6 +22,7 @@
 ```
 @atlas/core      — engine (provider, tool, hook, skill, agent, orchestrator)
 atlas-os         — bin entry, REPL, command parsing, TUI
+atlas-os-vscode  — VS Code extension host and side-bar webview
 ```
 
 The split exists so `@atlas/core` can be embedded in non-CLI hosts (web UIs,

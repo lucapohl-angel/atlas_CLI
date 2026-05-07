@@ -15,9 +15,37 @@
       "types": "./dist/providers/index.d.ts",
       "import": "./dist/providers/index.js"
     },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "import": "./dist/config/index.js"
+    },
+    "./context": {
+      "types": "./dist/context/index.d.ts",
+      "import": "./dist/context/index.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.js"
+    },
+    "./result": {
+      "types": "./dist/result.d.ts",
+      "import": "./dist/result.js"
+    },
+    "./loop": {
+      "types": "./dist/loop/index.d.ts",
+      "import": "./dist/loop/index.js"
+    },
     "./tools": {
       "types": "./dist/tools/index.d.ts",
       "import": "./dist/tools/index.js"
+    },
+    "./tools/registry": {
+      "types": "./dist/tools/registry.d.ts",
+      "import": "./dist/tools/registry.js"
+    },
+    "./tools/types": {
+      "types": "./dist/tools/types.d.ts",
+      "import": "./dist/tools/types.js"
     },
     "./hooks": {
       "types": "./dist/hooks/index.d.ts",
@@ -34,6 +62,10 @@
     "./orchestrator": {
       "types": "./dist/orchestrator/index.d.ts",
       "import": "./dist/orchestrator/index.js"
+    },
+    "./workflow": {
+      "types": "./dist/workflow/index.d.ts",
+      "import": "./dist/workflow/index.js"
     }
   },
   "files": [

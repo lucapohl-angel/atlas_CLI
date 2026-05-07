@@ -1,0 +1,114 @@
+:root {
+  color-scheme: dark;
+  font-family: var(--vscode-font-family);
+  background: var(--vscode-sideBar-background);
+  color: var(--vscode-sideBar-foreground);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 0;
+  background: var(--vscode-sideBar-background);
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 12px;
+  padding: 12px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(255, 255, 255, 0.12));
+  padding-bottom: 10px;
+}
+
+.eyebrow {
+  margin: 0 0 2px;
+  color: #72b7ff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+h1 {
+  margin: 0;
+  color: var(--vscode-sideBarTitle-foreground);
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.log {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.log p {
+  margin: 0;
+  border: 1px solid var(--vscode-input-border, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-editor-foreground);
+  overflow-wrap: anywhere;
+}
+
+.composer {
+  display: grid;
+  gap: 8px;
+}
+
+textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  border: 1px solid var(--vscode-input-border, rgba(255, 255, 255, 0.18));
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+}
+
+textarea::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+}
+
+button {
+  min-height: 30px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.ghostButton {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.ghostButton:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}

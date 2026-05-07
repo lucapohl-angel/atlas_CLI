@@ -6,7 +6,7 @@
  * for single-turn questions, Phase 2 adds the interactive REPL.
  */
 // Default subcommand is the interactive TUI. When that's the case we
-// silence pino so its stderr output doesn't corrupt the Ink alt-screen.
+// silence pino so its stderr output doesn't corrupt the alt-screen.
 // Detect early — before any @atlas/core import — so the logger picks it
 // up at construction time. Errors are still surfaced inside the TUI.
 const argv = process.argv.slice(2);

@@ -6,6 +6,19 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-05-07
+
+### Added
+- First-class OpenCode Zen and OpenCode Go provider support with BYO API keys,
+  model catalog loading, provider routing, and `/config` management.
+- Atlas checks npm when the TUI opens and shows a short dismissible update
+  notice when the installed `atlas-os` version is behind the latest release.
+
+### Changed
+- OpenTUI is now the only maintained full-screen runtime; the retired Ink TUI
+  files and dependencies have been removed.
+- Package metadata is prepared for the `atlas-os@1.7.3` release line.
+
 ## [1.7.2] - 2026-05-06
 
 ### Added

@@ -1,21 +1,17 @@
 # Atlas TUI — User Workflow Specification
 
-> **Source of truth** for the user experience of the Atlas TUI in
-> both Ink (`packages/cli/src/tui/App.tsx`) and OpenTUI
-> (`packages/cli/src/tui/opentui/OpenTuiApp.tsx`) variants.
+> **Source of truth** for the user experience of the Atlas OpenTUI in
+> `packages/cli/src/tui/opentui/OpenTuiApp.tsx`.
 >
-> When adding or changing any UI surface in either variant, **first
-> read this file** and mirror the rule in the other variant in the
-> same commit. Inconsistencies become user-visible bugs and are
-> tracked as parity gaps in `context/progress-tracker.md`.
+> When adding or changing any UI surface, **first read this file** and
+> update the workflow rule here in the same change.
 
 ## Contract
 
 **State machine, gating rules, slash commands, and data sources MUST
-be identical across the two variants.** Visuals (colors, borders,
-popup widths) MAY differ within the same Atlas-blue navy palette
-(see `packages/cli/src/tui/opentui/palette.ts` and the App.tsx
-inline `palette` near line 69).
+match this document.** Visuals (colors, borders, popup widths) MAY
+differ within the same Atlas-blue navy palette (see
+`packages/cli/src/tui/opentui/palette.ts`).
 
 ## Top-level layout
 
@@ -138,38 +134,41 @@ Never fail silently.
 - select all saved sessions for deletion with confirmation;
 - start a fresh unsaved session via `new` / `+ new session`.
 
-OpenTUI exposes bulk cleanup as keybindings from the main `/sessions` picker so
+Bulk cleanup is exposed as keybindings from the main `/sessions` picker so
 long session lists do not require scrolling to action rows: `d` opens the
 multi-delete picker and `D` opens delete-all confirmation. The multi-delete
 picker uses `[ ]` / `[x]` rows, with `a` for select-all, `c` for clear, and `d`
-to delete selected. Ink uses Space to mark, `a` for all, `d` to delete
-marked/current, and `D` for delete-all.
+to delete selected.
 
 ## `/config` menu (post-setup runtime)
 
-9 entries in fixed order, each with a connected/configured badge in
+11 entries in fixed order, each with a connected/configured badge in
 the description column:
 
 1. `OpenRouter API key  (sk-or-…)` — green ● connected when
    `props.providers.openrouter` is live, else "not configured".
 2. `Anthropic API key   (sk-ant-…)` — connected when
    `config.providers.anthropic.apiKey` is set.
-3. `Claude Code OAuth   (auto-detected)` — connected when
+3. `OpenCode Go key     (BYO key)` — connected when
+  `config.providers.opencode.go.apiKey` is set.
+4. `OpenCode Zen key    (BYO key)` — connected when
+  `config.providers.opencode.zen.apiKey` is set.
+5. `Claude Code OAuth   (auto-detected)` — connected when
    anthropic provider runtime exists *without* an explicit key.
-4. `Sign in with ChatGPT (browser, Codex)` — connected when
+6. `Sign in with ChatGPT (browser, Codex)` — connected when
    `props.providers['openai-codex']` is live. PKCE flow is
-   browser-based; OpenTUI variant routes to `--ui=ink` until ported.
-5. `Atlas power mode    (Full / Smart)` — always configured. Selecting
+  browser-based and runs directly in OpenTUI.
+7. `Atlas power mode    (Full / Smart)` — always configured. Selecting
   opens the hosted Atlas mode submenu.
-6. `Local models        (Ollama, LM Studio, vLLM)` — connected when
+8. `Local models        (Ollama, LM Studio, vLLM)` — connected when
   the local provider runtime is detected. Selecting opens the local
   mode submenu.
-7. `GitHub token        (gh integration)` — connected when
+9. `GitHub token        (gh integration)` — connected when
    `config.github.token` is set.
-8. `MCP server          (model context protocol)` — count badge,
+10. `MCP server          (model context protocol)` — count badge,
    `● N configured`. Selecting opens the MCP submenu (catalog).
-9. `Ship: auto-merge    (current: <strategy>, prompt: on/off)` —
-   currently info-only in OpenTUI; full editor in Ink.
+11. `Ship: auto-merge    (current: <strategy>, prompt: on/off)` —
+  currently info-only.
 
 ### Hosted Atlas mode submenu
 
@@ -185,9 +184,8 @@ saving writes `atlasMode` to `~/.atlas/config.yaml`.
 Config key: `atlasMode: full | smart`.
 
 Model picker rows must include prompt-cache support labels:
-`cache: yes (cheaper)`, `cache: unknown`, or `cache: no` in OpenTUI
-descriptions, and equivalent `[cache yes]` / `[cache unknown]` /
-`[cache no]` suffixes in Ink labels. For OpenRouter catalog rows, derive cache
+`cache: yes (cheaper)`, `cache: unknown`, or `cache: no` in descriptions.
+For OpenRouter and OpenCode catalog rows, derive cache
 support from the live `/api/v1/models` pricing fields (`input_cache_read` /
 `input_cache_write`) or explicit cache parameters, not provider-name heuristics.
 
@@ -244,23 +242,25 @@ configured. Selecting a not-yet-configured server walks the user
 through any required env vars. Selecting an already-configured one
 offers enable/disable/remove.
 
-For the OpenTUI variant: env collection is currently **info-only**
-(it tells the user what to add to `~/.atlas/config.yaml`). The full
-interactive add wizard lives in Ink and is tracked as a parity gap.
+Env collection for custom MCP servers is currently **info-only** for some
+paths (it tells the user what to add to `~/.atlas/config.yaml`).
 
 ## Model picker
 
 Grouped by provider, fixed order:
 
-1. `── Anthropic ──`
-2. `── OpenAI (ChatGPT / Codex) ──`
-3. `── OpenRouter ──`
+1. `── Local (Ollama / LM Studio) ──`
+2. `── Anthropic ──`
+3. `── OpenAI (ChatGPT / Codex) ──`
+4. `── OpenCode Go ──`
+5. `── OpenCode Zen ──`
+6. `── OpenRouter ──`
    - `   ★ Popular` (sub-header) followed by ≤ 10 curated entries
      matched against the live catalog by regex
    - Rest of OpenRouter catalog ∪ seed defaults ∪
      `config.providers.openrouter.customModels`, alphabetised
-   - `+ Add custom model id…` row at the bottom (Ink only;
-     OpenTUI gap)
+   - OpenCode sections include live catalog rows, matching seed ids,
+     and `config.providers.opencode.*.customModels`.
 
 A section is omitted if its provider has neither runtime nor
 catalog entries. If everything is empty, fall back to a flat seed
@@ -326,28 +326,23 @@ When mode is autopilot: append red bold `  ⚠ AUTOPILOT`.
 | Esc           | cancel streaming / close overlay / close slash popup       |
 | Ctrl-C        | cancel streaming                                           |
 | Ctrl-D ×2     | exit (within 1 s)                                          |
-| Ctrl-Y        | copy last code block (Ink only — OpenTUI gap)              |
+| Ctrl-Y        | reserved for copy-last-code-block when implemented          |
 | PgUp/PgDn     | scroll transcript                                          |
 | Enter         | send (or run highlighted slash command)                    |
 | Ctrl-J        | insert newline                                             |
 | ↑/↓ in popup  | cycle highlight                                            |
 | Tab in popup  | autocomplete the slash command name                        |
 
-## Parity rule
+## Workflow Rule
 
-When you change any of the rules above in one variant, you MUST
-either:
-
-1. mirror the change in the other variant in the same commit, or
-2. note the gap in `context/progress-tracker.md` under "OpenTUI
-   parity gaps" with a one-line entry pointing back to the rule.
-
-Silent divergence is not acceptable.
+When you change any of the rules above, update this file in the same
+change. Silent divergence between the implementation and this document
+is not acceptable.
 
 ## Round 6 invariants (composer, popups, sidebar, OAuth)
 
 These rules were tightened after a screenshot review of the OpenTUI
-variant. Both variants must satisfy them.
+runtime. The implementation must satisfy them.
 
 ### Composer
 
@@ -355,9 +350,8 @@ variant. Both variants must satisfy them.
   line input. Enter sends; **Shift-Enter** *and* Ctrl-J insert a
   newline. Same shortcuts VS Code's chat input uses.
 - **Auto-grow.** The composer box height grows with the number of
-  lines, capped (OpenTUI: 8 rows, Ink: until 1/3 of the terminal).
-  As it grows it pushes the chat scrollback up so the user keeps
-  seeing what they wrote.
+  lines, capped at 8 rows. As it grows it pushes the chat scrollback
+  up so the user keeps seeing what they wrote.
 - **Streaming border = bright yellow.** While the model is streaming
   (between `submit()` and the final `done` event), the composer's
   border switches to `palette.warning` so the active state is
@@ -391,8 +385,8 @@ variant. Both variants must satisfy them.
   visible window.
 - **Vertically centered.** Picker overlays compute `top` so the box
   is centered vertically as well as horizontally. Pass `rows` and
-  `height` to `centeredOverlayStyle` (or the Ink equivalent) so the
-  popup never hugs the top of the terminal.
+  `height` to `centeredOverlayStyle` so the popup never hugs the top
+  of the terminal.
 
 ### Right-hand activity sidebar
 

@@ -1,6 +1,6 @@
 // Bundles atlas-os CLI into a single self-contained ESM file per entry,
 // inlining @atlas/core (workspace) while keeping heavy runtime deps
-// (react, ink, pino, etc.) as external require()s resolved by npm.
+// (react, OpenTUI, pino, etc.) as external require()s resolved by npm.
 //
 // Output: packages/cli/dist/launcher.mjs (npm `bin`, no deps, dispatches
 //                                          to native binary or JS fallback)
@@ -32,17 +32,12 @@ const corePkg = JSON.parse(
 // here we hand Bun an opaque pre-resolved blob instead of letting
 // it walk the import graph.
 const FORCE_INLINE = new Set([
-  'ink',
-  'ink-select-input',
-  'ink-spinner',
-  'ink-text-input',
   '@opentui/react',
   'es-toolkit',
   'es-toolkit/compat',
-  // React is pulled in transitively by ink (and by @opentui/react in
-  // the OpenTUI variant). Once we inline ink we have to inline react
-  // too, otherwise the bundled ink does `import 'react'` which Bun
-  // tries to resolve from the embedded fs root and fails.
+  // React is pulled in by @opentui/react. Once we inline the binding
+  // we inline React too so Bun doesn't try to resolve it from the
+  // embedded fs root at runtime.
   'react',
   'react-reconciler',
 ]);

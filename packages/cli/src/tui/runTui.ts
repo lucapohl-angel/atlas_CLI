@@ -1,16 +1,14 @@
 /**
- * TUI entrypoint — bootstraps providers/registries and mounts the Ink app.
+ * TUI entrypoint — bootstraps providers/registries and mounts OpenTUI.
  *
  * If the user has not configured an API key yet, we still launch the TUI
  * in "setup" mode (provider = null). The App renders a setup overlay
  * that lets the user paste a key inside the program — no `vim` round-trip
  * required.
  */
-import { render } from 'ink';
 import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import React from 'react';
 import { runInit } from '../commands/init.js';
 import {
   AgentRegistry,
@@ -22,10 +20,13 @@ import {
   createCodexProvider,
   createDelegateRunner,
   createLocalProvider,
+  createOpenCodeProvider,
   createOpenRouterProvider,
   DEFAULT_BUILTIN_MCP_SERVERS,
   fetchAnthropicModels,
   fetchCodexModels,
+  fetchOpenCodeGoModels,
+  fetchOpenCodeZenModels,
   fetchOpenRouterModels,
   listLocalModels,
   probeLocalProvider,
@@ -47,8 +48,8 @@ import {
   type Provider,
   type SessionRecord
 } from '@atlas/core';
-import { TuiApp } from './App.js';
 import { printAtlasExitSplash, restoreInteractiveTerminal } from './exit-splash.js';
+import { checkForAtlasUpdate, dismissAtlasUpdateNotice } from './update-notice.js';
 
 export interface RunTuiOptions {
   readonly model?: string;
@@ -59,14 +60,6 @@ export interface RunTuiOptions {
   readonly config?: AtlasConfig;
   /** Resume an existing session by id, or 'latest' for the most recent. */
   readonly resume?: string;
-  /**
-   * Which UI runtime to mount. `ink` (default) keeps the legacy Ink
-   * TUI — works on Node + Bun. `opentui` mounts the new OpenTUI
-   * variant (Bun-only; falls back with a clear error under Node).
-   * Phase 1 of the OpenTUI port: only the chat screen is ported,
-   * overlays/wizards are not.
-   */
-  readonly ui?: 'ink' | 'opentui';
 }
 
 export interface RunTuiResult {
@@ -104,6 +97,15 @@ const ANTHROPIC_NATIVE_MODELS = [
 
 type RuntimeProviderKind = ModelInfo['provider'];
 type RuntimeProviders = Partial<Record<RuntimeProviderKind, Provider>>;
+
+const RUNTIME_PROVIDER_FALLBACK_ORDER: readonly RuntimeProviderKind[] = [
+  'local',
+  'anthropic',
+  'openai-codex',
+  'opencode-go',
+  'opencode-zen',
+  'openrouter'
+];
 
 // Recommended local models surfaced in the picker when Ollama is running
 // but the user hasn't configured a preferred model. Ordered by quality
@@ -147,6 +149,8 @@ export const providerKindForStartupModel = (
 ): RuntimeProviderKind | null => {
   const hit = catalog?.find((m) => m.id === modelId);
   if (hit) return hit.provider;
+  if (modelId.startsWith('opencode-go/')) return 'opencode-go';
+  if (modelId.startsWith('opencode/')) return 'opencode-zen';
   if (modelId.includes('/')) return 'openrouter';
   const m = modelId.toLowerCase();
   if (/^claude/.test(m)) return 'anthropic';
@@ -170,12 +174,17 @@ const firstConnectedCatalogModel = (
   catalog: readonly ModelInfo[] | undefined,
   providers: RuntimeProviders
 ): string | undefined => {
-  for (const m of catalog ?? []) {
-    if (providers[m.provider]) return m.id;
+  for (const providerKind of RUNTIME_PROVIDER_FALLBACK_ORDER) {
+    if (!providers[providerKind]) continue;
+    const hit = catalog?.find((m) => m.provider === providerKind);
+    if (hit) return hit.id;
   }
-  if (providers.openrouter) return OPENROUTER_FALLBACK_MODELS[0];
+  if (providers.local) return LOCAL_RECOMMENDED_MODELS[0]?.id;
   if (providers.anthropic) return ANTHROPIC_NATIVE_MODELS[0];
   if (providers['openai-codex']) return 'gpt-5';
+  if (providers['opencode-go']) return 'opencode-go/kimi-k2.6';
+  if (providers['opencode-zen']) return 'opencode/gpt-5.5';
+  if (providers.openrouter) return OPENROUTER_FALLBACK_MODELS[0];
   return undefined;
 };
 
@@ -234,7 +243,9 @@ const maybeAutoDetectLocal = async (cfg: AtlasConfig): Promise<AtlasConfig> => {
   // user hasn't explicitly chosen a provider.
   const hasCloudKey =
     Boolean(cfg.providers.openrouter.apiKey) ||
-    Boolean(cfg.providers.anthropic.apiKey);
+    Boolean(cfg.providers.anthropic.apiKey) ||
+    Boolean(cfg.providers.opencode.zen.apiKey) ||
+    Boolean(cfg.providers.opencode.go.apiKey);
   if (hasCloudKey) return cfg;
   if (cfg.defaultProvider !== 'openrouter') return cfg;
   if (!cfg.providers.local.autoDetect) return cfg;
@@ -630,83 +641,33 @@ export const runTui = async (opts: RunTuiOptions = {}): Promise<RunTuiResult> =>
     },
     ...(initialAgent ? { initialAgentName: initialAgent } : {}),
     ...(cfg ? { config: cfg } : {}),
-    ...(setupError ? { setupError } : {})
+    ...(setupError ? { setupError } : {}),
+    checkForUpdate: async () => {
+      const result = await checkForAtlasUpdate();
+      return result.ok ? result.value : null;
+    },
+    dismissUpdateNotice: async (latestVersion: string) => {
+      await dismissAtlasUpdateNotice(latestVersion);
+    }
   };
 
-  // Use the alternate screen buffer so Atlas owns the whole terminal
-  // window like opencode/htop/vim. We restore the original screen on
-  // exit so the user's prompt history is preserved.
-  //
-  // We also set the terminal's *default background color* via OSC 11 to
-  // Atlas's dark surface (#0a0a0a). This is the trick OpenCode uses to
-  // paint the entire terminal — Ink's <Box backgroundColor> only paints
-  // cells it actually emits, so users with transparent or light terminal
-  // themes saw their wallpaper bleed through empty rows. OSC 11 changes
-  // the terminal's own clear-color, so every cell — including ones Ink
-  // never touches and ones revealed during resize — paints dark. OSC 111
-  // on exit restores the user's original background.
-  //
-  // Supported by: kitty, alacritty, wezterm, foot, konsole, xterm,
-  // gnome-terminal, iTerm2, vte-based terminals, Windows Terminal.
-  // Terminals that don't support OSC 11 silently ignore it.
-  const useAltScreen = process.stdout.isTTY === true && !process.env['ATLAS_NO_ALTSCREEN'];
-  const paintBg = useAltScreen && !process.env['ATLAS_NO_PAINT_BG'];
-  if (useAltScreen) {
-    // \x1b[?1049h = enter alternate screen
-    process.stdout.write('\x1b[?1049h');
-    if (paintBg) {
-      // OSC 11 ; #RRGGBB BEL — set terminal default background.
-      // \x1b[48;2;R;G;Bm — also set ANSI bg attr so the immediate clear
-      // paints dark even on terminals that ignore OSC 11.
-      process.stdout.write('\x1b]11;#0a0a0a\x07\x1b[48;2;10;10;10m');
-    }
-    // \x1b[2J = clear screen with current bg, \x1b[H = home cursor
-    process.stdout.write('\x1b[2J\x1b[H');
-  }
-
-  const restore = (): void => {
+  const stopMcp = (): void => {
     mcpStartup.stopAll();
-    if (useAltScreen) {
-      // \x1b[0m reset attrs, OSC 111 reset default bg, leave alt screen.
-      if (paintBg) process.stdout.write('\x1b[0m\x1b]111\x07');
-      process.stdout.write('\x1b[?1049l');
-    }
   };
-  process.on('exit', restore);
+  process.on('exit', stopMcp);
 
-  // Phase 1 OpenTUI route. Branches BEFORE the Ink render so neither
-  // runtime is double-mounted. Same `props` object — the OpenTUI
-  // variant accepts a strict subset (chat-only) and ignores the rest.
-  if (opts.ui === 'opentui') {
-    let result: RunTuiResult | undefined;
-    try {
-      const { runOpenTui } = await import('./opentui/runOpenTui.js');
-      result = await runOpenTui(props);
-    } finally {
-      process.off('exit', restore);
-      restore();
-    }
-    restoreInteractiveTerminal();
-    if (result?.exitCode === 0) printAtlasExitSplash();
-    restoreInteractiveTerminal();
-    return result ?? { exitCode: 1 };
-  }
-
-  let exitedCleanly = false;
+  let result: RunTuiResult | undefined;
   try {
-    const { waitUntilExit } = render(React.createElement(TuiApp, props), {
-      exitOnCtrlC: false
-    });
-    await waitUntilExit();
-    exitedCleanly = true;
+    const { runOpenTui } = await import('./opentui/runOpenTui.js');
+    result = await runOpenTui(props);
   } finally {
-    process.off('exit', restore);
-    restore();
+    process.off('exit', stopMcp);
+    stopMcp();
   }
   restoreInteractiveTerminal();
-  if (exitedCleanly) printAtlasExitSplash();
+  if (result?.exitCode === 0) printAtlasExitSplash();
   restoreInteractiveTerminal();
-  return { exitCode: 0 };
+  return result ?? { exitCode: 1 };
 };
 
 const uniq = (arr: readonly string[]): readonly string[] => {
@@ -774,6 +735,26 @@ const loadModelCatalog = async (
     if (codexAuth.accountId) opts.accountId = codexAuth.accountId;
     if (typeof codexAuth.expiresAt === 'number') opts.expiresAt = codexAuth.expiresAt;
     tasks.push(fetchCodexModels(accessToken, opts).then((r) => (r.ok ? r.value : [])));
+  }
+
+  const openCodeZenKey = cfg.providers.opencode.zen.apiKey;
+  if (openCodeZenKey) {
+    tasks.push(
+      fetchOpenCodeZenModels(openCodeZenKey, {
+        forceRefresh: true,
+        baseUrl: cfg.providers.opencode.zen.baseUrl
+      }).then((r) => (r.ok ? r.value : []))
+    );
+  }
+
+  const openCodeGoKey = cfg.providers.opencode.go.apiKey;
+  if (openCodeGoKey) {
+    tasks.push(
+      fetchOpenCodeGoModels(openCodeGoKey, {
+        forceRefresh: true,
+        baseUrl: cfg.providers.opencode.go.baseUrl
+      }).then((r) => (r.ok ? r.value : []))
+    );
   }
 
   // Local / Ollama — probe the server and list whatever models the user
@@ -850,9 +831,9 @@ const loadModelCatalog = async (
  */
 export const buildAllProviders = async (
   cfg: AtlasConfig | null
-): Promise<Partial<Record<'openrouter' | 'anthropic' | 'openai-codex' | 'local', Provider>>> => {
+): Promise<RuntimeProviders> => {
   if (!cfg) return {};
-  const out: Partial<Record<'openrouter' | 'anthropic' | 'openai-codex' | 'local', Provider>> = {};
+  const out: RuntimeProviders = {};
 
   const or = cfg.providers.openrouter;
   if (or.apiKey) {
@@ -946,6 +927,24 @@ export const buildAllProviders = async (
       ...(Object.keys(lo.headers).length > 0 ? { headers: lo.headers } : {}),
       toolMode: lo.toolMode,
       requestTimeoutMs: lo.requestTimeoutMs
+    });
+  }
+
+  const zen = cfg.providers.opencode.zen;
+  if (zen.apiKey) {
+    out['opencode-zen'] = createOpenCodeProvider({
+      plan: 'zen',
+      apiKey: zen.apiKey,
+      baseUrl: zen.baseUrl
+    });
+  }
+
+  const go = cfg.providers.opencode.go;
+  if (go.apiKey) {
+    out['opencode-go'] = createOpenCodeProvider({
+      plan: 'go',
+      apiKey: go.apiKey,
+      baseUrl: go.baseUrl
     });
   }
 

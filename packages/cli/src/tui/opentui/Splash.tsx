@@ -2,10 +2,9 @@
 /**
  * Splash — startup hero shown when the transcript is empty.
  *
- * Mirrors the Ink TUI's `Splash` component (App.tsx ~line 7128):
- * centered ATLAS OS block-letter wordmark in an Atlas-blue gradient
- * (bright top → primary mid → secondary footing), tagline, model
- * line, terminal-size hint, and the leader-key cheat-sheet.
+ * Centered ATLAS OS block-letter wordmark in an Atlas-blue gradient
+ * (bright top → primary mid → secondary footing), tagline, model line,
+ * terminal-size hint, and the leader-key cheat-sheet.
  */
 import { palette } from './palette.js';
 

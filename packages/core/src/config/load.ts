@@ -78,6 +78,11 @@ const applyEnvOverrides = (cfg: AtlasConfig, env: NodeJS.ProcessEnv): AtlasConfi
   const baseUrl = env['OPENROUTER_BASE_URL'] ?? cfg.providers.openrouter.baseUrl;
   const anthropicKey = env['ANTHROPIC_API_KEY'] ?? cfg.providers.anthropic.apiKey;
   const anthropicBaseUrl = env['ANTHROPIC_BASE_URL'] ?? cfg.providers.anthropic.baseUrl;
+  const openCodeZenKey = env['OPENCODE_ZEN_API_KEY'] ?? cfg.providers.opencode.zen.apiKey;
+  const openCodeZenBaseUrl =
+    env['OPENCODE_ZEN_BASE_URL'] ?? cfg.providers.opencode.zen.baseUrl;
+  const openCodeGoKey = env['OPENCODE_GO_API_KEY'] ?? cfg.providers.opencode.go.apiKey;
+  const openCodeGoBaseUrl = env['OPENCODE_GO_BASE_URL'] ?? cfg.providers.opencode.go.baseUrl;
 
   return {
     ...cfg,
@@ -93,6 +98,19 @@ const applyEnvOverrides = (cfg: AtlasConfig, env: NodeJS.ProcessEnv): AtlasConfi
         ...cfg.providers.anthropic,
         ...(anthropicKey !== undefined ? { apiKey: anthropicKey } : {}),
         baseUrl: anthropicBaseUrl
+      },
+      opencode: {
+        ...cfg.providers.opencode,
+        zen: {
+          ...cfg.providers.opencode.zen,
+          ...(openCodeZenKey !== undefined ? { apiKey: openCodeZenKey } : {}),
+          baseUrl: openCodeZenBaseUrl
+        },
+        go: {
+          ...cfg.providers.opencode.go,
+          ...(openCodeGoKey !== undefined ? { apiKey: openCodeGoKey } : {}),
+          baseUrl: openCodeGoBaseUrl
+        }
       }
     }
   };

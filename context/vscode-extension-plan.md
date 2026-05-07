@@ -1,9 +1,9 @@
 # VS Code Extension — Future Improvement Plan
 
-> Status: **planned, not started**. This is a forward-looking design
-> doc. Nothing here is built yet. Update this file as decisions firm
-> up; promote work into `progress-tracker.md` when implementation
-> starts.
+> Status: **in progress**. Phase 2.A is complete and Phase 2.B has a
+> working smoke path: package metadata, side-bar webview shell,
+> Zod-validated bridge, local session host, and `Atlas: Run Turn`.
+> VS Code-native tools and the full webview workflow are not built yet.
 
 ## Goal
 
@@ -78,7 +78,7 @@ packages/
   per-platform Bun-compiled binaries.
 - Extension bundles `@atlas/core` directly via esbuild.
 
-## Hard rules (mirror Ink/OpenTUI rules from `.github/copilot-instructions.md`)
+## Hard rules (mirror OpenTUI rules from `.github/copilot-instructions.md`)
 
 - **Re-skin only.** State machine, gating rules, and data sources
   must mirror the canonical TUI workflow in
@@ -87,12 +87,12 @@ packages/
   extension belongs in `@atlas/core`.
 - **Cancellation everywhere.** Every webview action threads a
   `vscode.CancellationToken` → `AbortController` → engine `signal`.
-- **Switchable agents** — same rule as Ink: orchestrator (`atlas`)
+- **Switchable agents** — same rule as OpenTUI: orchestrator (`atlas`)
   plus user-installed non-framework agents only. Filter via
   `isFrameworkAgent` from `@atlas/core`.
 - **Model picker** sources from the live `ModelInfo[]` catalog, not
   a hardcoded list.
-- **Slash commands** stay in sync with Ink's `SLASH_COMMANDS` table.
+- **Slash commands** stay in sync with `context/tui-workflow.md`.
   Stub anything unimplemented with a clear "not yet ported in VS
   Code variant" message.
 
@@ -100,32 +100,34 @@ packages/
 
 ### Phase 2.A — Skeleton + bridge
 
-Foundational; nothing user-visible yet.
+Foundational; the side-bar shell is visible and talks to the extension host
+through the bridge.
 
-- Bootstrap `packages/vscode` with `engines.vscode`, esbuild for the
+- [x] Bootstrap `packages/vscode` with `engines.vscode`, esbuild for the
   extension entry, Vite for the webview.
-- Define `bridge.ts` as a Zod-validated message union:
+- [x] Define `bridge.ts` as a Zod-validated message union:
   `{requestId, kind, params}` →
   `{response | stream-event | error}`. Same shape as the provider
   `StreamEvent` so the UI can render incrementally.
-- Wire `webview.postMessage` ↔ `panel.onDidReceiveMessage` with a
+- [x] Wire `webview.postMessage` ↔ `panel.onDidReceiveMessage` with a
   small request/response correlator. Never expose Node primitives or
   raw `vscode` APIs to the webview — the bridge is the only surface.
 
 ### Phase 2.B — Headless engine adapter
 
-- `session-host.ts` builds a `Session` from `@atlas/core` exactly the
-  way `runTui.ts` does, but with no terminal I/O.
+- [x] `session-host.ts` builds a local in-memory Atlas session from
+  `@atlas/core` with provider, agents, skills, tools, hooks, and prompt
+  composition, but with no terminal I/O.
 - VS Code-native tool implementations:
-  - `read_file` / `write_file` → `vscode.workspace.fs` (respects
+  - [ ] `read_file` / `write_file` → `vscode.workspace.fs` (respects
     unsaved editor state via `openTextDocument`).
-  - `edit_file` → `vscode.WorkspaceEdit` so edits land as native
+  - [ ] `edit_file` → `vscode.WorkspaceEdit` so edits land as native
     diffs with full undo.
-  - `terminal` → `vscode.window.createTerminal` backed by a
+  - [ ] `terminal` → `vscode.window.createTerminal` backed by a
     `Pseudoterminal` so output streams into the engine.
-- Approval prompts route to `vscode.window.showInformationMessage`
+- [ ] Approval prompts route to `vscode.window.showInformationMessage`
   (modal) for now; later, surface inline in the webview.
-- Smoke goal: a Command Palette command (`Atlas: Run Turn`) that
+- [x] Smoke goal: a Command Palette command (`Atlas: Run Turn`) that
   takes a string, runs one engine turn, prints to an Output channel.
   Nothing pretty — just proves the engine works in the host.
 

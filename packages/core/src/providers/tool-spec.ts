@@ -3,7 +3,8 @@
  * wire format. Uses zod-to-json-schema for accurate JSON Schema output.
  */
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { composeToolDescription, type Tool, type ToolRegistry } from '../tools/index.js';
+import { composeToolDescription, type Tool } from '../tools/types.js';
+import type { ToolRegistry } from '../tools/registry.js';
 import type { ToolSpec } from './types.js';
 
 type JsonObject = Record<string, unknown>;

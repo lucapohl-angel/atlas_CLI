@@ -165,6 +165,29 @@ export const OpenAIProviderConfigSchema = z
   })
   .default({});
 
+const createOpenCodePlanProviderConfigSchema = (baseUrl: string) =>
+  z
+    .object({
+      apiKey: z.string().min(1).optional(),
+      baseUrl: z.string().url().default(baseUrl),
+      customModels: z.array(z.string().min(1)).default([])
+    })
+    .default({});
+
+export const OpenCodeZenProviderConfigSchema = createOpenCodePlanProviderConfigSchema(
+  'https://opencode.ai/zen/v1'
+);
+export const OpenCodeGoProviderConfigSchema = createOpenCodePlanProviderConfigSchema(
+  'https://opencode.ai/zen/go/v1'
+);
+
+export const OpenCodeProviderConfigSchema = z
+  .object({
+    zen: OpenCodeZenProviderConfigSchema,
+    go: OpenCodeGoProviderConfigSchema
+  })
+  .default({});
+
 export const LocalProviderToolModeSchema = z.enum(['lite', 'hybrid', 'full']);
 
 /**
@@ -244,6 +267,7 @@ export const ProvidersConfigSchema = z
     openrouter: OpenRouterProviderConfigSchema,
     anthropic: AnthropicProviderConfigSchema,
     openai: OpenAIProviderConfigSchema,
+    opencode: OpenCodeProviderConfigSchema,
     local: LocalProviderConfigSchema
   })
   .default({});
@@ -322,7 +346,9 @@ export const ShipConfigSchema = z
 
 export const AtlasConfigSchema = z
   .object({
-    defaultProvider: z.enum(['openrouter', 'anthropic', 'local']).default('openrouter'),
+    defaultProvider: z
+      .enum(['openrouter', 'anthropic', 'local', 'opencode-zen', 'opencode-go'])
+      .default('openrouter'),
     defaultModel: z.string().min(1).default('anthropic/claude-sonnet-4'),
     /**
      * Optional cheaper model used for low-stakes side tasks: tool-arg
@@ -351,6 +377,9 @@ export const AtlasConfigSchema = z
 export type OpenRouterProviderConfig = z.infer<typeof OpenRouterProviderConfigSchema>;
 export type AnthropicProviderConfig = z.infer<typeof AnthropicProviderConfigSchema>;
 export type OpenAIProviderConfig = z.infer<typeof OpenAIProviderConfigSchema>;
+export type OpenCodeProviderConfig = z.infer<typeof OpenCodeProviderConfigSchema>;
+export type OpenCodeZenProviderConfig = z.infer<typeof OpenCodeZenProviderConfigSchema>;
+export type OpenCodeGoProviderConfig = z.infer<typeof OpenCodeGoProviderConfigSchema>;
 export type AtlasPowerMode = z.infer<typeof AtlasPowerModeSchema>;
 export type LocalProviderToolMode = z.infer<typeof LocalProviderToolModeSchema>;
 export type LocalProviderConfig = z.infer<typeof LocalProviderConfigSchema>;

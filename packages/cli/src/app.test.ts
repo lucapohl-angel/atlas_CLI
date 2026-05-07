@@ -24,10 +24,11 @@ describe('atlas CLI program', () => {
     expect(names).toContain('ask');
   });
 
-  it('defaults chat to the full-screen OpenTUI runtime', () => {
+  it('hides the legacy UI selector because OpenTUI is the only runtime', () => {
     const program = buildProgram();
     const chat = program.commands.find((c) => c.name() === 'chat');
     const ui = chat?.options.find((o) => o.long === '--ui');
-    expect(ui?.defaultValue).toBe('opentui');
+    expect(ui?.hidden).toBe(true);
+    expect(ui?.defaultValue).toBeUndefined();
   });
 });

@@ -7,13 +7,14 @@ are repository-specific overrides that change Copilot's defaults.
 
 ## OpenTUI work — always load the skill first
 
-The repository ships two TUI variants:
+The repository ships one full-screen TUI:
 
-- **Ink** (default, Node + Bun) — the legacy variant in
-  [packages/cli/src/tui/App.tsx](packages/cli/src/tui/App.tsx).
-- **OpenTUI** (`--ui=opentui`, Bun-only) — the new variant being ported
-  screen-by-screen in
+- **OpenTUI** (default, Bun/native binary) — maintained in
   [packages/cli/src/tui/opentui/](packages/cli/src/tui/opentui/).
+
+The legacy Ink TUI was retired; do not reintroduce Ink dependencies,
+`--ui=ink` fallbacks, or parity instructions that point at
+`packages/cli/src/tui/App.tsx`.
 
 When making **any** change inside `packages/cli/src/tui/opentui/`,
 **before** writing code:
@@ -53,19 +54,11 @@ The release workflow is gated behind a manual `workflow_dispatch` with
 pushes only build artifacts. The user will trigger publishing
 explicitly when the build is ready.
 
-## Default UI stays Ink
+## OpenTUI Is The Runtime
 
-Until the OpenTUI port reaches feature parity, the Ink variant is the
-default. New features should be added to **both** variants when
-practical, or to Ink first then mirrored. Do **not** flip the default
-without an explicit instruction.
-
-## OpenTUI workflow MUST match the Ink TUI
-
-The OpenTUI variant is a re-skin, not a re-design. Visuals (popups,
-borders, palette) can differ — **state machine, gating rules, and
-data sources must mirror [packages/cli/src/tui/App.tsx](packages/cli/src/tui/App.tsx)
-exactly**.
+OpenTUI is the default and only maintained full-screen UI. Visuals
+(popups, borders, palette) can evolve, but **state machine, gating
+rules, and data sources must follow the workflow contract exactly**.
 
 **Single source of truth for the user workflow:**
 [context/tui-workflow.md](../context/tui-workflow.md). Read it
@@ -74,12 +67,8 @@ canonical command list, popup sizing, color invariants
 (green=connected, accent=headers, warning=popular, success=selected),
 the MCP catalog (filesystem, github, higgsfield, figma + memory),
 and the slash autocomplete contract. When you change a workflow
-rule in one variant, mirror it in the other in the same commit or
-note the gap in `context/progress-tracker.md`.
-
-Before adding or changing a screen in
-`packages/cli/src/tui/opentui/`, grep `App.tsx` for the equivalent
-behavior and copy the rule. Established invariants:
+rule, update this document and `context/tui-workflow.md` in the same
+change. Established invariants:
 
 - **Switchable agents**: only the orchestrator (`atlas`) plus
   user-installed (non-framework) agents. Filter via `isFrameworkAgent`
@@ -91,26 +80,24 @@ behavior and copy the rule. Established invariants:
 - **Model picker**: source from the live `modelCatalog: ModelInfo[]`
   prop (passed by `runTui.ts`), not a hardcoded list. Always include
   the active model, the configured default, declared fallbacks, and
-  `config.providers.openrouter.customModels`. Static seed list is a
+  provider custom model lists (`config.providers.openrouter.customModels`,
+  `config.providers.opencode.zen.customModels`, and
+  `config.providers.opencode.go.customModels`). Static seed list is a
   fallback only.
 - **Thinking levels**: filter per-model via
   `thinkingLevelsFor(activeModel, modelCatalog)`. Reject unsupported
   levels in `/thinking <level>` with the allowed set.
 - **Provider tag / context window**: resolve through the catalog
-  first (`providerKindFor` / `contextWindowFor` patterns from
-  App.tsx), id-shape heuristics only as fallback. This matters for
-  multi-key users where `gpt-5` could be OpenRouter or Codex OAuth.
+  first (`providerKindFor` / `contextWindowFor` patterns), id-shape
+  heuristics only as fallback. This matters for multi-key users where
+  `gpt-5` could be OpenRouter or Codex OAuth.
 - **Slash commands**: keep the OpenTUI command set in sync with
-  Ink's `SLASH_COMMANDS` table (App.tsx, near line 6745). Stub
-  unimplemented commands with a clear "not yet ported in OpenTUI
-  variant" message rather than failing silently.
+  `context/tui-workflow.md`. Stub unimplemented commands with a clear
+  "not yet implemented" message rather than failing silently.
 - **Props bag**: `OpenTuiAppProps` accepts whatever `runTui.ts`
   passes (modelCatalog, providers, availableModels, mcpStatus,
   initialSession, autoResumed, initialActiveTask, …). Don't drop or
   rename fields — extend the interface instead.
-
-If you change a workflow rule in Ink, mirror it in OpenTUI in the
-same commit (or note the gap in `context/progress-tracker.md`).
 
 ## Preserve the Atlas brand
 

@@ -3,7 +3,7 @@
 //
 // Resolution order:
 //   1. atlas-os-${platform}-${arch} optional-dep package (Bun-compiled binary)
-//   2. Bundled JS fallback (dist/bin/atlas.js) — pure Node + Ink
+//   2. Bundled JS fallback (dist/bin/atlas.js)
 //
 // We never crash: a missing platform package only means we use the
 // fallback. That keeps `npm i -g atlas-os` working on any platform we

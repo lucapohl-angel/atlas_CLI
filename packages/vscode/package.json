@@ -1,0 +1,87 @@
+{
+  "name": "atlas-os-vscode",
+  "version": "0.1.0",
+  "displayName": "ATLAS·OS",
+  "description": "ATLAS·OS side-bar host for VS Code.",
+  "publisher": "lucapohl-angel",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/extension.cjs",
+  "engines": {
+    "vscode": "^1.96.0",
+    "node": ">=20.0.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onView:atlas.sidebar",
+    "onCommand:atlas.open",
+    "onCommand:atlas.runTurn"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "atlas",
+          "title": "Atlas",
+          "icon": "media/atlas.svg"
+        }
+      ]
+    },
+    "views": {
+      "atlas": [
+        {
+          "type": "webview",
+          "id": "atlas.sidebar",
+          "name": "Atlas"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "atlas.open",
+        "title": "Atlas: Open Sidebar"
+      },
+      {
+        "command": "atlas.runTurn",
+        "title": "Atlas: Run Turn"
+      }
+    ]
+  },
+  "files": [
+    "dist",
+    "media",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "pnpm --filter @atlas/core build && rm -rf dist && tsc --noEmit -p tsconfig.json && node scripts/bundle.mjs",
+    "dev": "tsc --noEmit -p tsconfig.json --watch",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@atlas/core": "workspace:*",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.0.3",
+    "@types/vscode": "^1.96.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.8.2",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.7"
+  }
+}

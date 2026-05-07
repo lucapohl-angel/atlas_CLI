@@ -5,7 +5,7 @@
  * ESLint stack or touching the lockfile.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
   encoding: 'utf8'
@@ -56,7 +56,8 @@ const repoFiles = execFileSync('git', ['ls-files', '-z'], {
   maxBuffer: 10 * 1024 * 1024
 })
   .split('\0')
-  .filter(Boolean);
+  .filter(Boolean)
+  .filter((file) => existsSync(file));
 
 const isTextFile = (file) => {
   if (SKIP_PREFIXES.some((prefix) => file.startsWith(prefix))) return false;
@@ -100,7 +101,8 @@ console.log(`repo lint: ${repoFiles.filter(isTextFile).length} tracked text file
 
 const packageLints = [
   ['@atlas/core', 'packages/core'],
-  ['atlas-os', 'packages/cli']
+  ['atlas-os', 'packages/cli'],
+  ['atlas-os-vscode', 'packages/vscode']
 ];
 
 for (const [name, dir] of packageLints) {

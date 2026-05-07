@@ -18,7 +18,7 @@ with a Greek pantheon of specialist agents doing the work.
 npx atlas-os@latest
 ```
 
-**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, OpenRouter, or local models.**
+**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, OpenRouter, OpenCode Zen/Go, or local models.**
 
 <br>
 
@@ -53,7 +53,7 @@ and persistent project state.
 
 | Capability | **ATLAS·OS** | Claude Code | OpenCode | Gemini CLI | Kilo Code |
 |---|---|---|---|---|---|
-| Provider choice | Anthropic · OpenAI · OpenRouter | Claude-focused | Provider-agnostic | Gemini-focused | Kilo router |
+| Provider choice | Anthropic · OpenAI · OpenRouter · OpenCode Zen/Go | Claude-focused | Provider-agnostic | Gemini-focused | Kilo router |
 | Multi-agent orchestration | Built-in Greek pantheon, routed by project state | Agent teams + subagents | Build / Plan + subagent | Subagents | Modes |
 | Spec-driven pipeline | Built-in PRD -> architecture -> stories -> implementation -> QA -> release | Bring your own | Bring your own | Bring your own | Bring your own |
 | Lifecycle hooks | Typed TypeScript hooks around tools/messages | Hook system | Plugins / MCP | Hooks | Plugins / MCP |
@@ -88,6 +88,13 @@ npx atlas-os@latest
 # Or install globally
 npm install -g atlas-os
 atlas
+```
+
+Atlas checks npm for newer `atlas-os` releases when the TUI opens. If your
+global install is behind, it shows a short dismissible update notice with:
+
+```bash
+npm install -g atlas-os@latest
 ```
 
 ### Windows
@@ -147,6 +154,8 @@ Environment variables also work:
 export OPENROUTER_API_KEY=sk-or-...     # broad hosted-model catalog
 export ANTHROPIC_API_KEY=sk-ant-...     # Anthropic direct
 export OPENAI_API_KEY=sk-...            # OpenAI / ChatGPT direct
+export OPENCODE_ZEN_API_KEY=oc-...      # OpenCode Zen BYO key
+export OPENCODE_GO_API_KEY=oc-...       # OpenCode Go BYO key
 ```
 
 Local OpenAI-compatible servers work too. Atlas auto-detects Ollama at
@@ -162,6 +171,11 @@ atlasMode: smart  # full | smart
 providers:
   openrouter:
     apiKey: sk-or-...
+  opencode:
+    zen:
+      apiKey: oc-...
+    go:
+      apiKey: oc-...
 ```
 
 ### Hosted Atlas Modes
@@ -178,9 +192,10 @@ The active mode is also shown in the TUI top bar: `ATLAS POWER` uses a bright
 red badge, and `ATLAS SMART` uses a bright green badge.
 
 The model picker marks each catalog row with `cache: yes (cheaper)`,
-`cache: unknown`, or `cache: no`. OpenRouter rows are sourced from the live
-`/models` response cache-pricing fields, so DeepSeek, Kimi/Moonshot, Gemini,
-OpenAI, Anthropic, and other cache-priced routes are labeled from provider data.
+`cache: unknown`, or `cache: no`. OpenRouter and OpenCode rows are sourced from
+live `/models` response cache-pricing fields, so DeepSeek, Kimi/Moonshot,
+Gemini, OpenAI, Anthropic, and other cache-priced routes are labeled from
+provider data.
 Prefer cache-capable routes when you want Full Atlas power with lower repeat-turn
 cost.
 
@@ -262,6 +277,15 @@ pnpm --filter atlas-os build
 node packages/cli/dist/bin/atlas.js doctor
 ```
 
+VS Code extension development has started in `packages/vscode`. It is a local
+extension host that embeds `@atlas/core`; it does not require a hosted Atlas
+backend.
+
+```bash
+pnpm --filter atlas-os-vscode build
+pnpm --filter atlas-os-vscode test:run
+```
+
 ### Local Models While Developing
 
 For local development, start an OpenAI-compatible server such as Ollama and pull
@@ -302,6 +326,9 @@ pnpm --filter @atlas/core test:run && \
 pnpm --filter atlas-os typecheck && \
 pnpm --filter atlas-os test:run && \
 pnpm --filter atlas-os build && \
+pnpm --filter atlas-os-vscode typecheck && \
+pnpm --filter atlas-os-vscode test:run && \
+pnpm --filter atlas-os-vscode build && \
 pnpm lint
 ```
 

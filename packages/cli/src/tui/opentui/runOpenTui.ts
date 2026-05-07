@@ -1,12 +1,11 @@
 /**
  * OpenTUI runtime entry — Phase 1.
  *
- * Builds the same `props` object the Ink TUI uses, then mounts the
+ * Mounts the prepared TUI `props` object into the
  * OpenTUI React tree via @opentui/react's `createRoot`. We don't
  * import @opentui/* at the top of `runTui.ts` so Node-only callers
  * (the `--no-tui` REPL, tests) never pay the FFI-load cost — the
- * dynamic import here only fires when the user explicitly opts in
- * via `--ui=opentui`.
+ * dynamic import here only fires when the full-screen TUI starts.
  *
  * Runtime: Bun-only. Loading @opentui/core under Node throws
  * `ERR_UNKNOWN_BUILTIN_MODULE: node:ffi`. We surface that as a clear
@@ -36,8 +35,7 @@ export const runOpenTui = async (
     if (/node:ffi|node-ffi|UNKNOWN_BUILTIN_MODULE/i.test(msg)) {
       process.stderr.write(
         'atlas: the full-screen renderer requires the bundled native binary.\n' +
-          '       Reinstall with `npm i -g atlas-os`, run with `bun run`,\n' +
-          '       or use the classic fallback with `--ui=ink`.\n'
+          '       Reinstall with `npm i -g atlas-os`, or run through the bundled atlas binary.\n'
       );
       return { exitCode: 1 };
     }
@@ -49,7 +47,7 @@ export const runOpenTui = async (
   const { createRoot } = reactBinding;
   const { OpenTuiApp } = appModule;
 
-  // Atlas navy default-bg via OSC 11 (same trick as the Ink path).
+  // Atlas navy default-bg via OSC 11.
   // Always paint the terminal default + always enter alt-screen so
   // the renderer's backing buffer fully covers the parent terminal —
   // otherwise cells the renderer never touches (e.g. between frames,

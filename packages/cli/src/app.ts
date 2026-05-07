@@ -4,7 +4,7 @@
  * Phase 1: `atlas ask "<prompt>"` streams a single-turn answer from the
  * configured provider. Subsequent phases add the REPL, tools, hooks, etc.
  */
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { ATLAS_VERSION, childLogger } from '@atlas/core';
 import { runAsk } from './commands/ask.js';
 import { runInit } from './commands/init.js';
@@ -69,11 +69,7 @@ export const buildProgram = (): Command => {
     .option('-m, --model <id>', 'override the default model')
     .option('-a, --agent <name>', 'start in this agent (otherwise the first installed)')
     .option('--no-tui', 'use the plain readline REPL instead of the full-screen TUI')
-    .option(
-      '--ui <runtime>',
-      'TUI runtime: "opentui" (default) or "ink" (classic fallback)',
-      'opentui'
-    )
+    .addOption(new Option('--ui <runtime>', 'legacy no-op; only opentui is supported').hideHelp())
     .option('--resume [id]', "resume a saved session (omit id for the latest)")
     .action(
       async (opts: {
@@ -94,14 +90,17 @@ export const buildProgram = (): Command => {
           model?: string;
           agent?: string;
           resume?: string;
-          ui?: 'ink' | 'opentui';
         } = {};
         if (opts.model !== undefined) tuiOpts.model = opts.model;
         if (opts.agent !== undefined) tuiOpts.agent = opts.agent;
         if (opts.resume !== undefined) {
           tuiOpts.resume = typeof opts.resume === 'string' ? opts.resume : 'latest';
         }
-        if (opts.ui === 'opentui' || opts.ui === 'ink') tuiOpts.ui = opts.ui;
+        if (opts.ui !== undefined && opts.ui !== 'opentui') {
+          process.stderr.write('atlas: Ink TUI has been retired; run `atlas chat` to start OpenTUI.\n');
+          process.exitCode = 1;
+          return;
+        }
         const { runTui } = await import('./tui/runTui.js');
         const { exitCode } = await runTui(tuiOpts);
         process.exit(exitCode);

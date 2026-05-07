@@ -17,7 +17,7 @@ with a Greek pantheon of specialist agents doing the work.
 npx atlas-os@latest
 ```
 
-**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, OpenRouter, or local models.**
+**Works on macOS, Linux, and Windows through WSL2. Bring Anthropic, OpenAI, OpenRouter, OpenCode Zen/Go, or local models.**
 
 ![Atlas·OS terminal](https://raw.githubusercontent.com/lucapohl-angel/ATLAS_OS/main/assets/atlasOS_TERMINAL.png)
 
@@ -33,6 +33,13 @@ npx atlas-os@latest
 # Or install globally
 npm install -g atlas-os
 atlas
+```
+
+Atlas checks npm for newer `atlas-os` releases when the TUI opens. If your
+global install is behind, it shows a short dismissible update notice with:
+
+```bash
+npm install -g atlas-os@latest
 ```
 
 ### Windows
@@ -76,6 +83,8 @@ Environment variables also work:
 export OPENROUTER_API_KEY=sk-or-...
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
+export OPENCODE_ZEN_API_KEY=oc-...
+export OPENCODE_GO_API_KEY=oc-...
 ```
 
 Hosted model cost posture is configurable from `/config -> Atlas power mode`.
@@ -90,8 +99,9 @@ red or `ATLAS SMART` in bright green.
 
 The model picker writes cache support beside provider-pulled models as
 `cache yes`, `cache unknown`, or `cache no` so cheaper cache-capable models are
-easy to spot. OpenRouter rows use the live `/models` cache-pricing fields, and
-`/models` includes a search field for filtering long provider catalogs.
+easy to spot. OpenRouter and OpenCode rows use live `/models` cache-pricing
+fields, and `/models` includes a search field for filtering long provider
+catalogs.
 
 Saved sessions are managed from `/sessions`: resume, rename, start fresh,
 delete one, select several for deletion, or delete all with confirmation.
@@ -138,7 +148,7 @@ checklists, MCP support, sessions, and provider/model routing.
 
 | Capability | **ATLAS·OS** | Claude Code | OpenCode | Gemini CLI | Kilo Code |
 |---|---|---|---|---|---|
-| Provider choice | Anthropic · OpenAI · OpenRouter | Claude-focused | Provider-agnostic | Gemini-focused | Kilo router |
+| Provider choice | Anthropic · OpenAI · OpenRouter · OpenCode Zen/Go | Claude-focused | Provider-agnostic | Gemini-focused | Kilo router |
 | Multi-agent orchestration | Built-in Greek pantheon | Agent teams + subagents | Build / Plan + subagent | Subagents | Modes |
 | Spec-driven pipeline | Built in | Bring your own | Bring your own | Bring your own | Bring your own |
 | Lifecycle hooks | Typed TypeScript hooks | Hook system | Plugins / MCP | Hooks | Plugins / MCP |

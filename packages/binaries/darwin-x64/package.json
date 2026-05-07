@@ -1,6 +1,6 @@
 {
   "name": "atlas-os-darwin-x64",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "description": "macOS x64 binary for atlas-os (do not install directly).",
   "license": "MIT",
   "repository": {

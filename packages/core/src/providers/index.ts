@@ -10,7 +10,9 @@ import { createOpenRouterProvider } from './openrouter.js';
 import { createAnthropicProvider } from './anthropic.js';
 import { createLocalProvider } from './local.js';
 import { createOpenCodeProvider } from './opencode.js';
+import { createCodexProvider, type CodexTokenSnapshot } from './codex.js';
 import { loadClaudeCodeCredentials } from './claude-code.js';
+import { saveConfig } from '../config/save.js';
 import type { Provider } from './types.js';
 
 export * from './types.js';
@@ -82,6 +84,64 @@ export const providerFromConfig = (cfg: AtlasConfig): Result<Provider, AtlasErro
           ...(Object.keys(lo.headers).length > 0 ? { headers: lo.headers } : {}),
           toolMode: lo.toolMode,
           requestTimeoutMs: lo.requestTimeoutMs
+        })
+      );
+    }
+    case 'openai-codex': {
+      const openai = cfg.providers.openai;
+      if (openai.authMode !== 'oauth' && openai.apiKey) {
+        return ok(
+          createOpenCodeProvider({
+            plan: 'zen',
+            apiKey: openai.apiKey,
+            baseUrl: openai.apiBaseUrl,
+            providerName: 'openai'
+          })
+        );
+      }
+      if (openai.authMode === 'apiKey') {
+        return err(
+          atlasError(
+            'PROVIDER_AUTH_FAILED',
+            'OpenAI API key missing - set OPENAI_API_KEY or providers.openai.apiKey'
+          )
+        );
+      }
+      const codex = cfg.providers.openai.codex;
+      if (!codex.accessToken) {
+        return err(
+          atlasError(
+            'PROVIDER_AUTH_FAILED',
+            'ChatGPT / Codex OAuth token missing - sign in from Atlas VS Code or store providers.openai.codex in ~/.atlas/config.yaml'
+          )
+        );
+      }
+      let snapshot: CodexTokenSnapshot = {
+        accessToken: codex.accessToken,
+        ...(codex.refreshToken !== undefined ? { refreshToken: codex.refreshToken } : {}),
+        ...(codex.idToken !== undefined ? { idToken: codex.idToken } : {}),
+        ...(codex.accountId !== undefined ? { accountId: codex.accountId } : {}),
+        ...(typeof codex.expiresAt === 'number' ? { expiresAt: codex.expiresAt } : {})
+      };
+      return ok(
+        createCodexProvider({
+          baseUrl: cfg.providers.openai.baseUrl,
+          tokens: {
+            read: () => snapshot,
+            write: async (next) => {
+              snapshot = next;
+              await saveConfig({
+                ...cfg,
+                providers: {
+                  ...cfg.providers,
+                  openai: {
+                    ...cfg.providers.openai,
+                    codex: next
+                  }
+                }
+              });
+            }
+          }
         })
       );
     }

@@ -15,7 +15,13 @@ await esbuild({
   platform: 'node',
   target: 'node20',
   format: 'cjs',
-  external: ['vscode'],
+  banner: {
+    js: "const __atlasImportMetaUrl = require('node:url').pathToFileURL(__filename).href;",
+  },
+  define: {
+    'import.meta.url': '__atlasImportMetaUrl',
+  },
+  external: ['vscode', 'playwright', 'playwright-core', 'chromium-bidi/*'],
   sourcemap: false,
   legalComments: 'none',
   logLevel: 'info',

@@ -22,14 +22,60 @@ export interface ToolCall {
 }
 
 /**
+ * Content block for multimodal messages.
+ * `text` — plain text fragment.
+ * `image` — base64-encoded image with its MIME type.
+ */
+export type TextBlock = { readonly type: 'text'; readonly text: string };
+export type ImageBlock = {
+  readonly type: 'image';
+  readonly base64: string;
+  readonly mediaType: string;
+};
+export type ContentBlock = TextBlock | ImageBlock;
+
+/**
+ * Return true when content is a content-block array (multimodal message).
+ */
+export const isContentBlocks = (
+  content: unknown
+): content is readonly ContentBlock[] =>
+  Array.isArray(content) &&
+  content.length > 0 &&
+  content.every(
+    (b): b is ContentBlock =>
+      typeof b === 'object' &&
+      b !== null &&
+      'type' in b &&
+      (b.type === 'text' || b.type === 'image')
+  );
+
+/**
+ * Extract plain text from any message content shape.
+ * For block arrays, concatenates all text blocks and ignores images.
+ */
+export const contentToString = (
+  content: string | readonly ContentBlock[]
+): string => {
+  if (typeof content === 'string') return content;
+  return content
+    .filter((b): b is TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('');
+};
+
+/**
  * Conversation message. Backward compatible with the original two-field
  * shape; the optional fields support the tool-use loop:
  *   - `assistant` messages carry `toolCalls` when the model invoked tools.
  *   - `tool` messages carry the `toolCallId` they reply to.
+ *
+ * `content` may be a plain string (legacy / text-only) or a readonly array
+ * of content blocks for multimodal (text + image) messages.
  */
 export interface Message {
   readonly role: Role;
-  readonly content: string;
+  readonly content: string | readonly ContentBlock[];
   readonly toolCallId?: string;
   readonly toolCalls?: readonly ToolCall[];
   readonly name?: string;

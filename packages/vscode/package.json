@@ -1,9 +1,14 @@
 {
   "name": "atlas-os-vscode",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "displayName": "ATLAS·OS",
   "description": "ATLAS·OS side-bar host for VS Code.",
   "publisher": "lucapohl-angel",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lucapohl-angel/ATLAS_OS.git",
+    "directory": "packages/vscode"
+  },
   "license": "MIT",
   "type": "module",
   "main": "./dist/extension.cjs",
@@ -21,7 +26,9 @@
   "activationEvents": [
     "onView:atlas.sidebar",
     "onCommand:atlas.open",
-    "onCommand:atlas.runTurn"
+    "onCommand:atlas.runTurn",
+    "onCommand:atlas.signInCodex",
+    "onUri"
   ],
   "contributes": {
     "viewsContainers": {
@@ -50,16 +57,172 @@
       {
         "command": "atlas.runTurn",
         "title": "Atlas: Run Turn"
+      },
+      {
+        "command": "atlas.signInCodex",
+        "title": "Atlas: Sign in to ChatGPT / Codex"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Atlas",
+      "properties": {
+        "atlas.defaultProvider": {
+          "type": "string",
+          "enum": ["openrouter", "anthropic", "openai-codex", "local", "opencode-zen", "opencode-go"],
+          "default": "openrouter",
+          "description": "Atlas default provider override for VS Code."
+        },
+        "atlas.defaultModel": {
+          "type": "string",
+          "default": "",
+          "description": "Atlas default model override for VS Code. Leave blank to use ~/.atlas/config.yaml."
+        },
+        "atlas.routerModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional cheaper router/background model override for VS Code."
+        },
+        "atlas.mode": {
+          "type": "string",
+          "enum": ["full", "smart"],
+          "default": "full",
+          "description": "Atlas power mode override."
+        },
+        "atlas.vscodePowerMode": {
+          "type": "string",
+          "enum": ["lite", "hybrid", "full"],
+          "default": "full",
+          "description": "VS Code: extension-specific power mode (lite/hybrid/full). Does not affect CLI/TUI."
+        },
+        "atlas.local.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434/v1",
+          "description": "OpenAI-compatible local provider base URL."
+        },
+        "atlas.local.autoDetect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-detect local models from the configured local provider endpoint."
+        },
+        "atlas.local.toolMode": {
+          "type": "string",
+          "enum": ["lite", "hybrid", "full"],
+          "default": "lite",
+          "description": "Local model tool/prompt mode."
+        },
+        "atlas.openrouter.baseUrl": {
+          "type": "string",
+          "default": "https://openrouter.ai/api/v1",
+          "description": "OpenRouter API base URL override."
+        },
+        "atlas.anthropic.baseUrl": {
+          "type": "string",
+          "default": "https://api.anthropic.com",
+          "description": "Anthropic API base URL override."
+        },
+        "atlas.anthropic.useClaudeCodeOauth": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use Claude Code OAuth credentials when no Anthropic API key is configured."
+        },
+        "atlas.openai.authMode": {
+          "type": "string",
+          "enum": ["auto", "apiKey", "oauth"],
+          "default": "auto",
+          "description": "OpenAI auth preference: direct API key, ChatGPT/Codex OAuth, or automatic."
+        },
+        "atlas.openai.apiBaseUrl": {
+          "type": "string",
+          "default": "https://api.openai.com/v1",
+          "description": "OpenAI API base URL used when direct API-key auth is selected."
+        },
+        "atlas.local.requestTimeoutMs": {
+          "type": "number",
+          "default": 300000,
+          "minimum": 1,
+          "description": "Idle timeout per local model request in milliseconds."
+        },
+        "atlas.compaction.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic context compaction when the active model nears its limit."
+        },
+        "atlas.compaction.model": {
+          "type": "string",
+          "default": "",
+          "description": "Optional model id for compaction summaries. Leave blank to use the active chat model."
+        },
+        "atlas.compaction.threshold": {
+          "type": "number",
+          "default": 0.8,
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "Fraction of the context window that triggers automatic compaction."
+        },
+        "atlas.compaction.contextTokens": {
+          "type": "number",
+          "default": 200000,
+          "minimum": 1,
+          "description": "Fallback context window size used for compaction threshold calculations."
+        },
+        "atlas.ship.autoResolve": {
+          "type": "string",
+          "enum": ["abort", "ours", "theirs", "ai"],
+          "default": "abort",
+          "description": "Default conflict resolution strategy for ship_apply mode=auto."
+        },
+        "atlas.ship.promptOnConflict": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prompt for a conflict resolution strategy when ship auto-resolution would otherwise abort."
+        },
+        "atlas.guardrails.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable built-in Atlas safety guardrails."
+        },
+        "atlas.guardrails.dangerousCommand": {
+          "type": "boolean",
+          "default": true,
+          "description": "Block obviously destructive shell and git commands."
+        },
+        "atlas.guardrails.pathSafety": {
+          "type": "boolean",
+          "default": true,
+          "description": "Block unsafe file access such as .git, .env, ~/.ssh, and paths outside the workspace."
+        },
+        "atlas.guardrails.secretRedaction": {
+          "type": "boolean",
+          "default": true,
+          "description": "Redact API keys, tokens, and private keys from tool output."
+        },
+        "atlas.guardrails.promptInjectionDetector": {
+          "type": "boolean",
+          "default": true,
+          "description": "Flag prompt-injection markers found in tool output."
+        },
+        "atlas.guardrails.discoverGuardrails": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable discover-phase guardrails for vague or contradictory context."
+        },
+        "atlas.guardrails.progressTracker": {
+          "type": "boolean",
+          "default": true,
+          "description": "Append recent-decision entries to context/progress-tracker.md after successful git commits."
+        }
+      }
+    }
   },
   "files": [
+    "LICENSE",
     "dist",
     "media",
     "README.md"
   ],
   "scripts": {
     "build": "pnpm --filter @atlas/core build && rm -rf dist && tsc --noEmit -p tsconfig.json && node scripts/bundle.mjs",
+    "package": "pnpm build && vsce package --no-dependencies --out dist/atlas-os-vscode.vsix",
     "dev": "tsc --noEmit -p tsconfig.json --watch",
     "test": "vitest",
     "test:run": "vitest run",
@@ -69,16 +232,19 @@
   },
   "dependencies": {
     "@atlas/core": "workspace:*",
+    "@vscode-elements/elements": "^2.5.1",
+    "@vscode/codicons": "^0.0.45",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.4",
     "@types/node": "^22.13.10",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.0.3",
     "@types/vscode": "^1.96.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vscode/vsce": "^3.2.2",
     "esbuild": "^0.24.0",
     "typescript": "^5.8.2",
     "vite": "^6.0.0",

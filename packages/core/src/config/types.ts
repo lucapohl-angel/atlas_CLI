@@ -159,6 +159,17 @@ export const OpenAICodexAuthSchema = z
 
 export const OpenAIProviderConfigSchema = z
   .object({
+    /** Direct OpenAI API key. Used for api.openai.com/v1 when authMode is apiKey or auto. */
+    apiKey: z.string().min(1).optional(),
+    /** Direct OpenAI API base URL for API-key auth. */
+    apiBaseUrl: z.string().url().default('https://api.openai.com/v1'),
+    /**
+     * OpenAI runtime auth preference:
+     * - auto: use apiKey when present, otherwise ChatGPT/Codex OAuth.
+     * - apiKey: require the direct OpenAI API key.
+     * - oauth: require ChatGPT/Codex OAuth.
+     */
+    authMode: z.enum(['auto', 'apiKey', 'oauth']).default('auto'),
     /** ChatGPT OAuth credentials (Codex flow). */
     codex: OpenAICodexAuthSchema,
     baseUrl: z.string().url().default('https://chatgpt.com/backend-api/codex')
@@ -347,7 +358,7 @@ export const ShipConfigSchema = z
 export const AtlasConfigSchema = z
   .object({
     defaultProvider: z
-      .enum(['openrouter', 'anthropic', 'local', 'opencode-zen', 'opencode-go'])
+      .enum(['openrouter', 'anthropic', 'openai-codex', 'local', 'opencode-zen', 'opencode-go'])
       .default('openrouter'),
     defaultModel: z.string().min(1).default('anthropic/claude-sonnet-4'),
     /**

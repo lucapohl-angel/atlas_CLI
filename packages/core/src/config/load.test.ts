@@ -78,6 +78,50 @@ describe('loadConfig', () => {
     expect(r.value.providers.opencode.go.baseUrl).toBe('https://example.test/go/v1');
   });
 
+  it('accepts ChatGPT / Codex as the default provider', async () => {
+    const path = join(dir, 'config.yaml');
+    await writeFile(
+      path,
+      [
+        'defaultProvider: openai-codex',
+        'defaultModel: gpt-5',
+        'providers:',
+        '  openai:',
+        '    codex:',
+        '      accessToken: token'
+      ].join('\n'),
+      'utf8'
+    );
+    const r = await loadConfig({ path, env: {} });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.defaultProvider).toBe('openai-codex');
+    expect(r.value.defaultModel).toBe('gpt-5');
+    expect(r.value.providers.openai.codex.accessToken).toBe('token');
+  });
+
+  it('loads direct OpenAI API key settings', async () => {
+    const path = join(dir, 'config.yaml');
+    await writeFile(
+      path,
+      [
+        'defaultProvider: openai-codex',
+        'providers:',
+        '  openai:',
+        '    authMode: apiKey',
+        '    apiKey: from-file',
+        '    apiBaseUrl: https://api.openai.com/v1'
+      ].join('\n'),
+      'utf8'
+    );
+    const r = await loadConfig({ path, env: { OPENAI_API_KEY: 'from-env' } });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.providers.openai.authMode).toBe('apiKey');
+    expect(r.value.providers.openai.apiKey).toBe('from-env');
+    expect(r.value.providers.openai.apiBaseUrl).toBe('https://api.openai.com/v1');
+  });
+
   it('reads hosted Atlas power mode', async () => {
     const path = join(dir, 'config.yaml');
     await writeFile(path, 'atlasMode: smart\n', 'utf8');

@@ -20,12 +20,13 @@
  */
 import { atlasError, type AtlasError } from '../errors.js';
 import { childLogger } from '../logger.js';
-import type {
-  CompletionRequest,
-  Message,
-  Provider,
-  StreamEvent,
-  TokenUsage
+import {
+  contentToString,
+  type CompletionRequest,
+  type Message,
+  type Provider,
+  type StreamEvent,
+  type TokenUsage
 } from './types.js';
 
 const log = childLogger('provider:anthropic');
@@ -45,6 +46,14 @@ interface AnthropicTextBlock {
   readonly type: 'text';
   readonly text: string;
 }
+interface AnthropicImageBlock {
+  readonly type: 'image';
+  readonly source: {
+    readonly type: 'base64';
+    readonly media_type: string;
+    readonly data: string;
+  };
+}
 interface AnthropicToolUseBlock {
   readonly type: 'tool_use';
   readonly id: string;
@@ -57,7 +66,7 @@ interface AnthropicToolResultBlock {
   readonly content: string;
   readonly is_error?: boolean;
 }
-type AnthropicContentBlock = AnthropicTextBlock | AnthropicToolUseBlock | AnthropicToolResultBlock;
+type AnthropicContentBlock = AnthropicTextBlock | AnthropicImageBlock | AnthropicToolUseBlock | AnthropicToolResultBlock;
 
 interface AnthropicMessage {
   readonly role: 'user' | 'assistant';
@@ -428,7 +437,8 @@ const translateMessages = (
 
   for (const m of msgs) {
     if (m.role === 'system') {
-      if (m.content.trim().length > 0) systemParts.push(m.content);
+      const text = typeof m.content === 'string' ? m.content : contentToString(m.content);
+      if (text.trim().length > 0) systemParts.push(text);
       continue;
     }
     if (m.role === 'tool') {
@@ -438,7 +448,7 @@ const translateMessages = (
           {
             type: 'tool_result',
             tool_use_id: m.toolCallId ?? '',
-            content: m.content
+            content: typeof m.content === 'string' ? m.content : contentToString(m.content)
           }
         ]
       });
@@ -446,7 +456,8 @@ const translateMessages = (
     }
     if (m.role === 'assistant') {
       const blocks: AnthropicContentBlock[] = [];
-      if (m.content.trim().length > 0) blocks.push({ type: 'text', text: m.content });
+      const text = typeof m.content === 'string' ? m.content : contentToString(m.content);
+      if (text.trim().length > 0) blocks.push({ type: 'text', text });
       for (const tc of m.toolCalls ?? []) {
         let parsed: unknown = {};
         try {
@@ -469,7 +480,23 @@ const translateMessages = (
       continue;
     }
     // user
-    out.push({ role: 'user', content: m.content });
+    if (typeof m.content === 'string') {
+      out.push({ role: 'user', content: m.content });
+    } else {
+      const blocks: AnthropicContentBlock[] = m.content.map((b) =>
+        b.type === 'text'
+          ? { type: 'text' as const, text: b.text }
+          : {
+              type: 'image' as const,
+              source: {
+                type: 'base64' as const,
+                media_type: b.mediaType,
+                data: b.base64
+              }
+            }
+      );
+      out.push({ role: 'user', content: blocks });
+    }
   }
 
   return { systemText: systemParts.join('\n\n'), messages: out };

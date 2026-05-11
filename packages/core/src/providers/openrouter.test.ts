@@ -372,4 +372,34 @@ describe('OpenRouter provider', () => {
     expect(messages[1]?.['content']).toBe('');
     expect(messages[1]?.['tool_calls']).toBeDefined();
   });
+
+  it('emits OpenAI image_url blocks for image content', async () => {
+    const fakeFetch = vi.fn(async () =>
+      new Response(sseBody(['data: [DONE]\n\n']), { status: 200 })
+    );
+    const provider = createOpenRouterProvider({
+      apiKey: 'sk',
+      fetch: fakeFetch as unknown as typeof fetch
+    });
+    await collect(
+      provider.stream({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Describe this' },
+              { type: 'image', base64: 'abc123', mediaType: 'image/png' }
+            ]
+          }
+        ]
+      })
+    );
+    const init = fakeFetch.mock.calls[0]![1] as RequestInit;
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    const messages = body['messages'] as ReadonlyArray<Record<string, unknown>>;
+    const content = messages[0]?.['content'] as ReadonlyArray<Record<string, unknown>>;
+    expect(content[0]).toEqual({ type: 'text', text: 'Describe this' });
+    expect(content[1]).toEqual({ type: 'image_url', image_url: { url: 'data:image/png;base64,abc123' } });
+  });
 });

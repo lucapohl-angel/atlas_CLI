@@ -119,7 +119,7 @@ export const createOpenRouterProvider = (
             m.role === 'assistant' && Boolean(m.toolCalls && m.toolCalls.length > 0);
           const base: Record<string, unknown> = {
             role: m.role,
-            content: isAssistantToolCall ? '' : m.content
+            content: mapContentToOpenAI(m.content, isAssistantToolCall)
           };
           if (m.toolCallId) base['tool_call_id'] = m.toolCallId;
           if (m.name) base['name'] = m.name;
@@ -332,6 +332,19 @@ export const createOpenRouterProvider = (
       };
     }
   };
+};
+
+const mapContentToOpenAI = (
+  content: string | readonly import('./types.js').ContentBlock[],
+  forceEmpty: boolean
+): string | unknown[] => {
+  if (forceEmpty) return '';
+  if (typeof content === 'string') return content;
+  return content.map((b) =>
+    b.type === 'text'
+      ? { type: 'text', text: b.text }
+      : { type: 'image_url', image_url: { url: `data:${b.mediaType};base64,${b.base64}` } }
+  );
 };
 
 const mapHttpError = async (response: Response): Promise<AtlasError> => {

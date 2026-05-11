@@ -7,12 +7,13 @@
  */
 import { atlasError, type AtlasError } from '../errors.js';
 import { childLogger } from '../logger.js';
-import type {
-  CompletionRequest,
-  Message,
-  Provider,
-  StreamEvent,
-  TokenUsage
+import {
+  contentToString,
+  type CompletionRequest,
+  type Message,
+  type Provider,
+  type StreamEvent,
+  type TokenUsage
 } from './types.js';
 
 const log = childLogger('provider:opencode');
@@ -24,6 +25,7 @@ export interface OpenCodeProviderOptions {
   readonly plan: OpenCodePlan;
   readonly apiKey: string;
   readonly baseUrl?: string;
+  readonly providerName?: string;
   readonly fetch?: typeof fetch;
 }
 
@@ -58,7 +60,7 @@ interface OpenAIStreamChunk {
 interface ResponsesInputItem {
   readonly type: 'message' | 'function_call' | 'function_call_output';
   readonly role?: 'user' | 'assistant' | 'system';
-  readonly content?: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
+  readonly content?: ReadonlyArray<{ readonly type: string; readonly text?: string; readonly image_url?: string }>;
   readonly call_id?: string;
   readonly name?: string;
   readonly arguments?: string;
@@ -68,6 +70,14 @@ interface ResponsesInputItem {
 interface AnthropicTextBlock {
   readonly type: 'text';
   readonly text: string;
+}
+interface AnthropicImageBlock {
+  readonly type: 'image';
+  readonly source: {
+    readonly type: 'base64';
+    readonly media_type: string;
+    readonly data: string;
+  };
 }
 interface AnthropicToolUseBlock {
   readonly type: 'tool_use';
@@ -81,7 +91,7 @@ interface AnthropicToolResultBlock {
   readonly content: string;
   readonly is_error?: boolean;
 }
-type AnthropicContentBlock = AnthropicTextBlock | AnthropicToolUseBlock | AnthropicToolResultBlock;
+type AnthropicContentBlock = AnthropicTextBlock | AnthropicImageBlock | AnthropicToolUseBlock | AnthropicToolResultBlock;
 interface AnthropicMessage {
   readonly role: 'user' | 'assistant';
   readonly content: string | readonly AnthropicContentBlock[];
@@ -131,7 +141,7 @@ export const createOpenCodeProvider = (options: OpenCodeProviderOptions): Provid
     (options.plan === 'zen' ? 'https://opencode.ai/zen/v1' : 'https://opencode.ai/zen/go/v1')
   ).replace(/\/$/, '');
   const doFetch = options.fetch ?? fetch;
-  const providerName = options.plan === 'zen' ? 'opencode-zen' : 'opencode-go';
+  const providerName = options.providerName ?? (options.plan === 'zen' ? 'opencode-zen' : 'opencode-go');
 
   return {
     name: providerName,
@@ -276,7 +286,7 @@ const buildBody = (
         m.role === 'assistant' && Boolean(m.toolCalls && m.toolCalls.length > 0);
       const base: Record<string, unknown> = {
         role: m.role,
-        content: isAssistantToolCall ? '' : m.content
+        content: mapContentToOpenAI(m.content, isAssistantToolCall)
       };
       if (m.toolCallId) base['tool_call_id'] = m.toolCallId;
       if (m.name) base['name'] = m.name;
@@ -579,27 +589,38 @@ const toResponsesInput = (
   const input: ResponsesInputItem[] = [];
   for (const m of messages) {
     if (m.role === 'system') {
-      if (m.content) sys.push(m.content);
+      const text = typeof m.content === 'string' ? m.content : contentToString(m.content);
+      if (text) sys.push(text);
       continue;
     }
     if (m.role === 'tool') {
-      input.push({ type: 'function_call_output', call_id: m.toolCallId ?? '', output: m.content });
+      input.push({ type: 'function_call_output', call_id: m.toolCallId ?? '', output: typeof m.content === 'string' ? m.content : contentToString(m.content) });
       continue;
     }
     if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
-      if (m.content) {
-        input.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: m.content }] });
+      const text = typeof m.content === 'string' ? m.content : contentToString(m.content);
+      if (text) {
+        input.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
       }
       for (const tc of m.toolCalls) {
         input.push({ type: 'function_call', call_id: tc.id, name: tc.name, arguments: tc.arguments });
       }
       continue;
     }
-    input.push({
-      type: 'message',
-      role: m.role,
-      content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.content }]
-    });
+    if (typeof m.content === 'string') {
+      input.push({
+        type: 'message',
+        role: m.role,
+        content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.content }]
+      });
+    } else {
+      const content: ResponsesInputItem['content'] = m.content.map((b) =>
+        b.type === 'text'
+          ? { type: 'input_text', text: b.text }
+          : { type: 'input_image', image_url: `data:${b.mediaType};base64,${b.base64}` }
+      );
+      input.push({ type: 'message', role: m.role, content });
+    }
   }
   return { instructions: sys.join('\n\n'), input };
 };
@@ -611,16 +632,18 @@ const toAnthropicMessages = (
   const out: AnthropicMessage[] = [];
   for (const m of messages) {
     if (m.role === 'system') {
-      if (m.content.trim().length > 0) systemParts.push(m.content);
+      const text = typeof m.content === 'string' ? m.content : contentToString(m.content);
+      if (text.trim().length > 0) systemParts.push(text);
       continue;
     }
     if (m.role === 'tool') {
-      out.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: m.toolCallId ?? '', content: m.content }] });
+      out.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: m.toolCallId ?? '', content: typeof m.content === 'string' ? m.content : contentToString(m.content) }] });
       continue;
     }
     if (m.role === 'assistant') {
       const blocks: AnthropicContentBlock[] = [];
-      if (m.content.trim().length > 0) blocks.push({ type: 'text', text: m.content });
+      const text = typeof m.content === 'string' ? m.content : contentToString(m.content);
+      if (text.trim().length > 0) blocks.push({ type: 'text', text });
       for (const tc of m.toolCalls ?? []) {
         let parsed: unknown = {};
         try {
@@ -633,7 +656,23 @@ const toAnthropicMessages = (
       if (blocks.length > 0) out.push({ role: 'assistant', content: blocks });
       continue;
     }
-    out.push({ role: 'user', content: m.content });
+    if (typeof m.content === 'string') {
+      out.push({ role: 'user', content: m.content });
+    } else {
+      const blocks: AnthropicContentBlock[] = m.content.map((b) =>
+        b.type === 'text'
+          ? { type: 'text' as const, text: b.text }
+          : {
+              type: 'image' as const,
+              source: {
+                type: 'base64' as const,
+                media_type: b.mediaType,
+                data: b.base64
+              }
+            }
+      );
+      out.push({ role: 'user', content: blocks });
+    }
   }
   return { systemText: systemParts.join('\n\n'), messages: out };
 };
@@ -787,6 +826,19 @@ async function* parseAnthropicSse(
     yield { type, data: evt };
   }
 }
+
+const mapContentToOpenAI = (
+  content: string | readonly import('./types.js').ContentBlock[],
+  forceEmpty: boolean
+): string | unknown[] => {
+  if (forceEmpty) return '';
+  if (typeof content === 'string') return content;
+  return content.map((b) =>
+    b.type === 'text'
+      ? { type: 'text', text: b.text }
+      : { type: 'image_url', image_url: { url: `data:${b.mediaType};base64,${b.base64}` } }
+  );
+};
 
 const mapHttpError = async (response: Response, providerName: string): Promise<AtlasError> => {
   const bodyText = await response.text().catch(() => '');

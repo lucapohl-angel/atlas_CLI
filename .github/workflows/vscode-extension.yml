@@ -1,0 +1,64 @@
+name: vscode-extension
+
+# Builds the Atlas VS Code extension as a VSIX artifact.
+#
+# Publishing is opt-in only:
+#   - Tag pushes and default manual runs build and upload a .vsix artifact.
+#   - Marketplace publish runs only from workflow_dispatch with publish=true.
+#
+# Required repository secret when publish=true:
+#   - VSCE_PAT: VS Code Marketplace personal access token.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to VS Code Marketplace?'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: package VSIX
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install workspace deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Test extension
+        run: pnpm --filter atlas-os-vscode test:run
+
+      - name: Package VSIX
+        run: pnpm --filter atlas-os-vscode run package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-os-vscode-vsix
+          path: packages/vscode/dist/*.vsix
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish to Marketplace
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: pnpm --filter atlas-os-vscode exec vsce publish --packagePath dist/atlas-os-vscode.vsix

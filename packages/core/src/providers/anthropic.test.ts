@@ -188,4 +188,40 @@ describe('createAnthropicProvider', () => {
       expect(done.usage?.promptTokens).toBe(10 + 1200 + 800);
     }
   });
+
+  it('emits Anthropic image blocks for image content', async () => {
+    let captured: { url: string; init: RequestInit } | null = null;
+    const fakeFetch: typeof fetch = async (url, init) => {
+      captured = { url: String(url), init: init ?? {} };
+      return new Response(stringStream(''), { status: 200 });
+    };
+
+    const provider = createAnthropicProvider({
+      auth: { kind: 'apiKey', apiKey: 'sk-test' },
+      fetch: fakeFetch
+    });
+
+    await collect(
+      provider.stream({
+        model: 'claude-sonnet-4',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Describe this' },
+              { type: 'image', base64: 'abc123', mediaType: 'image/png' }
+            ]
+          }
+        ]
+      })
+    );
+
+    const sent = JSON.parse((captured!.init.body as string) ?? '{}');
+    const content = sent.messages[0].content as ReadonlyArray<Record<string, unknown>>;
+    expect(content[0]).toEqual({ type: 'text', text: 'Describe this' });
+    expect(content[1]).toEqual({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'abc123' }
+    });
+  });
 });

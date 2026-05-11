@@ -66,6 +66,74 @@ describe('fetchOpenRouterModels', () => {
     const r = await fetchOpenRouterModels({ fetch: f, forceRefresh: true });
     expect(r.ok).toBe(false);
   });
+
+  it('detects vision from supported_parameters', async () => {
+    const f = makeFetch(200, {
+      data: [
+        {
+          id: 'openai/gpt-4o',
+          name: 'GPT-4o',
+          supported_parameters: ['temperature', 'tools', 'image'],
+        }
+      ]
+    });
+    const r = await fetchOpenRouterModels({ fetch: f, forceRefresh: true });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const model = r.value.find((m) => m.id === 'openai/gpt-4o');
+    expect(model?.supportsVision).toBe(true);
+  });
+
+  it('detects vision from architecture.input_modalities', async () => {
+    const f = makeFetch(200, {
+      data: [
+        {
+          id: 'moonshotai/kimi-2.6',
+          name: 'Kimi 2.6',
+          architecture: { input_modalities: ['text', 'image'] },
+        }
+      ]
+    });
+    const r = await fetchOpenRouterModels({ fetch: f, forceRefresh: true });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const model = r.value.find((m) => m.id === 'moonshotai/kimi-2.6');
+    expect(model?.supportsVision).toBe(true);
+  });
+
+  it('detects vision from architecture.modality', async () => {
+    const f = makeFetch(200, {
+      data: [
+        {
+          id: 'google/gemini-2.5-pro',
+          name: 'Gemini 2.5 Pro',
+          architecture: { modality: 'text+image->text' },
+        }
+      ]
+    });
+    const r = await fetchOpenRouterModels({ fetch: f, forceRefresh: true });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const model = r.value.find((m) => m.id === 'google/gemini-2.5-pro');
+    expect(model?.supportsVision).toBe(true);
+  });
+
+  it('defaults to no vision when API provides no metadata', async () => {
+    const f = makeFetch(200, {
+      data: [
+        {
+          id: 'deepseek/deepseek-v4-pro',
+          name: 'DeepSeek V4 Pro',
+          supported_parameters: ['temperature', 'tools', 'reasoning'],
+        }
+      ]
+    });
+    const r = await fetchOpenRouterModels({ fetch: f, forceRefresh: true });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const model = r.value.find((m) => m.id === 'deepseek/deepseek-v4-pro');
+    expect(model?.supportsVision).toBe(false);
+  });
 });
 
 describe('fetchOpenCode models', () => {
@@ -124,6 +192,19 @@ describe('fetchOpenCode models', () => {
       'opencode-go/minimax-m2.7'
     ]);
     expect(r.value.every((m) => m.provider === 'opencode-go')).toBe(true);
+  });
+
+  it('defaults all Go models to no vision (OpenCode API lacks metadata)', async () => {
+    const f = makeFetch(200, {
+      models: [
+        { id: 'kimi-k2.6', label: 'Kimi K2.6' },
+        { id: 'minimax-m2.7', name: 'MiniMax M2.7' }
+      ]
+    });
+    const r = await fetchOpenCodeGoModels('go-key', { fetch: f, forceRefresh: true });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.every((m) => m.supportsVision === false)).toBe(true);
   });
 });
 

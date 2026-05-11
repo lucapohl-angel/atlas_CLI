@@ -1,114 +1,3872 @@
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/geist-400.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./fonts/geist-500.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./fonts/geist-600.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/jetbrains-mono-400.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./fonts/jetbrains-mono-500.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Orbitron";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("./fonts/orbitron-800.ttf") format("truetype");
+}
+
 :root {
   color-scheme: dark;
-  font-family: var(--vscode-font-family);
-  background: var(--vscode-sideBar-background);
-  color: var(--vscode-sideBar-foreground);
+  --atlas-brand-bg: #0a0d14;
+  --atlas-brand-elev: #0f1320;
+  --atlas-brand-panel: #11162a;
+  --atlas-bg: var(--atlas-brand-bg);
+  --atlas-bg-elev: var(--atlas-brand-elev);
+  --atlas-bg-panel: var(--atlas-brand-panel);
+  --atlas-line: #1d2435;
+  --atlas-line-soft: color-mix(in srgb, var(--atlas-line) 62%, transparent);
+  --atlas-fg: #e6edf3;
+  --atlas-dim: #8b96a8;
+  --atlas-faint: #5b6477;
+  --atlas-accent: #4fb8ff;
+  --atlas-accent-soft: #4fb8ff2a;
+  --atlas-accent-glow: #4fb8ff99;
+  --atlas-success: #aff5b4;
+  --atlas-warning: #ffaa00;
+  --atlas-error: var(--vscode-errorForeground, #ff3333);
+  --atlas-radius-md: 4px;
+  --atlas-radius-lg: 6px;
+  --atlas-font: Geist, Inter, var(--vscode-font-family, -apple-system), BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --atlas-brand-font: Orbitron, Geist, var(--vscode-font-family, "Segoe UI"), Inter, sans-serif;
+  --atlas-mono: var(--vscode-editor-font-family, "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(--atlas-font);
+  background: var(--atlas-bg);
+  color: var(--atlas-fg);
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
+body,
+#app {
+  height: 100%;
+}
+
 body {
-  margin: 0;
+  margin: 0 !important;
+  padding: 0 !important;
   min-width: 0;
-  background: var(--vscode-sideBar-background);
+  overflow: hidden;
+  background: var(--atlas-bg);
 }
 
 button,
-textarea {
+textarea,
+input,
+select {
   font: inherit;
 }
 
-.shell {
-  min-height: 100vh;
+button {
+  border: 0;
+}
+
+.atlasShell {
+  height: 100vh;
+  min-width: 0;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-areas:
+    "topbar"
+    "banner"
+    "transcript"
+    "approval"
+    "statusbar"
+    "composer";
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
+  background: var(--atlas-bg);
+}
+
+.atlasShell.hasSettings {
+  grid-template-areas:
+    "topbar"
+    "settings";
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.topBar {
+  grid-area: topbar;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 40px;
+  padding: 6px 9px;
+  border-bottom: 1px solid color-mix(in srgb, var(--atlas-accent) 60%, white 6%);
+  background: color-mix(in srgb, var(--atlas-bg) 94%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--atlas-accent) 55%, transparent),
+    0 2px 8px color-mix(in srgb, var(--atlas-accent) 30%, transparent);
+}
+
+.brandLockup {
+  min-width: 0;
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brandLogo {
+  width: 26px;
+  height: auto;
+  object-fit: contain;
+  flex: 0 0 auto;
+  filter: drop-shadow(0 0 6px var(--atlas-accent-glow));
+}
+
+.brandText {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.02em;
+  overflow: hidden;
+  color: var(--atlas-fg);
+  font-family: var(--atlas-brand-font);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  line-height: 1;
+  text-overflow: ellipsis;
+  text-shadow: 0 0 20px color-mix(in srgb, var(--atlas-accent) 40%, transparent);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.brandLetter {
+  display: inline-block;
+}
+
+.brandLetter-invA {
+  color: color-mix(in srgb, var(--atlas-fg) 78%, var(--atlas-accent));
+  font-size: 1.22em;
+  line-height: 0.8;
+  transform: translateY(0.02em);
+}
+
+.brandDot {
+  color: var(--atlas-accent);
+  text-shadow: 0 0 14px var(--atlas-accent-glow);
+}
+
+.topActions,
+.composerControls,
+.composerControlsLeft,
+.composerControlsRight,
+.messageHeader,
+.toolRow summary {
+  display: flex;
+  align-items: center;
+}
+
+.topActions {
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.topIconButton {
+  width: 31px;
+  min-width: 31px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 45%, var(--atlas-line));
+  border-radius: var(--atlas-radius-md);
+  background: color-mix(in srgb, var(--atlas-bg-panel) 86%, var(--atlas-accent) 8%);
+  color: color-mix(in srgb, var(--atlas-accent) 92%, white 8%);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--atlas-accent) 10%, transparent);
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.topIconButton .codicon {
+  font-size: 14px;
+}
+
+.topIconButton:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 78%, white 4%);
+  background: color-mix(in srgb, var(--atlas-bg-panel) 78%, var(--atlas-accent) 16%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-accent) 16%, transparent),
+    0 0 16px color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+  transform: translateY(-1px);
+}
+
+.topIconButton.isActive {
+  border-color: color-mix(in srgb, var(--atlas-accent) 90%, white 8%);
+  background: color-mix(in srgb, var(--atlas-accent) 72%, #dff5ff);
+  color: #031424;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-accent) 38%, transparent),
+    0 0 18px color-mix(in srgb, var(--atlas-accent) 42%, transparent),
+    inset 0 0 12px color-mix(in srgb, white 22%, transparent);
+}
+
+.topActions .sessionButton {
+  height: 30px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 36%, var(--atlas-line));
+  border-radius: var(--atlas-radius-md);
+  background: color-mix(in srgb, var(--atlas-accent) 10%, transparent);
+  color: var(--atlas-accent);
+  font-family: var(--atlas-brand-font);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.topActions .sessionButton:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--atlas-accent) 16%, transparent);
+}
+
+.setupBanner {
+  grid-area: banner;
+  margin: 10px 6px 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--atlas-warning) 60%, white 6%);
+  border-radius: var(--atlas-radius-lg);
+  background: color-mix(in srgb, var(--atlas-warning) 8%, var(--atlas-bg-panel));
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-warning) 60%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-warning) 35%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-warning) 16%, transparent),
+    inset 0 0 6px color-mix(in srgb, var(--atlas-warning) 8%, transparent);
+}
+
+.actionNotice {
+  grid-area: banner;
+  margin: 10px 6px 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 60%, white 6%);
+  border-radius: var(--atlas-radius-lg);
+  background: color-mix(in srgb, var(--atlas-accent) 9%, var(--atlas-bg-panel));
+  color: var(--atlas-dim);
+  font-size: 12px;
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-accent) 60%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-accent) 35%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-accent) 16%, transparent),
+    inset 0 0 6px color-mix(in srgb, var(--atlas-accent) 8%, transparent);
+}
+
+/* ── Header chips ── */
+
+.headerChips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.powerBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: var(--atlas-brand-font);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  line-height: 1.4;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.powerLabel {
+  color: var(--atlas-accent);
+  text-shadow: 0 0 4px color-mix(in srgb, var(--atlas-accent) 80%, transparent),
+    0 0 12px color-mix(in srgb, var(--atlas-accent) 50%, transparent);
+}
+
+.powerFull {
+  color: #ff315f;
+  text-shadow: 0 0 4px color-mix(in srgb, #ff315f 80%, transparent),
+    0 0 12px color-mix(in srgb, #ff315f 50%, transparent);
+}
+
+.powerSmart {
+  color: #39ff88;
+  text-shadow: 0 0 4px color-mix(in srgb, #39ff88 80%, transparent),
+    0 0 12px color-mix(in srgb, #39ff88 50%, transparent);
+}
+
+.powerLite {
+  color: #ffd700;
+  text-shadow: 0 0 4px color-mix(in srgb, #ffd700 80%, transparent),
+    0 0 12px color-mix(in srgb, #ffd700 50%, transparent);
+}
+
+.powerHybrid {
+  color: #39ff88;
+  text-shadow: 0 0 4px color-mix(in srgb, #39ff88 80%, transparent),
+    0 0 12px color-mix(in srgb, #39ff88 50%, transparent);
+}
+
+.powerChevron {
+  font-size: 10px;
+  color: var(--atlas-dim);
+}
+
+.modeChip {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.modeChip-plan {
+  color: var(--atlas-warning);
+  border-color: color-mix(in srgb, var(--atlas-warning) 30%, transparent);
+  background: color-mix(in srgb, var(--atlas-warning) 10%, transparent);
+}
+
+.modeChip-build {
+  color: var(--atlas-success);
+  border-color: color-mix(in srgb, var(--atlas-success) 30%, transparent);
+  background: color-mix(in srgb, var(--atlas-success) 10%, transparent);
+}
+
+.modeChip-autopilot {
+  color: var(--atlas-error);
+  border-color: color-mix(in srgb, var(--atlas-error) 36%, transparent);
+  background: color-mix(in srgb, var(--atlas-error) 12%, transparent);
+  font-weight: 700;
+}
+
+.modeChip:hover {
+  filter: brightness(1.3);
+}
+
+.providerTag {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--atlas-mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.providerTagOR {
+  color: #9d7cd8;
+  border-color: color-mix(in srgb, #9d7cd8 34%, transparent);
+  background: color-mix(in srgb, #9d7cd8 12%, transparent);
+}
+
+.providerTagAN {
+  color: #f5a742;
+  border-color: color-mix(in srgb, #f5a742 34%, transparent);
+  background: color-mix(in srgb, #f5a742 12%, transparent);
+}
+
+.providerTagCDX {
+  color: #7fd88f;
+  border-color: color-mix(in srgb, #7fd88f 34%, transparent);
+  background: color-mix(in srgb, #7fd88f 12%, transparent);
+}
+
+.providerTagLocal {
+  color: var(--atlas-dim);
+  border-color: color-mix(in srgb, var(--atlas-dim) 30%, transparent);
+  background: color-mix(in srgb, var(--atlas-dim) 10%, transparent);
+}
+
+.providerTagZen {
+  color: #9d7cd8;
+  border-color: color-mix(in srgb, #9d7cd8 34%, transparent);
+  background: color-mix(in srgb, #9d7cd8 12%, transparent);
+}
+
+.providerTagGo {
+  color: #56b6c2;
+  border-color: color-mix(in srgb, #56b6c2 34%, transparent);
+  background: color-mix(in srgb, #56b6c2 12%, transparent);
+}
+
+.providerTagDefault {
+  color: var(--atlas-dim);
+  border-color: color-mix(in srgb, var(--atlas-dim) 26%, transparent);
+  background: color-mix(in srgb, var(--atlas-dim) 8%, transparent);
+}
+
+.modelNameChip {
+  display: inline-block;
+  font-family: var(--atlas-mono);
+  font-size: 11px;
+  color: var(--atlas-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
+.thinkingChip {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: var(--atlas-mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--atlas-accent);
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 30%, transparent);
+  background: color-mix(in srgb, var(--atlas-accent) 10%, transparent);
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.thinkingChip:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 56%, transparent);
+  background: color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+}
+
+.thinkingChip-off {
+  color: var(--atlas-faint);
+  border-color: color-mix(in srgb, var(--atlas-line) 60%, transparent);
+  background: color-mix(in srgb, var(--atlas-line) 10%, transparent);
+}
+
+.thinkingChip-off:hover {
+  border-color: color-mix(in srgb, var(--atlas-faint) 40%, transparent);
+  background: color-mix(in srgb, var(--atlas-line) 16%, transparent);
+}
+
+.tokenUsageChip {
+  display: inline-block;
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  color: var(--atlas-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Status bar ── */
+
+.statusBar {
+  grid-area: statusbar;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 22px;
+  padding: 2px 12px;
+  background: var(--atlas-bg-panel);
+  border-top: 1px solid var(--atlas-line-soft);
+  font-size: 11px;
+  color: var(--atlas-dim);
+}
+
+.statusBarHints {
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.statusBarWarning {
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--atlas-error);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--atlas-error) 40%, transparent);
+}
+
+.settingsView {
+  grid-area: settings;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 14px 12px;
+  background:
+    linear-gradient(color-mix(in srgb, var(--atlas-accent) 8%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--atlas-accent) 7%, transparent) 1px, transparent 1px),
+    var(--atlas-bg);
+  background-size: 34px 34px, 34px 34px, auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--atlas-accent) 34%, transparent) transparent;
+}
+
+.settingsView::-webkit-scrollbar {
+  width: 4px;
+}
+
+.settingsView::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.settingsView::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--atlas-accent) 34%, transparent);
+}
+
+.settingsHero,
+.settingsCard,
+.settingsFooter,
+.settingsNotice,
+.settingsLoading,
+.settingsError {
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 22%, var(--atlas-line));
+  background: color-mix(in srgb, var(--atlas-bg-elev) 90%, black);
+}
+
+.settingsHero {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px;
+  border-radius: var(--atlas-radius-lg);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-accent) 8%, transparent),
+    0 0 28px color-mix(in srgb, var(--atlas-accent) 10%, transparent);
+}
+
+.settingsBackButton,
+.settingsGhostButton,
+.settingsInlineButton,
+.settingsPrimaryButton,
+.settingsSecondaryButton,
+.providerRowActions button,
+.managerRowActions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 42%, var(--atlas-line));
+  border-radius: var(--atlas-radius-md);
+  background: color-mix(in srgb, var(--atlas-bg-panel) 86%, var(--atlas-accent) 8%);
+  color: color-mix(in srgb, var(--atlas-accent) 90%, white 8%);
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.settingsBackButton:hover,
+.settingsGhostButton:hover,
+.settingsInlineButton:hover,
+.settingsSecondaryButton:hover,
+.providerRowActions button:hover,
+.managerRowActions button:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 76%, white 8%);
+  background: color-mix(in srgb, var(--atlas-bg-panel) 76%, var(--atlas-accent) 18%);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--atlas-accent) 20%, transparent);
+  transform: translateY(-1px);
+}
+
+.settingsBackButton {
+  width: 30px;
+  height: 30px;
+  margin: 0 0 12px;
+}
+
+.settingsEyebrow {
+  margin: 0 0 6px;
+  color: var(--atlas-accent);
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.settingsHero h1 {
+  margin: 0;
+  color: var(--atlas-fg);
+  font-family: var(--atlas-brand-font);
+  font-size: clamp(24px, 9vw, 42px);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 0.95;
+  text-transform: uppercase;
+  text-shadow: 0 0 24px color-mix(in srgb, var(--atlas-accent) 34%, transparent);
+}
+
+.settingsHero span {
+  display: block;
+  max-width: 100%;
+  margin-top: 8px;
+  color: var(--atlas-dim);
+  font-family: var(--atlas-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.settingsHeroActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.settingsGhostButton {
+  width: 32px;
+  height: 32px;
+}
+
+.settingsNotice,
+.settingsLoading,
+.settingsError {
+  margin-top: 12px;
+  border-radius: var(--atlas-radius-lg);
+  padding: 12px;
+  color: var(--atlas-dim);
+  font-size: 12px;
+}
+
+.settingsError p {
+  margin: 10px 0 0;
+  color: var(--atlas-fg);
+  line-height: 1.45;
+}
+
+.settingsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 292px), 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.settingsCard {
+  min-width: 0;
+  border-radius: var(--atlas-radius-lg);
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-accent) 55%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-accent) 32%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-accent) 14%, transparent),
+    inset 0 0 6px color-mix(in srgb, var(--atlas-accent) 7%, transparent);
+}
+
+.settingsCardHeader {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--atlas-accent) 16%, var(--atlas-line));
+}
+
+.settingsCardIcon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 50%, transparent);
+  border-radius: var(--atlas-radius-md);
+  background: color-mix(in srgb, var(--atlas-accent) 15%, transparent);
+  color: var(--atlas-accent);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--atlas-accent) 22%, transparent);
+}
+
+.settingsCardHeader h2 {
+  min-width: 0;
+  margin: 0;
+  color: var(--atlas-fg);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settingsBadge,
+.statusPill,
+.modeChip,
+.modeButton,
+.toggleToken,
+.catalogTags span {
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 30%, var(--atlas-line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--atlas-accent) 8%, transparent);
+  color: var(--atlas-dim);
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.settingsBadge {
+  max-width: 112px;
+  overflow: hidden;
+  padding: 5px 7px;
+  text-overflow: ellipsis;
+}
+
+.settingsCardBody {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  padding: 12px;
+}
+
+.settingsMetric {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.settingsMetric.isWide {
+  grid-column: 1 / -1;
+}
+
+.settingsMetric span,
+.settingsStat span,
+.providerRow small {
+  color: var(--atlas-dim);
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.settingsMetric strong {
+  min-width: 0;
+  color: var(--atlas-fg);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.modeStrip,
+.catalogTags,
+.toggleGrid,
+.commandMap,
+.mcpScoreboard {
+  grid-column: 1 / -1;
+}
+
+.modeStrip,
+.catalogTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.modeChip,
+.modeButton,
+.toggleToken,
+.catalogTags span,
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 5px 7px;
+}
+
+.modeChip.isActive,
+.modeButton.isActive,
+.toggleToken.isOn,
+.statusPill-active,
+.statusPill-ok {
+  border-color: color-mix(in srgb, var(--atlas-accent) 70%, white 6%);
+  background: color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+  color: color-mix(in srgb, var(--atlas-accent) 86%, white 12%);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+}
+
+.statusPill-warn {
+  border-color: color-mix(in srgb, var(--atlas-warning) 62%, var(--atlas-line));
+  background: color-mix(in srgb, var(--atlas-warning) 10%, transparent);
+  color: var(--atlas-warning);
+}
+
+.providerList,
+.toggleGrid,
+.commandMap,
+.commandGroup div,
+.managerList,
+.todoList {
+  display: grid;
+  gap: 8px;
+}
+
+.commandGroup {
+  min-width: 0;
+}
+
+.commandGroup h3 {
+  margin: 0 0 7px;
+  color: var(--atlas-dim);
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.commandGroup div {
+  grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
+}
+
+.commandChip {
+  min-width: 0;
+  min-height: 27px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 28%, var(--atlas-line));
+  border-radius: var(--atlas-radius-md);
+  background: color-mix(in srgb, var(--atlas-bg-panel) 78%, var(--atlas-accent) 6%);
+  color: color-mix(in srgb, var(--atlas-accent) 86%, white 8%);
+  cursor: pointer;
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  font-weight: 700;
+  overflow: hidden;
+  padding: 0 7px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commandChip:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 72%, white 6%);
+  background: color-mix(in srgb, var(--atlas-accent) 16%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--atlas-accent) 16%, transparent);
+}
+
+.modeButton {
+  cursor: pointer;
+}
+
+.providerList {
+  grid-column: 1 / -1;
+}
+
+.providerRow,
+.managerRow,
+.managerEmpty {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 15%, var(--atlas-line));
+  border-radius: var(--atlas-radius-md);
+  background: color-mix(in srgb, var(--atlas-bg-panel) 72%, transparent);
+}
+
+.managerEmpty {
+  grid-template-columns: 1fr;
+  grid-column: 1 / -1;
+  color: var(--atlas-dim);
+  font-size: 12px;
+}
+
+.providerRow span:first-child,
+.managerRow span:first-child,
+.todoRow span {
+  display: block;
+  color: var(--atlas-fg);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.providerRow small,
+.managerRow small,
+.todoRow small {
+  display: block;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.todoList {
+  grid-column: 1 / -1;
+}
+
+.todoRow {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 15%, var(--atlas-line));
+  border-radius: var(--atlas-radius-md);
+  background: color-mix(in srgb, var(--atlas-bg-panel) 72%, transparent);
+}
+
+.todoMarker {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--atlas-dim);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--atlas-dim) 10%, transparent);
+}
+
+.todoMarker-in_progress {
+  background: var(--atlas-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+}
+
+.todoMarker-completed {
+  background: var(--atlas-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--atlas-success) 18%, transparent);
+}
+
+.todoMarker-cancelled {
+  background: var(--atlas-warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--atlas-warning) 18%, transparent);
+}
+
+.providerRowActions,
+.managerRowActions,
+.managerRowMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.managerRowMeta {
+  color: var(--atlas-dim);
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+}
+
+.providerRowActions button,
+.managerRowActions button {
+  width: 26px;
+  height: 26px;
+}
+
+.settingsInlineButton {
+  grid-column: 1 / -1;
+  min-height: 30px;
+  padding: 0 10px;
+  justify-self: start;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mcpScoreboard {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settingsStat {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 16%, var(--atlas-line));
+  border-radius: var(--atlas-radius-md);
+  background: color-mix(in srgb, var(--atlas-accent) 6%, transparent);
+  text-align: center;
+}
+
+.settingsStat strong {
+  display: block;
+  color: var(--atlas-accent);
+  font-family: var(--atlas-brand-font);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.settingsFooter {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px;
+  border-radius: var(--atlas-radius-lg);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-accent) 6%, transparent);
+}
+
+.settingsPrimaryButton,
+.settingsSecondaryButton {
+  min-height: 32px;
+  gap: 7px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.settingsPrimaryButton {
+  border-color: color-mix(in srgb, var(--atlas-accent) 88%, white 8%);
+  background: color-mix(in srgb, var(--atlas-accent) 72%, #dff5ff);
+  color: #031424;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-accent) 40%, transparent),
+    0 0 18px color-mix(in srgb, var(--atlas-accent) 38%, transparent);
+}
+
+.settingsPrimaryButton:hover {
+  background: color-mix(in srgb, var(--atlas-accent) 84%, white 12%);
+  transform: translateY(-1px);
+}
+
+.settingsView-showcase {
+  position: relative;
+  padding: 28px 34px 18px;
+  background: #020814;
+}
+
+.settingsView-showcase::before {
+  display: none;
+}
+
+.settingsSearchRail {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin: 0 0 12px;
+}
+
+.settingsSearchBox {
+  flex: 1 1 auto;
+}
+
+.settingsSectionActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.settingsSectionNav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 18px;
+}
+
+.settingsSectionNav button {
+  min-height: 30px;
+  border: 1px solid rgba(48, 92, 134, 0.48);
+  border-radius: 6px;
+  background: rgba(7, 18, 32, 0.58);
+  color: #9fb4cb;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 10px;
+}
+
+.settingsSectionNav button:hover,
+.settingsSectionNav button:focus-visible {
+  border-color: rgba(66, 180, 255, 0.72);
+  color: #42b4ff;
+}
+
+.settingsSectionNav button.isHiddenBySearch {
+  display: none;
+}
+
+.settingsHero-showcase {
+  position: relative;
+  padding: 6px 0 24px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.settingsHero-showcase h1 {
+  color: #e8eefb;
+  font-family: var(--atlas-font);
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.1;
+  text-transform: none;
+  text-shadow: none;
+}
+
+.settingsHero-showcase span {
+  margin-top: 12px;
+  color: #9aa8bd;
+  font-family: var(--atlas-font);
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.settingsHero-showcase .settingsHeroActions {
+  display: none;
+}
+
+.settingsGrid-showcase {
+  grid-template-columns: repeat(2, minmax(320px, 1fr));
+  gap: 22px 24px;
+  margin-top: 6px;
+}
+
+.settingsCard-showcase {
+  position: relative;
+  min-height: 0;
+  padding: 24px 26px;
+  border-color: rgba(48, 108, 160, 0.54);
+  border-radius: 8px;
+  background:
+    linear-gradient(145deg, rgba(7, 19, 34, 0.88), rgba(4, 13, 25, 0.92)),
+    rgba(5, 14, 27, 0.96);
+  box-shadow:
+    inset 0 1px 0 rgba(120, 196, 255, 0.08),
+    inset 0 0 34px rgba(35, 126, 214, 0.07),
+    0 18px 42px rgba(0, 0, 0, 0.22);
+}
+
+.settingsCard-wide {
+  grid-column: 1 / -1;
+}
+
+.settingsCard-showcase .settingsCardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 0 18px;
+  border-bottom: 0;
+}
+
+.settingsCard-showcase .settingsCardHeader h2 {
+  min-width: 0;
+  flex: 1 1 auto;
+  color: #47afff;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  text-shadow: 0 0 20px rgba(44, 153, 255, 0.26);
+}
+
+.settingsCard-showcase .settingsCardHeader h2 span {
+  color: #48b3ff;
+}
+
+.settingsCard-showcase .settingsCardBody {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  padding: 0;
+}
+
+.settingsCard-collapsible.isCollapsed {
+  padding-bottom: 22px;
+}
+
+.settingsCard-collapsible.isCollapsed .settingsCardHeader {
+  padding-bottom: 0;
+}
+
+.settingsCardToggle {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(48, 92, 134, 0.55);
+  border-radius: 6px;
+  background: rgba(7, 18, 32, 0.66);
+  color: #42b4ff;
+  cursor: pointer;
+}
+
+.showcaseForm {
+  display: grid;
+  gap: 16px;
+}
+
+.settingsDetailPanel,
+.settingsSidePanel,
+.showcaseDropdownPanel,
+.showcaseLoadingLine {
+  border: 1px solid rgba(48, 108, 160, 0.54);
+  border-radius: 8px;
+  background: rgba(5, 14, 27, 0.94);
+  box-shadow:
+    inset 0 1px 0 rgba(120, 196, 255, 0.08),
+    0 16px 36px rgba(0, 0, 0, 0.18);
+}
+
+.settingsDetailPanel,
+.settingsSidePanel {
+  position: fixed;
+  top: 76px;
+  right: 20px;
+  z-index: 30;
+  width: min(430px, calc(100vw - 40px));
+  max-height: calc(100vh - 98px);
+  display: grid;
+  gap: 14px;
+  overflow: auto;
+  padding: 18px 20px;
+}
+
+.sessionOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 12, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.sessionPanel {
+  width: min(360px, calc(100vw - 32px));
+  display: grid;
+  gap: 0;
+  padding: 20px 22px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 60%, white 6%);
+  border-radius: 10px;
+  background: rgba(8, 16, 28, 0.98);
+  box-shadow:
+    inset 0 1px 0 rgba(120, 196, 255, 0.12),
+    0 0 2px color-mix(in srgb, var(--atlas-accent) 55%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-accent) 32%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-accent) 14%, transparent),
+    0 24px 48px rgba(0, 0, 0, 0.32);
+}
+
+.sessionPanel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.sessionPanel header h3 {
+  margin: 0;
+  color: #e8eefb;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.sessionPanel header button {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(48, 92, 134, 0.55);
+  border-radius: 6px;
+  background: rgba(7, 18, 32, 0.66);
+  color: #aebbd0;
+  cursor: pointer;
+}
+
+.sessionPanelSubtitle {
+  margin: 0 0 16px;
+  color: #8f9db2;
+  font-size: 13px;
+}
+
+.sessionPanelBody {
+  display: grid;
+  gap: 14px;
+}
+
+.sessionPanelField {
+  display: grid;
+  gap: 6px;
+}
+
+.sessionPanelField > span {
+  color: #8f9db2;
+  font-size: 10px;
+  font-family: var(--atlas-mono);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sessionPanelField > strong {
+  color: #dce4ef;
+  font-size: 14px;
+  font-family: var(--atlas-mono);
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.sessionTokenGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 2px;
+}
+
+.sessionTokenGrid div {
+  display: grid;
+  gap: 4px;
+}
+
+.sessionTokenGrid small {
+  color: #8f9db2;
+  font-size: 10px;
+  font-family: var(--atlas-mono);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sessionTokenGrid strong {
+  color: #dce4ef;
+  font-size: 14px;
+  font-family: var(--atlas-mono);
+  font-weight: 500;
+}
+
+.settingsDetailPanel header,
+.settingsSidePanel header,
+.showcaseDropdownHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.settingsDetailPanel h2,
+.settingsSidePanel h2 {
+  margin: 0;
+  color: #47afff;
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.settingsDetailPanel p,
+.settingsSidePanel p {
+  margin: 8px 0 0;
+  color: #a5b2c5;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.settingsDetailPanel header button,
+.settingsSidePanel header button,
+.showcaseDropdownHeader button {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(48, 92, 134, 0.55);
+  border-radius: 6px;
+  background: rgba(7, 18, 32, 0.66);
+  color: #aebbd0;
+  cursor: pointer;
+}
+
+.settingsDetailRows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.settingsDetailRows div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(48, 92, 134, 0.42);
+  border-radius: 6px;
+  background: rgba(7, 18, 32, 0.5);
+  padding: 10px 12px;
+}
+
+.settingsDetailRows span {
+  color: #8f9db2;
+  font-size: 12px;
+}
+
+.settingsDetailRows strong {
+  min-width: 0;
+  color: #dce4ef;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.settingsDetailAction {
+  width: max-content;
+}
+
+.authModeBlock,
+.authOauthBox,
+.secretEditor {
+  display: grid;
+  gap: 11px;
+  border: 1px solid rgba(48, 92, 134, 0.42);
+  border-radius: 7px;
+  background: rgba(7, 18, 32, 0.52);
+  padding: 13px;
+}
+
+.authModeBlock > span {
+  color: #dce4ef;
+  font-size: 14px;
+}
+
+.authOauthBox {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.authOauthBox strong,
+.secretEditorHeader strong {
+  display: block;
+  color: #dce4ef;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.authOauthBox span {
+  display: block;
+  margin-top: 4px;
+  color: #91a0b6;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.secretEditorHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.secretInput input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #dce4ef;
+  font: inherit;
+}
+
+.showcaseDropdownPanel {
+  display: grid;
   gap: 12px;
   padding: 12px;
 }
 
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(255, 255, 255, 0.12));
-  padding-bottom: 10px;
+.showcaseDropdownHeader strong {
+  color: #dce4ef;
+  font-size: 14px;
 }
 
-.eyebrow {
-  margin: 0 0 2px;
-  color: #72b7ff;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0;
-}
-
-h1 {
-  margin: 0;
-  color: var(--vscode-sideBarTitle-foreground);
-  font-size: 18px;
-  line-height: 1.2;
-}
-
-.log {
-  min-height: 0;
+.showcaseDropdownList {
+  display: grid;
+  gap: 7px;
+  max-height: 260px;
   overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
 
-.log p {
-  margin: 0;
-  border: 1px solid var(--vscode-input-border, rgba(255, 255, 255, 0.12));
+.showcaseDropdownList button {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  border: 1px solid rgba(48, 92, 134, 0.48);
   border-radius: 6px;
-  padding: 8px;
-  background: var(--vscode-editor-background);
-  color: var(--vscode-editor-foreground);
+  background: rgba(7, 18, 32, 0.66);
+  color: #dce4ef;
+  cursor: pointer;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.showcaseDropdownList button.isSelected {
+  border-color: #168dff;
+  background: rgba(10, 42, 76, 0.72);
+}
+
+.showcaseDropdownList span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.showcaseDropdownList small,
+.showcaseDropdownList p {
+  margin: 0;
+  color: #91a0b6;
+  font-size: 12px;
+}
+
+.showcaseLoadingLine {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  width: max-content;
+  max-width: 100%;
+  color: #42b4ff;
+  font-size: 13px;
+  padding: 8px 10px;
+}
+
+.showcaseField {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(132px, 0.7fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+}
+
+.showcaseField > span {
+  color: #d8deea;
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.showcaseSelect,
+.showcaseInput,
+.showcaseSegment,
+.showcaseModelSearch,
+.showcaseProviderRow,
+.showcaseMcpSummary,
+.showcaseLinkRow,
+.showcaseActionButton,
+.showcasePowerOption,
+.showcaseModelRow {
+  border: 1px solid rgba(48, 92, 134, 0.55);
+  border-radius: 7px;
+  background: rgba(7, 18, 32, 0.66);
+  color: #dce4f1;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.showcaseSelect,
+.showcaseInput {
+  min-width: 0;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.showcaseNativeSelect,
+.showcaseTextInput {
+  border-color: rgba(48, 92, 134, 0.55);
+  outline: 0;
+  appearance: none;
+}
+
+.showcaseNativeSelect {
+  display: block;
+  width: 100%;
+  background:
+    linear-gradient(45deg, transparent 50%, #9caabe 50%) calc(100% - 18px) 50% / 6px 6px no-repeat,
+    linear-gradient(135deg, #9caabe 50%, transparent 50%) calc(100% - 14px) 50% / 6px 6px no-repeat,
+    rgba(7, 18, 32, 0.66);
+  cursor: pointer;
+  padding: 0 38px 0 14px;
+}
+
+.showcaseNativeSelect option {
+  background: #071220;
+  color: #dce4ef;
+}
+
+.showcaseInput {
+  display: flex;
+  justify-content: flex-start;
   overflow-wrap: anywhere;
 }
 
-.composer {
+.showcaseInput.hasSuffix {
+  justify-content: space-between;
+}
+
+.showcaseInput small {
+  flex: 0 0 auto;
+  color: #8c9aaf;
+  white-space: nowrap;
+}
+
+.showcaseTextInput,
+.showcaseInlineNumber,
+.showcaseInlineText {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #dce4ef;
+}
+
+.showcaseTextInput {
+  width: 100%;
+}
+
+.showcaseInlineNumber,
+.showcaseInlineText {
+  flex: 1 1 auto;
+}
+
+.showcaseMiniButton {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 26px;
+  border: 1px solid rgba(48, 112, 171, 0.5);
+  border-radius: 5px;
+  background: rgba(8, 27, 48, 0.72);
+  color: #42b4ff;
+  cursor: pointer;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.showcaseMiniButton:disabled,
+.showcaseActionButton:disabled,
+.showcaseDangerButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.showcaseSelect strong {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.showcaseSelect .codicon:first-child {
+  color: #f4f8ff;
+  font-size: 18px;
+}
+
+.showcaseSelect .codicon:last-child {
+  color: #9caabe;
+}
+
+.showcaseSegment {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-height: 42px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.showcaseField .showcaseSegment:has(button:nth-child(3)) {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.showcaseField .showcaseSegment-four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.showcaseSegment-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.showcaseSegment button {
+  min-width: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #c9d3e3;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.showcaseSegment button.isActive,
+.showcaseTabs button.isActive {
+  background: linear-gradient(180deg, #1aa0ff, #0878ff);
+  color: white;
+  box-shadow: 0 0 18px rgba(11, 136, 255, 0.45);
+}
+
+.showcaseToggleRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.showcaseToggleRow strong {
+  display: block;
+  color: #dce4ef;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.showcaseToggleRow span:not(.showcaseSwitch),
+.showcaseMutedLine,
+.showcaseIntro,
+.showcaseProviderRow small,
+.showcasePowerOption small,
+.showcaseMcpSummary small,
+.showcaseModelEmpty {
+  color: #91a0b6;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.showcaseSwitch {
+  position: relative;
+  width: 42px;
+  height: 22px;
+  cursor: pointer;
+  border-radius: 999px;
+  background: #1b2a3f;
+}
+
+.showcaseIconOnlyButton {
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(48, 92, 134, 0.55);
+  border-radius: 7px;
+  background: rgba(7, 18, 32, 0.66);
+  color: #42b4ff;
+  cursor: pointer;
+}
+
+.spin {
+  animation: atlasSpin 900ms linear infinite;
+}
+
+@keyframes atlasSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.showcaseSwitch::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #cfd7e6;
+  content: "";
+  transition: transform 120ms ease;
+}
+
+.showcaseSwitch.isOn {
+  background: linear-gradient(90deg, #0a7cff, #31b5ff);
+}
+
+.showcaseSwitch.isOn::after {
+  transform: translateX(20px);
+  background: white;
+}
+
+.showcaseProviderList,
+.showcasePowerList {
+  display: grid;
+  gap: 0;
+}
+
+.showcaseProviderRow {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  gap: 14px;
+  align-items: center;
+  min-height: 54px;
+  padding: 9px 12px;
+  border-radius: 0;
+}
+
+.showcaseProviderRow:first-child {
+  border-top-left-radius: 7px;
+  border-top-right-radius: 7px;
+}
+
+.showcaseProviderRow:last-child {
+  border-bottom-left-radius: 7px;
+  border-bottom-right-radius: 7px;
+}
+
+.showcaseProviderGlyph {
+  width: 25px;
+  height: 25px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #f4f7fb;
+  font-size: 22px;
+}
+
+.showcaseProviderGlyph.isText {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.showcaseProviderRow strong {
+  display: block;
+  color: #dce4ef;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.showcaseProviderRow small {
+  display: none;
+  margin-top: 2px;
+}
+
+.showcaseProviderRow .statusPill {
+  min-height: 26px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  font-family: var(--atlas-font);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.showcaseProviderRow .statusPill-ok {
+  border-color: rgba(45, 181, 97, 0.38);
+  background: rgba(19, 97, 51, 0.42);
+  color: #5fdf7b;
+  box-shadow: none;
+}
+
+.showcaseProviderRow .statusPill-muted {
+  border-color: rgba(104, 121, 145, 0.36);
+  background: rgba(35, 46, 63, 0.62);
+  color: #a6b0c0;
+}
+
+.showcaseEditButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  background: transparent;
+  color: #aebbd0;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.showcaseModelSearch {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+}
+
+.showcaseModelSearch .codicon {
+  color: #9aa8bd;
+  font-size: 18px;
+}
+
+.showcaseModelSearch input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #dce4ef;
+  font: inherit;
+  font-size: 15px;
+}
+
+.showcaseModelSearch input::placeholder {
+  color: #7f8ba0;
+}
+
+.showcaseDropdownSearch {
+  min-height: 38px;
+}
+
+.modelDiagnosticGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+  gap: 8px;
+}
+
+.modelDiagnostic {
+  min-width: 0;
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(48, 92, 134, 0.48);
+  border-radius: 7px;
+  background: rgba(7, 18, 32, 0.58);
+  color: #c9d3e3;
+  cursor: pointer;
+  padding: 0 10px;
+}
+
+.modelDiagnostic span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modelDiagnostic strong {
+  color: #dce4ef;
+  font-size: 12px;
+}
+
+.modelDiagnostic-loaded {
+  border-color: rgba(45, 181, 97, 0.4);
+  background: rgba(19, 97, 51, 0.22);
+}
+
+.modelDiagnostic-loaded strong {
+  color: #5fdf7b;
+}
+
+.modelDiagnostic-error {
+  border-color: rgba(244, 91, 68, 0.5);
+  background: rgba(84, 22, 18, 0.28);
+}
+
+.modelDiagnostic-error strong {
+  color: #ff8e81;
+}
+
+.modelDiagnostic-skipped,
+.modelDiagnostic-fallback {
+  border-color: rgba(255, 170, 0, 0.35);
+  background: rgba(78, 43, 0, 0.2);
+}
+
+.modelDiagnostic-skipped strong,
+.modelDiagnostic-fallback strong {
+  color: #ffaa00;
+}
+
+.showcaseModelList {
+  display: grid;
+  gap: 8px;
+  max-height: 340px;
+  overflow: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(79, 184, 255, 0.32) transparent;
+}
+
+.showcaseTabs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 8px;
+}
+
+.showcaseTabs button {
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid rgba(48, 92, 134, 0.5);
+  border-radius: 6px;
+  background: rgba(9, 20, 36, 0.72);
+  color: #aebbd0;
+  cursor: pointer;
+  overflow: hidden;
+  padding: 0 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.showcaseModelRow {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 15px 16px 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.showcaseModelRow.isSelected {
+  border-color: #147ddd;
+  background: rgba(10, 39, 69, 0.58);
+  box-shadow: 0 0 22px rgba(23, 128, 255, 0.16);
+}
+
+.showcaseModelRow > span {
+  color: #dde7f5;
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.showcaseModelRow > .codicon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: #7fa1c8;
+}
+
+.showcaseModelRow.isSelected > .codicon {
+  background: #168bff;
+  color: white;
+}
+
+.showcaseModelRow small {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: max-content;
+  min-height: 28px;
+  padding: 4px 12px;
+  border: 1px solid rgba(49, 105, 143, 0.55);
+  border-radius: 6px;
+  background: rgba(11, 29, 48, 0.74);
+  font-size: 13px;
+}
+
+.isCacheYes {
+  color: #72de88;
+}
+
+.isCacheUnknown {
+  color: #ffaa00;
+}
+
+.isCacheNo {
+  color: #ff6f5f;
+}
+
+.showcaseModelRow .isDefault {
+  color: #26b5ff;
+}
+
+.showcaseLinkRow,
+.showcaseActionButton {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  padding: 0 16px;
+  text-align: left;
+}
+
+.showcaseLinkRow {
+  color: #d7e1ef;
+  font-size: 15px;
+}
+
+.showcasePowerList {
+  gap: 12px;
+}
+
+.showcasePowerOption {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 16px;
+  align-items: flex-start;
+  padding: 17px 18px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.showcasePowerOption.isActive {
+  border-color: #168dff;
+  background: rgba(10, 42, 76, 0.72);
+  box-shadow: 0 0 22px rgba(22, 141, 255, 0.18);
+}
+
+.showcaseRadio {
+  position: relative;
+  width: 21px;
+  height: 21px;
+  margin-top: 2px;
+  border: 1px solid #8ca4c6;
+  border-radius: 999px;
+}
+
+.showcasePowerOption.isActive .showcaseRadio {
+  border-color: #289cff;
+  background: #168bff;
+  box-shadow: 0 0 12px rgba(22, 139, 255, 0.42);
+}
+
+.showcasePowerOption.isActive .showcaseRadio::after {
+  position: absolute;
+  inset: 6px;
+  border-radius: 999px;
+  background: white;
+  content: "";
+}
+
+.showcasePowerOption strong {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: #dce4ef;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.showcaseMutedLine {
+  margin: 0;
+}
+
+.showcaseIntro {
+  margin: -4px 0 0;
+}
+
+.showcaseMcpSummary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  min-height: 72px;
+  padding: 13px 16px;
+}
+
+.showcaseMcpSummary > span {
+  width: 47px;
+  height: 47px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(48, 92, 134, 0.5);
+  border-radius: 7px;
+  color: #dce4ef;
+  font-size: 24px;
+}
+
+.showcaseMcpSummary strong {
+  display: block;
+  color: #dce4ef;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.showcaseAgentList,
+.showcaseToggleList,
+.showcaseToolGrid,
+.showcaseCommandMap,
+.showcasePathGrid,
+.showcasePathMatrix,
+.showcaseButtonRow,
+.showcaseStatsGrid {
   display: grid;
   gap: 8px;
 }
 
-textarea {
-  width: 100%;
+.showcaseStatsGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.showcaseAgentRow {
   min-width: 0;
-  resize: vertical;
-  border: 1px solid var(--vscode-input-border, rgba(255, 255, 255, 0.18));
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid rgba(48, 92, 134, 0.45);
   border-radius: 6px;
-  padding: 8px;
-  background: var(--vscode-input-background);
-  color: var(--vscode-input-foreground);
+  background: rgba(7, 18, 32, 0.54);
 }
 
-textarea::placeholder {
-  color: var(--vscode-input-placeholderForeground);
+.showcaseAgentGlyph {
+  width: 22px;
+  color: #27a9ff;
+  font-family: var(--atlas-mono);
+  font-size: 12px;
+  font-weight: 700;
 }
 
-button {
+.showcaseAgentRow strong {
+  min-width: 0;
+  color: #dce4ef;
+  font-size: 15px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.showcaseAgentRow .statusPill {
+  min-height: 24px;
+  border-radius: 6px;
+  font-family: var(--atlas-font);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.showcaseAgentDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #59df75;
+  box-shadow: 0 0 10px rgba(89, 223, 117, 0.72);
+}
+
+.showcasePathGrid {
+  grid-template-columns: 1fr;
+}
+
+.showcasePathMatrix {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 24px;
+}
+
+.showcasePathField {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(94px, 0.42fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.showcasePathMatrix .showcasePathField {
+  grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
+}
+
+.showcasePathField > span {
+  color: #cbd5e4;
+  font-size: 14px;
+}
+
+.showcasePathField button {
+  min-width: 0;
   min-height: 30px;
-  border: 1px solid var(--vscode-button-border, transparent);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(48, 92, 134, 0.48);
   border-radius: 6px;
-  padding: 6px 10px;
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
+  background: rgba(7, 18, 32, 0.66);
+  color: #cfd9e9;
+  cursor: pointer;
+  padding: 0 10px;
+  text-align: left;
+}
+
+.showcasePathField code {
+  min-width: 0;
+  overflow: hidden;
+  color: #cfd9e9;
+  font-family: var(--atlas-mono);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.showcasePathField .codicon {
+  color: #9ba9bd;
+}
+
+.showcaseToggleList {
+  border: 1px solid rgba(48, 92, 134, 0.5);
+  border-radius: 7px;
+  background: rgba(7, 18, 32, 0.55);
+  overflow: hidden;
+}
+
+.showcaseToggleList.isPlain {
+  border: 0;
+  background: transparent;
+}
+
+.showcaseToggleLine {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  min-height: 36px;
+  color: #d7e0ed;
+  font-size: 14px;
+}
+
+.showcaseToggleList .showcaseToggleLine {
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(48, 92, 134, 0.34);
+}
+
+.showcaseToggleList .showcaseToggleLine:last-child {
+  border-bottom: 0;
+}
+
+.showcaseHookGrid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.showcaseHookGrid > span,
+.showcaseApprovalGrid label > span {
+  color: #cbd5e4;
+  font-size: 13px;
+}
+
+.showcaseHookGrid > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.showcaseHookToken,
+.showcaseToolToken,
+.showcaseCommandChip {
+  min-width: 0;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(48, 112, 171, 0.62);
+  border-radius: 5px;
+  background: rgba(8, 27, 48, 0.72);
+  color: #cfd9e9;
+  overflow: hidden;
+  padding: 0 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.showcaseHookToken,
+button.showcaseToolToken,
+button.toggleToken {
+  cursor: pointer;
+  text-align: left;
+}
+
+.showcaseHookToken::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #198dff;
+  box-shadow: 0 0 8px rgba(25, 141, 255, 0.72);
+  content: "";
+}
+
+.showcaseApprovalGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 18px;
+}
+
+.showcaseApprovalGrid label {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+}
+
+.showcaseApprovalGrid button {
+  min-width: 0;
+  min-height: 31px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid rgba(48, 92, 134, 0.48);
+  border-radius: 6px;
+  background: rgba(7, 18, 32, 0.66);
+  color: #cfd9e9;
+  cursor: pointer;
+  padding: 0 10px;
+}
+
+.showcaseGuardrailGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.showcaseBlocked {
+  min-height: 36px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(255, 170, 0, 0.45);
+  border-radius: 6px;
+  background: rgba(78, 43, 0, 0.42);
+  color: #ffaa00;
+  padding: 0 12px;
+}
+
+.showcaseBlocked code {
+  border: 1px solid rgba(255, 87, 74, 0.55);
+  border-radius: 5px;
+  background: rgba(92, 28, 24, 0.52);
+  color: #ff8e81;
+  font-family: var(--atlas-mono);
+  padding: 2px 12px;
+}
+
+.showcaseToolGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.showcaseToolToken {
+  min-height: 39px;
+  font-size: 14px;
+}
+
+.showcaseToolToken .codicon {
+  color: #dce4ef;
+  font-size: 18px;
+}
+
+.showcaseButtonRow {
+  grid-template-columns: repeat(3, minmax(0, auto));
+  justify-content: start;
+}
+
+.showcaseActionButton,
+.showcaseDangerButton {
+  justify-content: center;
+  width: max-content;
+  max-width: 100%;
+  gap: 18px;
+  border-color: rgba(20, 126, 220, 0.72);
+  color: #42b4ff;
+  font-size: 16px;
+}
+
+.showcaseActionButton.isFull {
+  width: 100%;
+}
+
+.showcaseDangerButton {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  border: 1px solid rgba(244, 91, 68, 0.58);
+  border-radius: 7px;
+  background: rgba(43, 13, 13, 0.38);
+  color: #ff6f5f;
+  cursor: pointer;
+  padding: 0 16px;
+}
+
+.showcaseCommandMap {
+  gap: 13px;
+}
+
+.showcaseCommandGroup {
+  min-width: 0;
+}
+
+.showcaseCommandGroup h3 {
+  margin: 0 0 8px;
+  color: #91a0b6;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.showcaseCommandGroup div {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 8px;
+}
+
+.showcaseCommandChip {
+  justify-content: flex-start;
+  cursor: pointer;
+  font-family: var(--atlas-mono);
+  font-size: 12px;
+}
+
+.showcaseTextLink {
+  width: max-content;
+  max-width: 100%;
+  background: transparent;
+  color: #22adff;
+  cursor: pointer;
+  font-family: var(--atlas-mono);
+  font-size: 13px;
+  text-align: left;
+}
+
+.settingsFooter-showcase {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) minmax(220px, 1fr);
+  gap: 22px;
+  margin-top: 24px;
+  padding: 18px 24px;
+  border-color: rgba(48, 108, 160, 0.54);
+  border-radius: 8px;
+  background: rgba(5, 14, 27, 0.86);
+}
+
+.settingsFooter-showcase .settingsPrimaryButton,
+.settingsFooter-showcase .settingsSecondaryButton {
+  min-height: 52px;
+  justify-content: center;
+  gap: 12px;
+  border-radius: 7px;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.settingsFooter-showcase .settingsPrimaryButton {
+  background: linear-gradient(180deg, #1aa0ff, #0878ff);
+  color: white;
+}
+
+@media (max-width: 760px) {
+  .settingsView-showcase {
+    padding: 20px 18px 14px;
+  }
+
+  .settingsSearchRail,
+  .authOauthBox {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settingsSearchRail,
+  .settingsSectionActions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .settingsGrid-showcase,
+  .settingsFooter-showcase {
+    grid-template-columns: 1fr;
+  }
+
+  .settingsDetailPanel,
+  .settingsSidePanel {
+    inset: 62px 12px auto;
+    width: auto;
+    max-height: calc(100vh - 74px);
+  }
+
+  .settingsCard-showcase {
+    padding: 20px;
+  }
+
+  .showcaseField {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .showcaseProviderRow {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .showcaseProviderRow .showcaseEditButton {
+    grid-column: 2 / -1;
+    justify-self: start;
+  }
+
+  .showcaseTabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .showcasePathMatrix,
+  .showcaseToolGrid,
+  .showcaseApprovalGrid,
+  .showcaseHookGrid > div,
+  .showcaseButtonRow,
+  .showcaseStatsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .showcaseHookGrid,
+  .showcasePathField,
+  .showcasePathMatrix .showcasePathField,
+  .showcaseApprovalGrid label {
+    grid-template-columns: 1fr;
+  }
+}
+
+.setupBanner p {
+  margin: 7px 0 0;
+  color: var(--atlas-fg);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.bannerLabel {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  border: 1px solid var(--atlas-line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--atlas-warning);
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.transcript {
+  grid-area: transcript;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--atlas-accent) 34%, transparent) transparent;
+  position: relative;
+}
+
+.transcript-mode-plan {
+  border: 1px solid color-mix(in srgb, #d946ef 80%, white 10%);
+  border-radius: 3px;
+  box-shadow: 0 0 2px color-mix(in srgb, #d946ef 80%, transparent),
+    0 0 6px color-mix(in srgb, #d946ef 55%, transparent),
+    0 0 16px color-mix(in srgb, #d946ef 28%, transparent),
+    inset 0 0 8px color-mix(in srgb, #d946ef 16%, transparent);
+  margin: 6px;
+}
+
+.transcript-mode-build {
+  border: 1px solid color-mix(in srgb, var(--atlas-success) 80%, white 10%);
+  border-radius: 3px;
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-success) 80%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-success) 55%, transparent),
+    0 0 16px color-mix(in srgb, var(--atlas-success) 28%, transparent),
+    inset 0 0 8px color-mix(in srgb, var(--atlas-success) 16%, transparent);
+  margin: 6px;
+}
+
+.transcript-mode-autopilot {
+  border: 1px solid color-mix(in srgb, var(--atlas-error) 80%, white 10%);
+  border-radius: 3px;
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-error) 80%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-error) 55%, transparent),
+    0 0 16px color-mix(in srgb, var(--atlas-error) 28%, transparent),
+    inset 0 0 8px color-mix(in srgb, var(--atlas-error) 16%, transparent);
+  margin: 6px;
+}
+
+.transcriptPhaseLabel {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  text-align: center;
+  font-family: var(--atlas-brand-font);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  padding: 1px 0 3px;
+  margin-bottom: 2px;
+  background: transparent;
+  pointer-events: none;
+}
+
+.transcript-mode-plan .transcriptPhaseLabel {
+  color: #d946ef;
+  text-shadow: 0 0 14px color-mix(in srgb, #d946ef 80%, transparent);
+}
+
+.transcript-mode-build .transcriptPhaseLabel {
+  color: var(--atlas-success);
+  text-shadow: 0 0 14px color-mix(in srgb, var(--atlas-success) 80%, transparent);
+}
+
+.transcript-mode-autopilot .transcriptPhaseLabel {
+  color: var(--atlas-error);
+  text-shadow: 0 0 14px color-mix(in srgb, var(--atlas-error) 80%, transparent);
+}
+
+.transcript::-webkit-scrollbar,
+.toolPreview::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.transcript::-webkit-scrollbar-track,
+.toolPreview::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.transcript::-webkit-scrollbar-thumb,
+.toolPreview::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--atlas-accent) 34%, transparent);
+}
+
+.emptyState {
+  width: min(320px, 100%);
+  margin: auto;
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  color: var(--atlas-dim);
+  text-align: center;
+}
+
+.emptyMark {
+  width: min(280px, 82vw);
+  max-width: 280px;
+  max-height: 360px;
+  height: auto;
+  margin-bottom: 10px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 22px color-mix(in srgb, var(--atlas-accent) 58%, transparent));
+}
+
+.emptyState p {
+  margin: 0;
+  color: var(--atlas-fg);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.32;
+}
+
+.emptyState span {
+  max-width: 260px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.approvalRail {
+  grid-area: approval;
+  display: grid;
+  gap: 8px;
+  margin: 0 6px;
+}
+
+.approvalCard {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--atlas-warning) 60%, white 6%);
+  border-radius: var(--atlas-radius-lg);
+  background: color-mix(in srgb, var(--atlas-warning) 7%, var(--atlas-bg-panel));
+  padding: 10px;
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-warning) 60%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-warning) 35%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-warning) 16%, transparent),
+    inset 0 0 6px color-mix(in srgb, var(--atlas-warning) 8%, transparent);
+}
+
+.approvalHeader,
+.approvalActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.approvalHeader span {
+  min-width: 0;
+  color: var(--atlas-fg);
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approvalHeader small {
+  color: var(--atlas-dim);
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.approvalCard pre {
+  max-height: 160px;
+  min-width: 0;
+  margin: 0;
+  overflow: auto;
+  color: var(--atlas-dim);
+  font-family: var(--atlas-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.approvalActions {
+  justify-content: flex-end;
+}
+
+.message {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 55%, white 5%);
+  border-radius: var(--atlas-radius-lg);
+  padding: 10px 0;
+  background: color-mix(in srgb, var(--atlas-bg-elev) 86%, transparent);
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-accent) 55%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-accent) 30%, transparent),
+    0 0 12px color-mix(in srgb, var(--atlas-accent) 12%, transparent),
+    inset 0 0 6px color-mix(in srgb, var(--atlas-accent) 6%, transparent);
+}
+
+.message-user {
+  border-color: color-mix(in srgb, var(--atlas-accent) 34%, var(--atlas-line));
+  background: color-mix(in srgb, var(--atlas-accent) 10%, var(--atlas-bg-elev));
+}
+
+.message-assistant.isPending {
+  box-shadow: inset 2px 0 0 var(--atlas-accent);
+}
+
+.message-system {
+  color: var(--atlas-dim);
+  background: transparent;
+  border-style: dashed;
+}
+
+.message-error {
+  border-color: color-mix(in srgb, var(--atlas-error) 55%, var(--atlas-line));
+  background: color-mix(in srgb, var(--atlas-error) 8%, var(--atlas-bg-elev));
+}
+
+.messageHeader {
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+  color: var(--atlas-dim);
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.messageBody,
+.thinkingText {
+  color: var(--atlas-fg);
+  font-size: 14px;
+  line-height: 1.52;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.thinkingText {
+  margin: 0 0 8px;
+  color: var(--atlas-dim);
+  border-left: 2px solid var(--atlas-line);
+  padding-left: 8px;
+}
+
+.toolList {
+  display: grid;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.toolRow {
+  border: 1px solid var(--atlas-line);
+  border-radius: var(--atlas-radius-md);
+  background: color-mix(in srgb, var(--atlas-bg-panel) 78%, transparent);
+}
+
+.toolRow summary {
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  color: var(--atlas-dim);
+  cursor: pointer;
+  font-family: var(--atlas-mono);
+  font-size: 11px;
+}
+
+.toolSummaryActions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
+.toolOpenButton {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 30%, var(--atlas-line));
+  border-radius: var(--atlas-radius-md);
+  background: color-mix(in srgb, var(--atlas-accent) 9%, transparent);
+  color: var(--atlas-accent);
   cursor: pointer;
 }
 
-button:hover {
-  background: var(--vscode-button-hoverBackground);
+.toolOpenButton:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 72%, white 6%);
+  background: color-mix(in srgb, var(--atlas-accent) 18%, transparent);
 }
 
-.ghostButton {
-  background: var(--vscode-button-secondaryBackground);
-  color: var(--vscode-button-secondaryForeground);
+.tool-ok .toolSummaryActions > span {
+  color: var(--atlas-success);
 }
 
-.ghostButton:hover {
-  background: var(--vscode-button-secondaryHoverBackground);
+.tool-error .toolSummaryActions > span {
+  color: var(--atlas-error);
+}
+
+.tool-running .toolSummaryActions > span {
+  color: var(--atlas-accent);
+}
+
+.toolPreview {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  border-top: 1px solid var(--atlas-line);
+  padding: 8px;
+  color: var(--atlas-fg);
+  font-family: var(--atlas-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--atlas-accent) 34%, transparent) transparent;
+}
+
+.fileRefButton {
+  display: inline;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 34%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--atlas-accent) 10%, transparent);
+  color: color-mix(in srgb, var(--atlas-accent) 88%, white 10%);
+  cursor: pointer;
+  font-family: var(--atlas-mono);
+  font-size: 0.92em;
+  padding: 0 4px;
+  text-decoration: none;
+}
+
+.fileRefButton:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 76%, white 8%);
+  background: color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+}
+
+.composer button:disabled,
+.composer textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.composer {
+  grid-area: composer;
+  position: relative;
+  margin: 0 9px 9px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 60%, white 6%);
+  border-radius: 3px;
+  background: var(--atlas-bg-panel);
+  display: grid;
+  gap: 6px;
+  padding: 4px 9px;
+  overflow: visible;
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-accent) 55%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-accent) 30%, transparent);
+}
+
+.slashAutocomplete {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  display: grid;
+  gap: 4px;
+  max-height: min(300px, 54vh);
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 60%, white 6%);
+  border-radius: var(--atlas-radius-lg);
+  background: color-mix(in srgb, var(--atlas-bg-elev) 94%, black);
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-accent) 60%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-accent) 35%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-accent) 16%, transparent),
+    0 18px 36px rgba(0, 0, 0, 0.38),
+    inset 0 0 6px color-mix(in srgb, var(--atlas-accent) 8%, transparent);
+}
+
+.slashRow {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--atlas-radius-md);
+  background: transparent;
+  color: var(--atlas-fg);
+  cursor: pointer;
+  padding: 7px 8px;
+  text-align: left;
+}
+
+.slashRow span {
+  color: var(--atlas-accent);
+  font-family: var(--atlas-mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.slashRow small {
+  min-width: 0;
+  color: var(--atlas-dim);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slashRow:hover,
+.slashRow.isActive {
+  background: color-mix(in srgb, var(--atlas-accent) 14%, transparent);
+  box-shadow: inset 2px 0 0 var(--atlas-accent);
+}
+
+.composer.isRunning {
+  border-color: color-mix(in srgb, var(--atlas-warning) 72%, var(--atlas-line));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-warning) 20%, transparent),
+    0 0 16px color-mix(in srgb, var(--atlas-warning) 16%, transparent);
+}
+
+.composerControls {
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.composerControlsLeft,
+.composerControlsRight {
+  gap: 4px;
+}
+
+.composerSettingsButton {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 30%, var(--atlas-line));
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--atlas-bg-panel) 86%, var(--atlas-accent) 8%);
+  color: color-mix(in srgb, var(--atlas-accent) 92%, white 8%);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.composerSettingsButton:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--atlas-accent) 16%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--atlas-accent) 16%, transparent);
+}
+
+.composerAttachButton {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 30%, var(--atlas-line));
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--atlas-bg-panel) 86%, var(--atlas-accent) 8%);
+  color: color-mix(in srgb, var(--atlas-accent) 92%, white 8%);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.composerAttachButton:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--atlas-accent) 16%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--atlas-accent) 16%, transparent);
+}
+
+.attachDropdown {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  min-width: 140px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 60%, white 6%);
+  border-radius: 6px;
+  background: var(--atlas-bg-panel);
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-accent) 60%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-accent) 35%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-accent) 16%, transparent),
+    0 8px 24px color-mix(in srgb, black 40%, transparent),
+    inset 0 0 6px color-mix(in srgb, var(--atlas-accent) 8%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.attachDropdownOption {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--atlas-fg);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 0;
+  text-align: left;
+}
+
+.attachDropdownOption:hover {
+  background: color-mix(in srgb, var(--atlas-accent) 14%, transparent);
+  color: var(--atlas-accent);
+}
+
+.attachDropdownOption i {
+  font-size: 13px;
+  color: var(--atlas-accent);
+}
+
+.attachDropdownOption.isDisabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.attachDropdownOption.isDisabled:hover {
+  background: transparent;
+  color: inherit;
+}
+
+.attachmentList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.attachmentPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--atlas-accent) 10%, var(--vscode-input-background, #2a2a2a));
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 25%, transparent);
+  font-size: 11px;
+  color: var(--vscode-input-foreground, #ccc);
+}
+
+.attachmentThumbnail {
+  width: 24px;
+  height: 24px;
+  border-radius: 3px;
+  object-fit: cover;
+}
+
+.attachmentName {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachmentRemove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: var(--vscode-descriptionForeground, #888);
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.attachmentRemove:hover {
+  background: color-mix(in srgb, var(--atlas-accent) 20%, transparent);
+  color: var(--atlas-accent);
+}
+
+.quickSelect {
+  position: relative;
+}
+
+.quickSelectTrigger,
+.sendButton {
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 58%, white 4%);
+  transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.quickSelectTrigger {
+  min-width: 118px;
+  max-width: 148px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--atlas-accent) 72%, #dff5ff);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-accent) 26%, transparent),
+    0 0 12px color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+  color: #05203a;
+  cursor: pointer;
+}
+
+.quickSelectTrigger:hover,
+.quickSelect.isOpen .quickSelectTrigger {
+  border-color: color-mix(in srgb, var(--atlas-accent) 80%, white 10%);
+  background: color-mix(in srgb, var(--atlas-accent) 78%, white 10%);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--atlas-accent) 70%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-accent) 35%, transparent);
+}
+
+.quickSelectValue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--atlas-font);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.quickSelectChevron {
+  flex: 0 0 auto;
+  font-size: 14px;
+}
+
+.quickSelectTriggerMinimal {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--atlas-dim);
+  cursor: pointer;
+  font-family: var(--atlas-font);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.quickSelectTriggerMinimal:hover {
+  color: var(--atlas-fg);
+}
+
+.quickSelectTriggerMinimal .quickSelectChevron {
+  font-size: 10px;
+  color: var(--atlas-faint);
+}
+
+.composerAgentIcon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--atlas-dim);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.composerAgentIcon:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 80%, white 10%);
+  background: color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+  color: var(--atlas-accent);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--atlas-accent) 70%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-accent) 35%, transparent);
+}
+
+.composerThinkingWrap {
+  position: relative;
+}
+
+.composerThinkingIcon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--atlas-dim);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.composerThinkingIcon:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 80%, white 10%);
+  background: color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+  color: var(--atlas-accent);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--atlas-accent) 70%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-accent) 35%, transparent);
+}
+
+.composerThinkingIcon .composerThinkingLabel {
+  font-family: var(--atlas-mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 0 4px;
+}
+
+.composerThinkingIcon.isActive {
+  color: var(--atlas-accent);
+}
+
+.thinkingDropdown {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  min-width: 110px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 60%, white 6%);
+  border-radius: 6px;
+  background: var(--atlas-bg-panel);
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-accent) 60%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-accent) 35%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-accent) 16%, transparent),
+    0 8px 24px color-mix(in srgb, black 40%, transparent),
+    inset 0 0 6px color-mix(in srgb, var(--atlas-accent) 8%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.thinkingDropdownOption {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--atlas-fg);
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.thinkingDropdownOption:hover {
+  background: color-mix(in srgb, var(--atlas-accent) 12%, transparent);
+}
+
+.thinkingDropdownOption.isActive {
+  background: color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+  color: var(--atlas-accent);
+}
+
+.agentOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 12, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.agentPanel {
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(480px, calc(100vh - 80px));
+  display: grid;
+  gap: 0;
+  padding: 20px 22px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 60%, white 6%);
+  border-radius: 10px;
+  background: rgba(8, 16, 28, 0.98);
+  box-shadow:
+    inset 0 1px 0 rgba(120, 196, 255, 0.12),
+    0 0 2px color-mix(in srgb, var(--atlas-accent) 55%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-accent) 32%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-accent) 14%, transparent),
+    0 24px 48px rgba(0, 0, 0, 0.32);
+  overflow: auto;
+}
+
+.agentPanel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.agentPanel header h3 {
+  margin: 0;
+  color: #e8eefb;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.agentPanel header button {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(48, 92, 134, 0.55);
+  border-radius: 6px;
+  background: rgba(7, 18, 32, 0.66);
+  color: #aebbd0;
+  cursor: pointer;
+}
+
+.agentPanelBody {
+  display: grid;
+  gap: 8px;
+}
+
+.agentPanelRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(7, 18, 32, 0.5);
+  border: 1px solid rgba(48, 92, 134, 0.42);
+  color: var(--atlas-fg);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.agentPanelRow:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--atlas-accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--atlas-accent) 50%, transparent);
+}
+
+.agentPanelRow.isActive {
+  background: color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--atlas-accent) 60%, transparent);
+}
+
+.agentPanelRow.isLocked {
+  color: var(--atlas-faint);
+  cursor: not-allowed;
+}
+
+.agentPanelRow.isLocked:hover {
+  background: rgba(7, 18, 32, 0.5);
+  border-color: rgba(48, 92, 134, 0.42);
+}
+
+.agentPanelInfo {
+  display: grid;
+  gap: 2px;
+}
+
+.agentPanelInfo strong {
+  color: #dce4ef;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.agentPanelInfo span {
+  color: #8f9db2;
+  font-size: 11px;
+}
+
+.agentPanelStatus {
+  display: inline-flex;
+  align-items: center;
+  color: var(--atlas-dim);
+  font-size: 11px;
+  font-family: var(--atlas-mono);
+}
+
+.agentPanelActive {
+  color: var(--atlas-accent);
+  font-weight: 700;
+}
+
+.quickSelectMenu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: min(360px, 82vw);
+  min-width: 100%;
+  max-height: min(340px, 58vh);
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 40%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--atlas-bg-elev) 92%, black);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-accent) 18%, transparent),
+    0 10px 24px rgba(0, 0, 0, 0.34);
+  z-index: 10;
+}
+
+.quickSelectOption {
+  width: 100%;
+  display: grid;
+  gap: 3px;
+  padding: 7px 10px;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--atlas-fg);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--atlas-font);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.quickSelectOption span,
+.quickSelectOption small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quickSelectOption small {
+  color: var(--atlas-dim);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.quickSelectOption:hover,
+.quickSelectOption.isSelected {
+  background: color-mix(in srgb, var(--atlas-accent) 72%, #dff5ff);
+  color: #05203a;
+}
+
+.quickSelectOption:hover small,
+.quickSelectOption.isSelected small {
+  color: #05203a;
+}
+
+.composer textarea {
+  width: 100%;
+  min-width: 0;
+  height: 58px;
+  min-height: 58px;
+  max-height: 220px;
+  resize: none;
+  display: block;
+  border: 0;
+  border-radius: 3px;
+  outline: 0;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--atlas-fg);
+  font-family: var(--atlas-font);
+  font-size: 15px;
+  line-height: 1.45;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--atlas-accent) 34%, transparent) transparent;
+}
+
+.composer textarea::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.composer textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.composer textarea::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--atlas-accent) 34%, transparent);
+}
+
+.composer textarea::placeholder {
+  color: color-mix(in srgb, var(--atlas-faint) 88%, white 4%);
+}
+
+.sendButton {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 3px;
+  background: var(--atlas-accent);
+  color: #001220;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-accent) 70%, transparent),
+    0 0 12px color-mix(in srgb, var(--atlas-accent) 40%, transparent);
+  cursor: pointer;
+}
+
+.sendButton .codicon {
+  font-size: 12px;
+}
+
+.sendButton:hover {
+  background: color-mix(in srgb, var(--atlas-accent) 82%, white 10%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-accent) 82%, transparent),
+    0 0 16px color-mix(in srgb, var(--atlas-accent) 48%, transparent);
+}
+
+.sendButton.isStop {
+  border-color: color-mix(in srgb, var(--atlas-warning) 82%, white 6%);
+  background: var(--atlas-warning);
+  color: #1f1300;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-warning) 50%, transparent),
+    0 0 16px color-mix(in srgb, var(--atlas-warning) 32%, transparent);
+}
+
+.sendButton[disabled] {
+  box-shadow: none;
+  opacity: 0.55;
+}
+
+@media (max-width: 260px) {
+  .topBar {
+    padding-inline: 0;
+  }
+
+  .transcript {
+    padding-inline: 9px;
+  }
+
+  .composer {
+    margin-inline: 0;
+    padding-inline: 0;
+  }
+
+  .composerControls {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .composerControlsRight {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+/* ── Grouped model picker ── */
+
+.quickSelectGrouped {
+  max-height: 300px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--atlas-accent) 24%, transparent) transparent;
+}
+
+.quickSelectGroup {
+  display: flex;
+  flex-direction: column;
+}
+
+.quickSelectGroupHeader {
+  padding: 6px 10px 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--atlas-accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: var(--atlas-mono);
+  border-top: 1px solid var(--atlas-line-soft);
+}
+
+.quickSelectGroup:first-child .quickSelectGroupHeader {
+  border-top: 0;
+}
+
+.quickSelectSearch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--atlas-line-soft);
+}
+
+.quickSelectSearch input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: var(--atlas-fg);
+  font-size: 12px;
+  font-family: var(--atlas-mono);
+}
+
+.quickSelectSearch .codicon {
+  color: var(--atlas-dim);
+  font-size: 13px;
+}
+
+.quickSelectEmpty {
+  padding: 14px;
+  text-align: center;
+  color: var(--atlas-dim);
+  font-size: 12px;
+}
+
+.isPopular {
+  color: var(--atlas-warning);
+}
+
+.popularStar {
+  color: var(--atlas-warning);
+  font-weight: 700;
+}
+
+/* ── Phase badges ── */
+
+.settingsBadge-idle {
+  color: #6b7896;
+  border-color: color-mix(in srgb, #6b7896 30%, transparent);
+  background: color-mix(in srgb, #6b7896 10%, transparent);
+}
+
+.settingsBadge-discover {
+  color: #56b6c2;
+  border-color: color-mix(in srgb, #56b6c2 30%, transparent);
+  background: color-mix(in srgb, #56b6c2 10%, transparent);
+}
+
+.settingsBadge-plan {
+  color: #9d7cd8;
+  border-color: color-mix(in srgb, #9d7cd8 34%, transparent);
+  background: color-mix(in srgb, #9d7cd8 12%, transparent);
+}
+
+.settingsBadge-execute {
+  color: #f5a742;
+  border-color: color-mix(in srgb, #f5a742 34%, transparent);
+  background: color-mix(in srgb, #f5a742 12%, transparent);
+}
+
+.settingsBadge-verify {
+  color: #5c9cf5;
+  border-color: color-mix(in srgb, #5c9cf5 34%, transparent);
+  background: color-mix(in srgb, #5c9cf5 12%, transparent);
+}
+
+.settingsBadge-ship {
+  color: #7fd88f;
+  border-color: color-mix(in srgb, #7fd88f 34%, transparent);
+  background: color-mix(in srgb, #7fd88f 12%, transparent);
+}
+
+/* ── Usage footer & context bar ── */
+
+.usageFooter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--atlas-line-soft);
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  color: var(--atlas-faint);
+}
+
+.usageFooter span {
+  white-space: nowrap;
+}
+
+.contextBar {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--atlas-line);
+  overflow: hidden;
+}
+
+.contextFill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--atlas-success);
+  transition: width 300ms ease, background-color 300ms ease;
+}
+
+.contextWarn {
+  background: var(--atlas-warning);
+}
+
+.contextDanger {
+  background: var(--atlas-error);
+}
+
+/* ── Agent kind tags in quick select ── */
+
+.quickSelectOption small {
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  color: var(--atlas-faint);
 }

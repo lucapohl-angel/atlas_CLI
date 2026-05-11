@@ -137,6 +137,21 @@ atlas vscode-setup
 Use `--dry-run` to preview the settings change, or `--path <file>` for a
 non-default VS Code settings file.
 
+### VS Code Extension
+
+The VS Code extension lives in `packages/vscode` and embeds the same
+`@atlas/core` engine as the terminal app. For local testing:
+
+```bash
+pnpm --filter atlas-os-vscode run package
+```
+
+Then install `packages/vscode/dist/atlas-os-vscode.vsix` with
+`Extensions: Install from VSIX...`. The extension reads `~/.atlas/config.yaml`,
+layers explicit `atlas.*` VS Code settings on top, stores newly entered provider
+keys in VS Code SecretStorage, and opens ChatGPT / Codex sign-in through the
+Command Palette action `Atlas: Sign in to ChatGPT / Codex`.
+
 ### Providers
 
 The easiest path is inside the TUI:

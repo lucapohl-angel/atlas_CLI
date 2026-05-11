@@ -1,9 +1,13 @@
 # VS Code Extension — Future Improvement Plan
 
-> Status: **in progress**. Phase 2.A is complete and Phase 2.B has a
-> working smoke path: package metadata, side-bar webview shell,
-> Zod-validated bridge, local session host, and `Atlas: Run Turn`.
-> VS Code-native tools and the full webview workflow are not built yet.
+> Status: **in progress**. Phase 2.A and 2.B are complete. Phase 2.C now has
+> the side-bar conversation pane, typed bridge, local session host,
+> `Atlas: Run Turn`, VS Code-native file/edit/terminal tools, modal approval
+> fallback, slash autocomplete, sanitized settings summary, clickable workspace
+> file references, live model/agent pickers, MCP status, sessions/resume,
+> workflow status, session todos, inline approvals, SecretStorage-backed keys,
+> safe settings controls, Codex browser sign-in, VSIX packaging, and turn
+> cancellation. Remaining work is polish beyond the original Phase 2 plan.
 
 ## Goal
 
@@ -119,13 +123,13 @@ through the bridge.
   `@atlas/core` with provider, agents, skills, tools, hooks, and prompt
   composition, but with no terminal I/O.
 - VS Code-native tool implementations:
-  - [ ] `read_file` / `write_file` → `vscode.workspace.fs` (respects
+  - [x] `read_file` / `write_file` → `vscode.workspace.fs` (respects
     unsaved editor state via `openTextDocument`).
-  - [ ] `edit_file` → `vscode.WorkspaceEdit` so edits land as native
+  - [x] `edit_file` → `vscode.WorkspaceEdit` so edits land as native
     diffs with full undo.
-  - [ ] `terminal` → `vscode.window.createTerminal` backed by a
+  - [x] `terminal` → `vscode.window.createTerminal` backed by a
     `Pseudoterminal` so output streams into the engine.
-- [ ] Approval prompts route to `vscode.window.showInformationMessage`
+- [x] Approval prompts route to `vscode.window.showInformationMessage`
   (modal) for now; later, surface inline in the webview.
 - [x] Smoke goal: a Command Palette command (`Atlas: Run Turn`) that
   takes a string, runs one engine turn, prints to an Output channel.
@@ -136,38 +140,41 @@ through the bridge.
 - React + Vite inside `src/ui/`. Reuse the Atlas-blue palette
   tokens from `packages/cli/src/tui/opentui/palette.ts` (or extract
   to a shared `@atlas/brand` later).
+- [x] Extract website-derived Atlas tokens into `DESIGN.md` and apply them
+  through VS Code theme-aware CSS variables.
 - Screens to ship (mirror `tui-workflow.md`):
-  1. Conversation pane (streaming deltas, tool calls, tool results,
+  1. [x] Conversation pane (streaming deltas, tool calls, tool results,
      thinking blocks).
-  2. Slash autocomplete.
-  3. Agent picker (Tab).
-  4. Model picker (`/model`).
-  5. MCP status.
-  6. Todo / task list.
-  7. Sessions / resume.
+     Tool summaries and assistant file references open workspace files
+     through VS Code's native editor APIs.
+  2. [x] Slash autocomplete.
+  3. [x] Agent picker (Tab).
+  4. [x] Model picker (`/model`).
+  5. [x] MCP status.
+  6. [x] Todo / task list.
+  7. [x] Sessions / resume.
 - Storage: session pointers in `vscode.ExtensionContext.globalState`;
   the session JSON files themselves stay in `~/.atlas/sessions/` so
   the CLI and extension share state seamlessly.
 
 ### Phase 2.D — Config, auth, settings
 
-- Read `~/.atlas/config.yaml` first; layer VS Code Settings
+- [x] Read `~/.atlas/config.yaml` first; layer VS Code Settings
   (`atlas.*`) on top via merge. Settings UI gives non-CLI users a
   way in.
-- API keys via `vscode.SecretStorage` — never in Settings JSON.
-- OAuth flows (Claude Code, Codex) via `vscode.env.openExternal` +
-  a registered `vscode://lucapohl-angel.atlas/auth/callback` URI
-  handler.
-- Honor `~/.atlas/agents/`, `~/.atlas/skills/`, `~/.atlas/templates/`
+- [x] API keys via `vscode.SecretStorage` — never in Settings JSON.
+- [x] OAuth flows (Claude Code, Codex) via `vscode.env.openExternal` +
+  a registered VS Code URI handler for Atlas auth callbacks.
+- [x] Honor `~/.atlas/agents/`, `~/.atlas/skills/`, `~/.atlas/templates/`
   the same way the CLI does — same loaders, same precedence.
 
 ### Phase 2.E — Distribution & release
 
-- `vsce package` in CI on tag push (separate workflow from the
+- [x] `vsce package` in CI on tag push (separate workflow from the
   binaries release).
-- Marketplace publish gated by the same manual `workflow_dispatch`
+- [x] Marketplace publish gated by the same manual `workflow_dispatch`
   pattern as the npm release (do not auto-publish on tag).
-- Document install steps in a new top-level README section.
+- [x] Document install steps in a new top-level README section.
 
 ## Open questions
 

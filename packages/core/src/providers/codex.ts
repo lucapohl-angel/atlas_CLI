@@ -21,13 +21,14 @@
 import { atlasError, type AtlasError } from '../errors.js';
 import { childLogger } from '../logger.js';
 import { CODEX_ORIGINATOR, refreshCodexTokens } from './codex-oauth.js';
-import type {
-  CompletionRequest,
-  Message,
-  Provider,
-  StreamEvent,
-  TokenUsage,
-  ToolCall
+import {
+  contentToString,
+  type CompletionRequest,
+  type Message,
+  type Provider,
+  type StreamEvent,
+  type TokenUsage,
+  type ToolCall
 } from './types.js';
 
 const log = childLogger('provider:codex');
@@ -71,7 +72,7 @@ export interface CodexProviderOptions {
 interface ResponsesInputItem {
   readonly type: 'message' | 'function_call' | 'function_call_output';
   readonly role?: 'user' | 'assistant' | 'system';
-  readonly content?: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
+  readonly content?: ReadonlyArray<{ readonly type: string; readonly text?: string; readonly image_url?: string }>;
   readonly call_id?: string;
   readonly name?: string;
   readonly arguments?: string;
@@ -365,24 +366,26 @@ const toResponsesInput = (
   const items: ResponsesInputItem[] = [];
   for (const m of messages) {
     if (m.role === 'system') {
-      if (m.content) sys.push(m.content);
+      const text = typeof m.content === 'string' ? m.content : contentToString(m.content);
+      if (text) sys.push(text);
       continue;
     }
     if (m.role === 'tool') {
       items.push({
         type: 'function_call_output',
         call_id: m.toolCallId ?? '',
-        output: m.content
+        output: typeof m.content === 'string' ? m.content : contentToString(m.content)
       });
       continue;
     }
     if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
       // Replay each tool call as its own function_call item.
-      if (m.content) {
+      const text = typeof m.content === 'string' ? m.content : contentToString(m.content);
+      if (text) {
         items.push({
           type: 'message',
           role: 'assistant',
-          content: [{ type: 'output_text', text: m.content }]
+          content: [{ type: 'output_text', text }]
         });
       }
       for (const tc of m.toolCalls) {
@@ -395,16 +398,25 @@ const toResponsesInput = (
       }
       continue;
     }
-    items.push({
-      type: 'message',
-      role: m.role,
-      content: [
-        {
-          type: m.role === 'assistant' ? 'output_text' : 'input_text',
-          text: m.content
-        }
-      ]
-    });
+    if (typeof m.content === 'string') {
+      items.push({
+        type: 'message',
+        role: m.role,
+        content: [
+          {
+            type: m.role === 'assistant' ? 'output_text' : 'input_text',
+            text: m.content
+          }
+        ]
+      });
+    } else {
+      const content: ResponsesInputItem['content'] = m.content.map((b) =>
+        b.type === 'text'
+          ? { type: 'input_text', text: b.text }
+          : { type: 'input_image', image_url: `data:${b.mediaType};base64,${b.base64}` }
+      );
+      items.push({ type: 'message', role: m.role, content });
+    }
   }
   return { instructions: sys.join('\n\n'), input: items };
 };

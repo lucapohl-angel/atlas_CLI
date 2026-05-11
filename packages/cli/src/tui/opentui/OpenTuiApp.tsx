@@ -926,7 +926,9 @@ const createDefaultConfig = (
     },
     openai: {
       codex: {},
-      baseUrl: 'https://chatgpt.com/backend-api/codex'
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      apiBaseUrl: 'https://api.openai.com/v1',
+      authMode: 'auto'
     },
     opencode: {
       zen: {

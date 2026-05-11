@@ -78,6 +78,8 @@ const applyEnvOverrides = (cfg: AtlasConfig, env: NodeJS.ProcessEnv): AtlasConfi
   const baseUrl = env['OPENROUTER_BASE_URL'] ?? cfg.providers.openrouter.baseUrl;
   const anthropicKey = env['ANTHROPIC_API_KEY'] ?? cfg.providers.anthropic.apiKey;
   const anthropicBaseUrl = env['ANTHROPIC_BASE_URL'] ?? cfg.providers.anthropic.baseUrl;
+  const openAiKey = env['OPENAI_API_KEY'] ?? cfg.providers.openai.apiKey;
+  const openAiApiBaseUrl = env['OPENAI_API_BASE_URL'] ?? cfg.providers.openai.apiBaseUrl;
   const openCodeZenKey = env['OPENCODE_ZEN_API_KEY'] ?? cfg.providers.opencode.zen.apiKey;
   const openCodeZenBaseUrl =
     env['OPENCODE_ZEN_BASE_URL'] ?? cfg.providers.opencode.zen.baseUrl;
@@ -98,6 +100,11 @@ const applyEnvOverrides = (cfg: AtlasConfig, env: NodeJS.ProcessEnv): AtlasConfi
         ...cfg.providers.anthropic,
         ...(anthropicKey !== undefined ? { apiKey: anthropicKey } : {}),
         baseUrl: anthropicBaseUrl
+      },
+      openai: {
+        ...cfg.providers.openai,
+        ...(openAiKey !== undefined ? { apiKey: openAiKey } : {}),
+        apiBaseUrl: openAiApiBaseUrl
       },
       opencode: {
         ...cfg.providers.opencode,

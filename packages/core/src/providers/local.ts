@@ -25,12 +25,13 @@
 import { atlasError, type AtlasError } from '../errors.js';
 import { childLogger } from '../logger.js';
 import type { LocalProviderToolMode } from '../config/types.js';
-import type {
-  CompletionRequest,
-  Provider,
-  StreamEvent,
-  ToolCall,
-  TokenUsage
+import {
+  contentToString,
+  type CompletionRequest,
+  type Provider,
+  type StreamEvent,
+  type ToolCall,
+  type TokenUsage
 } from './types.js';
 
 const log = childLogger('provider:local');
@@ -216,11 +217,13 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
         const keep = compactMode === 'hybrid' ? HYBRID_HISTORY_KEEP : LITE_HISTORY_KEEP;
         const recent = nonSystem.slice(-keep);
         // Truncate any individual message that's still huge (e.g. a pasted file).
-        const trimmed = recent.map((m) =>
-          m.content.length > LITE_SYSTEM_MAX_CHARS
-            ? { ...m, content: m.content.slice(0, LITE_SYSTEM_MAX_CHARS) + '\n…[truncated]' }
-            : m
-        );
+        const trimmed = recent.map((m) => {
+          const text = typeof m.content === 'string' ? m.content : contentToString(m.content);
+          if (text.length > LITE_SYSTEM_MAX_CHARS) {
+            return { ...m, content: text.slice(0, LITE_SYSTEM_MAX_CHARS) + '\n…[truncated]' };
+          }
+          return m;
+        });
         effectiveMessages = [
           { role: 'system' as const, content: compactSystemPrompt(request.model, compactMode) },
           ...trimmed
@@ -230,7 +233,7 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
       }
 
       if (compactMode) {
-        const totalChars = effectiveMessages.reduce((n, m) => n + m.content.length, 0);
+        const totalChars = effectiveMessages.reduce((n, m) => n + (typeof m.content === 'string' ? m.content.length : contentToString(m.content).length), 0);
         log.debug(
           { model: request.model, toolMode, msgCount: effectiveMessages.length, totalChars },
           'compact local payload built'
@@ -240,7 +243,12 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
       const body = JSON.stringify({
         model: request.model,
         messages: effectiveMessages.map((m) => {
-          const base: Record<string, unknown> = { role: m.role, content: m.content };
+          const isAssistantToolCall =
+            m.role === 'assistant' && Boolean(m.toolCalls && m.toolCalls.length > 0);
+          const base: Record<string, unknown> = {
+            role: m.role,
+            content: mapContentToOpenAI(m.content, isAssistantToolCall)
+          };
           if (m.toolCallId) base['tool_call_id'] = m.toolCallId;
           if (m.name) base['name'] = m.name;
           if (includeToolProtocol && m.toolCalls && m.toolCalls.length > 0) {
@@ -475,6 +483,19 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
       };
     }
   };
+};
+
+const mapContentToOpenAI = (
+  content: string | readonly import('./types.js').ContentBlock[],
+  forceEmpty: boolean
+): string | unknown[] => {
+  if (forceEmpty) return '';
+  if (typeof content === 'string') return content;
+  return content.map((b) =>
+    b.type === 'text'
+      ? { type: 'text', text: b.text }
+      : { type: 'image_url', image_url: { url: `data:${b.mediaType};base64,${b.base64}` } }
+  );
 };
 
 const mapHttpError = async (response: Response, baseUrl: string): Promise<AtlasError> => {

@@ -53,6 +53,36 @@ describe('context window', () => {
     expect(countMessageTokens(msgs)).toBe(5);
   });
 
+  it('counts image blocks as fixed vision token estimate', () => {
+    const msgs: Message[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'abcd' },
+          { type: 'image', base64: 'abc123', mediaType: 'image/png' },
+        ]
+      }
+    ];
+    // text: 1 token + image: 256 tokens + role overhead: 4 = 261
+    expect(countMessageTokens(msgs)).toBe(261);
+  });
+
+  it('builds compaction prompt with content blocks', () => {
+    const out = buildCompactPrompt([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'hi' },
+          { type: 'image', base64: 'abc', mediaType: 'image/png' },
+        ]
+      },
+      { role: 'assistant', content: 'hey' }
+    ]);
+    expect(out).toContain('[user]: hi');
+    expect(out).not.toContain('image');
+    expect(out).toContain('[assistant]: hey');
+  });
+
   it('builds a compaction prompt that includes the transcript', () => {
     const out = buildCompactPrompt([
       { role: 'user', content: 'hi' },

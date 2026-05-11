@@ -9,11 +9,20 @@ import { loadContextPack } from '@atlas/core/context';
 import { atlasError, type AtlasError } from '@atlas/core/errors';
 import { builtinHookRegistry, type HookRegistry } from '@atlas/core/hooks';
 import { runAgentLoop, type LoopEvent } from '@atlas/core/loop';
-import { providerFromConfigAsync, type Message, type Provider } from '@atlas/core/providers';
+import {
+  providerFromConfigAsync,
+  type ContentBlock,
+  type Message,
+  type Provider,
+  type ReasoningEffort,
+  type ReasoningOptions,
+  type ThinkingLevel,
+} from '@atlas/core/providers';
 import { err, ok, type Result } from '@atlas/core/result';
 import { SkillRegistry, loadSkills, type Skill } from '@atlas/core/skills';
+import { TodoStore, type TodoItem } from '@atlas/core/tools';
 import { ToolRegistry, allowAllPolicy } from '@atlas/core/tools/registry';
-import type { ToolContext } from '@atlas/core/tools/types';
+import type { ApprovalPolicy, ToolContext } from '@atlas/core/tools/types';
 import { phasePromptAddendum } from '@atlas/core/workflow';
 
 export interface CreateAtlasSessionHostOptions {
@@ -22,11 +31,16 @@ export interface CreateAtlasSessionHostOptions {
   readonly config?: AtlasConfig;
   readonly provider?: Provider;
   readonly model?: string;
+  readonly thinking?: ThinkingLevel;
   readonly agentName?: string;
   readonly agents?: readonly Agent[];
   readonly skills?: readonly Skill[];
   readonly tools?: ToolRegistry;
   readonly hooks?: HookRegistry;
+  readonly approvalPolicy?: ApprovalPolicy;
+  readonly clarifyAsk?: ToolContext['clarifyAsk'];
+  readonly initialMessages?: readonly Message[];
+  readonly initialTodos?: readonly TodoItem[];
 }
 
 export interface RunTurnOptions {
@@ -38,10 +52,12 @@ interface AtlasSessionHostState {
   readonly config: AtlasConfig;
   readonly provider: Provider;
   readonly model: string;
+  readonly thinking: ThinkingLevel;
   readonly agent: Agent;
   readonly skills: SkillRegistry;
   readonly tools: ToolRegistry;
   readonly hooks: HookRegistry;
+  readonly todoStore: TodoStore;
   readonly toolContext: ToolContext;
 }
 
@@ -69,13 +85,22 @@ export class AtlasSessionHost {
     return this.messages;
   }
 
+  public get todos(): readonly TodoItem[] {
+    return this.state.todoStore.read();
+  }
+
+  public replaceHistory(messages: readonly Message[]): void {
+    this.messages = [...messages];
+  }
+
   public async *runTurn(
-    prompt: string,
+    content: string | readonly ContentBlock[],
     options: RunTurnOptions = {},
   ): AsyncGenerator<LoopEvent> {
-    const userMessage: Message = { role: 'user', content: prompt };
+    const userMessage: Message = { role: 'user', content };
     const turnHistory = [...this.messages, userMessage];
     const systemContent = await this.buildSystemContent();
+    const reasoning = buildReasoning(this.state.thinking);
     let completedMessages: readonly Message[] | null = null;
 
     for await (const event of runAgentLoop({
@@ -89,6 +114,7 @@ export class AtlasSessionHost {
         ...(options.signal ? { signal: options.signal } : {}),
       },
       initialMessages: [{ role: 'system', content: systemContent }, ...turnHistory],
+      ...(reasoning ? { reasoning } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     })) {
       if (event.type === 'done') completedMessages = event.messages;
@@ -149,19 +175,25 @@ export const createAtlasSessionHost = async (
 
   const toolContext: ToolContext = {
     cwd: options.cwd,
-    approve: allowAllPolicy,
+    approve: options.approvalPolicy ?? allowAllPolicy,
     callingAgent: {
       name: agent.name,
       ...(agent.authorizedSections ? { authorizedSections: agent.authorizedSections } : {}),
       ...(agent.forbiddenSections ? { forbiddenSections: agent.forbiddenSections } : {}),
     },
+    ...(options.clarifyAsk ? { clarifyAsk: options.clarifyAsk } : {}),
   };
+  const todoStore = new TodoStore();
+  if (options.initialTodos && options.initialTodos.length > 0) {
+    todoStore.write(options.initialTodos, false);
+  }
 
-  return ok(new AtlasSessionHost({
+  const host = new AtlasSessionHost({
     cwd: options.cwd,
     config,
     provider: providerResult.value,
     model: options.model ?? config.defaultModel,
+    thinking: options.thinking ?? agent.thinkingEffort,
     agent,
     skills: new SkillRegistry(skillsResult.value),
     tools: options.tools ?? new ToolRegistry(),
@@ -169,8 +201,17 @@ export const createAtlasSessionHost = async (
       cwd: options.cwd,
       config: config.guardrails,
     }),
-    toolContext,
-  }));
+    todoStore,
+    toolContext: { ...toolContext, todoStore },
+  });
+  host.replaceHistory(options.initialMessages ?? []);
+  return ok(host);
+};
+
+const buildReasoning = (level: ThinkingLevel): ReasoningOptions | undefined => {
+  if (level === 'off') return undefined;
+  if (level === 'xhigh') return { effort: 'high' as ReasoningEffort, maxTokens: 32_000 };
+  return { effort: level as ReasoningEffort };
 };
 
 const resolveConfig = async (

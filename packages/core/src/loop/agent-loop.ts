@@ -20,13 +20,14 @@ import {
   type ToolRegistry
 } from '../tools/registry.js';
 import type { ToolContext } from '../tools/types.js';
-import type {
-  CompletionRequest,
-  Message,
-  Provider,
-  ReasoningOptions,
-  ToolCall,
-  TokenUsage
+import {
+  contentToString,
+  type CompletionRequest,
+  type Message,
+  type Provider,
+  type ReasoningOptions,
+  type ToolCall,
+  type TokenUsage
 } from '../providers/types.js';
 import { registryToSpecs, toolToSpec } from '../providers/tool-spec.js';
 import { truncateForLLM } from '../tools/truncate.js';
@@ -243,8 +244,8 @@ export const runAgentLoop = async function* (
         let lastUserMessage: string | undefined;
         for (let i = messages.length - 1; i >= 0; i -= 1) {
           const m = messages[i];
-          if (m && m.role === 'user' && typeof m.content === 'string') {
-            lastUserMessage = m.content;
+          if (m && m.role === 'user') {
+            lastUserMessage = contentToString(m.content);
             break;
           }
         }

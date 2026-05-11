@@ -23,25 +23,43 @@ token-optimization** track on top of it.
 ## Current Goal
 
 - Stabilize the OpenTUI-only runtime, first-class OpenCode Zen/Go provider
-  support, and the first VS Code extension host skeleton.
+  support, and smoke the packaged VS Code extension before Phase 2.F editor
+  integrations.
 
 ## In Progress
 
 - 1.7.3 prep: OpenTUI is the only maintained full-screen TUI, with hosted
   Atlas Power modes, local-model mode controls, prompt-cache labels, and
   OpenCode Zen/Go provider wiring plus a dismissible npm update notice.
-- VS Code extension Phase 2.B: `packages/vscode` now has a local session host
-  and `Atlas: Run Turn` smoke path; VS Code-native tools are still pending.
+- VS Code extension Phase 2.B is complete: `packages/vscode` has a local
+  session host, `Atlas: Run Turn` smoke path, VS Code-native file/edit/terminal
+  adapters, and modal approval prompts.
+- VS Code extension Phase 2.C-2.E is packaged for local smoke: Atlas
+  website tokens are captured in `DESIGN.md`, and the side-bar now has a
+  Copilot Chat-style transcript,
+  status header, slash autocomplete, clickable workspace file references,
+  tool rows, settings summary, live model/agent pickers, MCP status,
+  sessions/resume/rename, workflow status, session todos, inline approvals,
+  SecretStorage-backed provider keys, safe settings controls, VSIX packaging,
+  cancellation, and composer.
+- A detailed 10-phase VS Code UI build plan is at
+  [`context/vscode-build-plan.md`](vscode-build-plan.md) — Phases 1-5 ✅,
+  7-8 ✅, 10 ✅ (all remaining phases complete: grouped model picker with
+  ★ Popular and search, agent tags, phase colors, context bar + usage
+  footer, keyboard shortcuts, empty states). Phase 6 (MCP catalog) was
+  already done. Phase 9 (skills/tools/compaction management) already
+  done.
 
 ## Next Up (recommended order)
 
-1. **Local-model provider via Ollama** — auto-detect
+1. **VS Code Phase 1 — Header chips** (power badge, mode, provider tag,
+   thinking, status bar) per
+   [`context/vscode-build-plan.md`](vscode-build-plan.md).
+2. **Local-model provider via Ollama** — auto-detect
    `http://localhost:11434`, expose any user-pulled model in
    `/model`, add `/local` slash command for zero-config UX. Also
    serves any OpenAI-compatible endpoint (LM Studio, vLLM,
    llama.cpp) via `providers.local.baseUrl`.
-2. **VS Code extension Phase 2.B tools** — replace generic core filesystem /
-  edit / terminal tools with VS Code-native adapters.
 3. Wire a hook (or contributor docs) so `progress-tracker.md` gets a
    one-liner appended automatically after each commit on `main`.
 4. Pull the performance-track items into `CHANGELOG.md` under an
@@ -80,6 +98,12 @@ token-optimization** track on top of it.
   local side-bar webview host and typed bridge.
 - `[pending]` VS Code extension Phase 2.B smoke path runs one local Atlas core
   turn from the command palette or side-bar bridge.
+- `[pending]` VS Code sidebar maps slash commands and opens streamed file refs
+  with native editor APIs.
+- `[pending]` VS Code Phase 2.C adds live model/agent pickers, MCP/session/task
+  managers, session todos, and webview cancellation.
+- `[pending]` VS Code Phase 2.D/E adds inline approvals, SecretStorage-backed
+  settings/auth, MCP/session manager actions, VSIX packaging, and gated publish.
 - `[pending]` Atlas checks npm on TUI open and shows a dismissible update
   notice when `atlas-os` is behind.
 - `[e02d9b7]` workspace installs OpenTUI native optional deps for all release

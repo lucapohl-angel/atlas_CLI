@@ -55,16 +55,20 @@ export interface ModelInfo {
    * provider tag in the TUI header.
    */
   readonly provider: ModelProviderKind;
+  /** Whether this model supports image/vision input. */
+  readonly supportsVision: boolean;
 }
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const CACHE_SCHEMA_VERSION = 2;
+const CACHE_SCHEMA_VERSION = 5;
 
 const cachePath = (provider: string): string =>
   path.join(os.homedir(), '.atlas', 'cache', `${provider}-models.json`);
 
 const isPromptCacheSupport = (value: unknown): value is PromptCacheSupport =>
   value === 'supported' || value === 'unsupported' || value === 'unknown';
+
+const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
 
 const readCache = async (provider: string): Promise<readonly ModelInfo[] | null> => {
   try {
@@ -81,7 +85,7 @@ const readCache = async (provider: string): Promise<readonly ModelInfo[] | null>
     // and would be invisible in the grouped picker. Treat them as stale.
     if (
       parsed.models.some(
-        (m) => typeof m.provider !== 'string' || !isPromptCacheSupport(m.promptCache)
+        (m) => typeof m.provider !== 'string' || !isPromptCacheSupport(m.promptCache) || !isBoolean(m.supportsVision)
       )
     ) {
       return null;
@@ -112,6 +116,37 @@ const openRouterThinking = (supported: readonly string[]): readonly ThinkingLeve
     return ['off', 'low', 'medium', 'high'];
   }
   return ['off'];
+};
+
+const openRouterVision = (
+  raw: Record<string, unknown>,
+  supported: readonly string[]
+): boolean => {
+  const normalized = supported.map((s) => s.toLowerCase());
+  if (normalized.some((s) => s.includes('vision') || s.includes('image'))) return true;
+
+  const arch = raw['architecture'];
+  if (arch && typeof arch === 'object') {
+    const archRecord = arch as Record<string, unknown>;
+
+    // OpenRouter exposes input_modalities as an array, e.g. ["text", "image"]
+    const inputModalities = archRecord['input_modalities'];
+    if (
+      Array.isArray(inputModalities) &&
+      inputModalities.some((m) => typeof m === 'string' && m.toLowerCase().includes('image'))
+    ) {
+      return true;
+    }
+
+    // Fallback: modality is a string like "text+image->text"
+    const modality = archRecord['modality'];
+    if (typeof modality === 'string' && modality.toLowerCase().includes('image')) {
+      return true;
+    }
+  }
+
+  // No API metadata advertising image support — assume the model does not support vision.
+  return false;
 };
 
 const openRouterPromptCache = (
@@ -213,12 +248,15 @@ export const fetchOpenRouterModels = async (
       thinking: openRouterThinking(supported),
       promptCache: openRouterPromptCache(r, supported),
       provider: 'openrouter',
+      supportsVision: openRouterVision(r, supported),
       ...(ctx !== undefined ? { contextWindow: ctx } : {})
     });
   }
   // Sort: provider/family/version, with reasoning models first within family.
   models.sort((a, b) => a.id.localeCompare(b.id));
-  await writeCache('openrouter', models);
+  if (!options.forceRefresh) {
+    await writeCache('openrouter', models);
+  }
   return ok(models);
 };
 
@@ -282,12 +320,15 @@ export const fetchAnthropicModels = async (
       label: name,
       thinking: anthropicThinking(id),
       promptCache: 'supported',
-      provider: 'anthropic'
+      provider: 'anthropic',
+      supportsVision: anthropicVision(id)
     });
   }
   // Newest first: claude-* sort lexicographically, reverse.
   models.sort((a, b) => b.id.localeCompare(a.id));
-  await writeCache('anthropic', models);
+  if (!options.forceRefresh) {
+    await writeCache('anthropic', models);
+  }
   return ok(models);
 };
 
@@ -405,11 +446,14 @@ const fetchOpenCodeModels = async (
       thinking: openCodeThinking(bare),
       promptCache: openCodePromptCache(raw),
       provider,
+      supportsVision: openCodeVision(bare),
       ...(contextWindow !== undefined ? { contextWindow } : {})
     });
   }
   models.sort((a, b) => a.id.localeCompare(b.id));
-  await writeCache(provider, models);
+  if (!options.forceRefresh) {
+    await writeCache(provider, models);
+  }
   return ok(models);
 };
 
@@ -517,6 +561,7 @@ export const fetchCodexModels = async (
           thinking: thinking.length > 1 ? thinking : codexThinking(slug),
           promptCache: 'supported',
           provider: 'openai-codex',
+          supportsVision: codexVision(slug),
           ...(ctx !== undefined ? { contextWindow: ctx } : {})
         });
       }
@@ -527,7 +572,9 @@ export const fetchCodexModels = async (
     models = codexFallbackCatalog();
   }
 
-  await writeCache('openai-codex', models);
+  if (!options.forceRefresh) {
+    await writeCache('openai-codex', models);
+  }
   return ok(models);
 };
 
@@ -545,20 +592,39 @@ const codexThinking = (id: string): readonly ThinkingLevel[] => {
  * ChatGPT-account auth ("model not supported when using Codex with a
  * ChatGPT account").
  */
+const anthropicVision = (id: string): boolean => {
+  const m = id.toLowerCase();
+  // Claude 3+ all support vision
+  return /claude-3|claude-sonnet|claude-opus|claude-haiku/.test(m);
+};
+
+const codexVision = (id: string): boolean => {
+  const m = id.toLowerCase();
+  return /gpt-4o|o1|o3/.test(m);
+};
+
+const openCodeVision = (_id: string): boolean => {
+  // OpenCode's /models list does not expose vision capability metadata.
+  // When OpenCode adds modality fields to its API, read them here instead.
+  return false;
+};
+
 const codexFallbackCatalog = (): readonly ModelInfo[] => [
   {
     id: 'gpt-5',
     label: 'GPT-5',
     thinking: codexThinking('gpt-5'),
     promptCache: 'supported',
-    provider: 'openai-codex'
+    provider: 'openai-codex',
+    supportsVision: codexVision('gpt-5')
   },
   {
     id: 'gpt-5-mini',
     label: 'GPT-5 Mini',
     thinking: codexThinking('gpt-5-mini'),
     promptCache: 'supported',
-    provider: 'openai-codex'
+    provider: 'openai-codex',
+    supportsVision: codexVision('gpt-5-mini')
   }
 ];
 

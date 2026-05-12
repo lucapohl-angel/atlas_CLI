@@ -115,6 +115,48 @@ export const BridgeStreamEventSchema = z.discriminatedUnion('type', [
     type: z.literal('error'),
     error: ErrorLikeSchema,
   }).strict(),
+  z.object({
+    type: z.literal('clarify_request'),
+    clarify: z.object({
+      id: z.string().min(1),
+      question: z.string().min(1),
+      choices: z.array(z.string()).optional(),
+      allowFreeform: z.boolean(),
+    }).strict(),
+  }).strict(),
+  z.object({
+    type: z.literal('clarify_resolved'),
+    clarifyId: z.string().min(1),
+    answer: z.string(),
+  }).strict(),
+  z.object({
+    type: z.literal('learn_reflecting'),
+    reason: z.string(),
+  }).strict(),
+  z.object({
+    type: z.literal('learn_review'),
+    draft: z.object({
+      name: z.string(),
+      description: z.string(),
+      triggers: z.array(z.string()),
+      body: z.string(),
+    }).strict(),
+    reason: z.string(),
+  }).strict(),
+  z.object({
+    type: z.literal('learn_nothing'),
+    reason: z.string(),
+    force: z.boolean(),
+  }).strict(),
+  z.object({
+    type: z.literal('learn_error'),
+    error: z.string(),
+  }).strict(),
+  z.object({
+    type: z.literal('learn_saved'),
+    name: z.string(),
+    description: z.string(),
+  }).strict(),
 ]);
 
 export type BridgeStreamEvent = z.infer<typeof BridgeStreamEventSchema>;
@@ -428,6 +470,36 @@ export const BridgeRequestSchema = z.discriminatedUnion('kind', [
     kind: z.literal('attachFile'),
     params: z.object({
       type: z.enum(['file', 'image']),
+    }).strict(),
+  }).strict(),
+  z.object({
+    requestId: RequestIdSchema,
+    kind: z.literal('resolveClarify'),
+    params: z.object({
+      clarifyId: z.string().min(1),
+      answer: z.string(),
+    }).strict(),
+  }).strict(),
+  z.object({
+    requestId: RequestIdSchema,
+    kind: z.literal('resolveLearn'),
+    params: z.object({
+      action: z.enum(['save', 'edit', 'discard']),
+      changeRequest: z.string().optional(),
+    }).strict(),
+  }).strict(),
+  z.object({
+    requestId: RequestIdSchema,
+    kind: z.literal('runLearnReflection'),
+    params: z.object({
+      force: z.boolean().optional(),
+    }).strict(),
+  }).strict(),
+  z.object({
+    requestId: RequestIdSchema,
+    kind: z.literal('setLearnEnabled'),
+    params: z.object({
+      enabled: z.boolean(),
     }).strict(),
   }).strict(),
 ]);

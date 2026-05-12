@@ -55,6 +55,10 @@ import {
   type VsCodeToolHost,
 } from './tools/index.js';
 import { InlineApprovalBroker } from './approval-broker.js';
+import { InlineClarifyBroker } from './clarify-broker.js';
+import { LearnBroker } from './learn-broker.js';
+import { shouldOfferLearn, describeLearnReason } from '@atlas/core';
+import { saveLearnedSkill } from '@atlas/core/skills';
 import {
   atlasConfigPath,
   clearStoredSecret,
@@ -235,8 +239,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const output = vscode.window.createOutputChannel('Atlas');
   const approvals = new InlineApprovalBroker(output);
-  const runtime = new AtlasRuntimeController(context, output, approvals);
-  const provider = new AtlasSidebarProvider(context, output, runtime, approvals);
+  const clarifyBroker = new InlineClarifyBroker(output);
+  const learnBroker = new LearnBroker(output);
+  const runtime = new AtlasRuntimeController(context, output, approvals, clarifyBroker, learnBroker);
+  const provider = new AtlasSidebarProvider(context, output, runtime, approvals, clarifyBroker, learnBroker);
 
   context.subscriptions.push(
     output,
@@ -328,6 +334,8 @@ class AtlasSidebarProvider implements vscode.WebviewViewProvider {
     private readonly output: vscode.OutputChannel,
     private readonly runtime: AtlasRuntimeController,
     private readonly approvals: InlineApprovalBroker,
+    private readonly clarifyBroker: InlineClarifyBroker,
+    private readonly learnBroker: LearnBroker,
   ) {}
 
   public resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -338,7 +346,13 @@ class AtlasSidebarProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this.renderHtml(webviewView.webview);
     this.approvals.attach(webviewView.webview);
-    webviewView.onDidDispose(() => this.approvals.detach(webviewView.webview));
+    this.clarifyBroker.attach(webviewView.webview);
+    this.learnBroker.attach(webviewView.webview);
+    webviewView.onDidDispose(() => {
+      this.approvals.detach(webviewView.webview);
+      this.clarifyBroker.detach(webviewView.webview);
+      this.learnBroker.detach(webviewView.webview);
+    });
     webviewView.webview.onDidReceiveMessage((rawMessage: unknown) => {
       this.handleMessage(webviewView.webview, rawMessage);
     });
@@ -649,6 +663,104 @@ class AtlasSidebarProvider implements vscode.WebviewViewProvider {
         })();
         return;
       }
+      case 'resolveClarify': {
+        this.clarifyBroker.resolve(request.params.clarifyId, request.params.answer);
+        void webview.postMessage(createBridgeResponse(request.requestId, { ok: true }));
+        return;
+      }
+      case 'resolveLearn': {
+        void (async () => {
+          const { action, changeRequest } = request.params;
+
+          if (action === 'discard') {
+            this.learnBroker.clearDraft();
+            await webview.postMessage(createBridgeResponse(request.requestId, { ok: true }));
+            return;
+          }
+
+          const draft = this.learnBroker.currentDraft;
+          const reason = this.learnBroker.currentReason;
+          if (!draft) {
+            await webview.postMessage(createBridgeErrorResponse(request.requestId, 'No learn draft is currently pending.', 'LEARN_NO_DRAFT'));
+            return;
+          }
+
+          if (action === 'save') {
+            const hostResult = await this.runtime.getHost();
+            if (!hostResult.ok) {
+              await webview.postMessage(createBridgeErrorResponse(request.requestId, hostResult.error.message, hostResult.error.code));
+              return;
+            }
+            const host = hostResult.value;
+            const r = await saveLearnedSkill({
+              name: draft.name,
+              description: draft.description,
+              triggers: draft.triggers,
+              body: draft.body,
+              createdBy: host.agentName,
+              createdReason: reason,
+            });
+            if (r.ok) {
+              host.skills.add(r.value);
+              await webview.postMessage({
+                requestId: request.requestId,
+                kind: 'stream-event',
+                event: { type: 'learn_saved', name: r.value.name, description: r.value.description },
+              });
+            } else {
+              await webview.postMessage(createBridgeErrorResponse(request.requestId, r.error.message, r.error.code));
+            }
+            this.learnBroker.clearDraft();
+            return;
+          }
+
+          if (action === 'edit' && changeRequest) {
+            const hostResult = await this.runtime.getHost();
+            if (!hostResult.ok) {
+              await webview.postMessage(createBridgeErrorResponse(request.requestId, hostResult.error.message, hostResult.error.code));
+              return;
+            }
+            const host = hostResult.value;
+            void this.learnBroker.runRevision(
+              host.provider,
+              host.model,
+              draft,
+              changeRequest,
+              reason,
+            );
+            await webview.postMessage(createBridgeResponse(request.requestId, { ok: true }));
+            return;
+          }
+
+          await webview.postMessage(createBridgeResponse(request.requestId, { ok: true }));
+        })();
+        return;
+      }
+      case 'runLearnReflection': {
+        void (async () => {
+          const hostResult = await this.runtime.getHost();
+          if (!hostResult.ok) {
+            await webview.postMessage(createBridgeErrorResponse(request.requestId, hostResult.error.message, hostResult.error.code));
+            return;
+          }
+          const host = hostResult.value;
+          const reason = describeLearnReason(0, 0, 'manual /learn');
+          void this.learnBroker.runReflection(
+            host.provider,
+            host.model,
+            host.history,
+            reason,
+            request.params.force ?? false,
+          );
+          await webview.postMessage(createBridgeResponse(request.requestId, { ok: true }));
+        })();
+        return;
+      }
+      case 'setLearnEnabled': {
+        this.runtime.setLearnEnabled(request.params.enabled);
+        void webview.postMessage(createBridgeResponse(request.requestId, { ok: true }));
+        return;
+      }
     }
   }
 
@@ -875,10 +987,14 @@ class AtlasRuntimeController {
   private lastTodos: readonly TodoItem[] = [];
   private currentAbortController: AbortController | null = null;
 
+  private learnEnabled = true;
+
   public constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel,
     private readonly approvals: InlineApprovalBroker,
+    private readonly clarifyBroker: InlineClarifyBroker,
+    private readonly learnBroker: LearnBroker,
   ) {
     this.activeSessionId = context.globalState.get<string>(ACTIVE_SESSION_KEY) ?? null;
   }
@@ -1362,6 +1478,10 @@ class AtlasRuntimeController {
     return { ok: true, level };
   }
 
+  public setLearnEnabled(enabled: boolean): void {
+    this.learnEnabled = enabled;
+  }
+
   public async runTurn(
     prompt: string,
     attachments: ReadonlyArray<{ type: 'file'; path: string; content: string } | { type: 'image'; path: string; base64: string; mediaType: string }>,
@@ -1395,8 +1515,17 @@ class AtlasRuntimeController {
       }
     }
 
+    let turnRounds = 0;
+    let turnToolErrors = 0;
+
     try {
       for await (const event of hostResult.value.runTurn(content, { signal: abortController.signal })) {
+        if (event.type === 'tool_call_done' && event.outcome.type === 'error') {
+          turnToolErrors += 1;
+        }
+        if (event.type === 'done') {
+          turnRounds = event.rounds;
+        }
         await handlers.onEvent(event);
       }
     } catch (error) {
@@ -1413,10 +1542,21 @@ class AtlasRuntimeController {
       this.currentAbortController = null;
       this.lastTodos = hostResult.value.todos;
       await this.persistHostSession(hostResult.value);
+
+      if (this.learnEnabled && shouldOfferLearn(turnRounds, turnToolErrors, prompt)) {
+        const reason = describeLearnReason(turnRounds, turnToolErrors, prompt);
+        void this.learnBroker.runReflection(
+          hostResult.value.provider,
+          hostResult.value.model,
+          hostResult.value.history,
+          reason,
+          false,
+        );
+      }
     }
   }
 
-  private getHost(): Promise<Result<AtlasSessionHost, AtlasError>> {
+  public getHost(): Promise<Result<AtlasSessionHost, AtlasError>> {
     const toolHost = vscode as unknown as VsCodeToolHost;
     this.hostPromise ??= (async (): Promise<Result<AtlasSessionHost, AtlasError>> => {
       const configResult = await loadVsCodeConfig(this.context);
@@ -1437,7 +1577,7 @@ class AtlasRuntimeController {
         initialTodos: this.lastTodos,
         tools: createVsCodeToolRegistry(toolHost),
         approvalPolicy: createVsCodeApprovalPolicy(toolHost, this.approvals),
-        clarifyAsk: createVsCodeClarifyAsk(toolHost),
+        clarifyAsk: createVsCodeClarifyAsk(this.clarifyBroker),
       });
     })();
     return this.hostPromise;

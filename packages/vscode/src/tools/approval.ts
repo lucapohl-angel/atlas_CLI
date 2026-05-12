@@ -1,5 +1,6 @@
 import type { ApprovalDecision, ApprovalPolicy, ToolContext } from '@atlas/core/tools/types';
 import { formatUnknown, type VsCodeToolHost } from './types.js';
+import { InlineClarifyBroker } from '../clarify-broker.js';
 
 export interface InlineApprovalBrokerLike {
   request(tool: string, input: unknown): Promise<ApprovalDecision | null>;
@@ -29,21 +30,10 @@ export const createVsCodeApprovalPolicy = (
   },
 });
 
-export const createVsCodeClarifyAsk = (host: VsCodeToolHost): NonNullable<ToolContext['clarifyAsk']> =>
+export const createVsCodeClarifyAsk = (
+  broker: InlineClarifyBroker,
+): NonNullable<ToolContext['clarifyAsk']> =>
   async (question, choices, signal) => {
-    if (signal?.aborted) return '';
-    if (choices && choices.length > 0) {
-      const selected = await host.window.showQuickPick(choices, {
-        title: 'Atlas needs clarification',
-        placeHolder: question,
-        ignoreFocusOut: true,
-      });
-      return selected ?? '';
-    }
-
-    return await host.window.showInputBox({
-      title: 'Atlas needs clarification',
-      prompt: question,
-      ignoreFocusOut: true,
-    }) ?? '';
+    if (signal?.aborted) throw new Error('clarify cancelled');
+    return broker.request(question, choices ?? [], true, signal);
   };

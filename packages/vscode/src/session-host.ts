@@ -89,6 +89,14 @@ export class AtlasSessionHost {
     return this.state.todoStore.read();
   }
 
+  public get provider(): Provider {
+    return this.state.provider;
+  }
+
+  public get skills(): SkillRegistry {
+    return this.state.skills;
+  }
+
   public replaceHistory(messages: readonly Message[]): void {
     this.messages = [...messages];
   }

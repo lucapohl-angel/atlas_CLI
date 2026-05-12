@@ -108,3 +108,21 @@ export const renderInteractionInstructions = (): string =>
     '',
     'Ask as many questions as you genuinely need to understand the goal — there is no cap. Prefer one focused question per turn.'
   ].join('\n');
+
+/**
+ * Strip all complete `<atlas:question>...</atlas:question>` blocks from text.
+ * Used to clean assistant messages before storing them in history.
+ */
+export const stripInteractionBlocks = (s: string): string =>
+  s.replace(/<atlas:question>[\s\S]*?<\/atlas:question>/g, '').trim();
+
+/**
+ * Render assistant text for live display while streaming.
+ * Strips complete blocks and truncates at an in-progress opener so raw
+ * protocol syntax never flashes in the transcript.
+ */
+export const renderVisibleAssistant = (buf: string): string => {
+  const stripped = buf.replace(/<atlas:question>[\s\S]*?<\/atlas:question>/g, '');
+  const open = stripped.indexOf('<atlas:question>');
+  return (open >= 0 ? stripped.slice(0, open) : stripped).trimEnd();
+};

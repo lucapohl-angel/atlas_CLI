@@ -37,6 +37,7 @@ import {
   compactIfNeeded,
   consumeDiscoverWarnings,
   beginCodexLogin,
+  contentToString,
   denyAllPolicy,
   estimateCost,
   estimateOnboardCost,
@@ -2658,8 +2659,8 @@ export const OpenTuiApp = (props: OpenTuiAppProps) => {
                   if (isAssistantToolCallMessage(m)) return [];
                   const text =
                     m.role === 'assistant'
-                      ? renderVisibleAssistant(m.content)
-                      : m.content;
+                      ? renderVisibleAssistant(contentToString(m.content))
+                      : contentToString(m.content);
                   if (text.length === 0) return [];
                   return [
                     {
@@ -6542,8 +6543,8 @@ Config file: ~/.atlas/config.yaml
                             : ('system' as const),
                       text:
                         m.role === 'assistant'
-                          ? renderVisibleAssistant(m.content)
-                          : m.content,
+                          ? renderVisibleAssistant(contentToString(m.content))
+                          : contentToString(m.content),
                       key: `r${transcriptKey.current}_${i}`
                     }));
                     setTranscript(items);

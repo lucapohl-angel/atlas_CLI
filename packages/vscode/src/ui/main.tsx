@@ -44,6 +44,55 @@ type ToolOutcome =
   | { readonly type: 'ok'; readonly summary: string }
   | { readonly type: 'error'; readonly error: { readonly message: string; readonly code?: string } };
 
+type ClarifyRequestEvent = {
+  readonly type: 'clarify_request';
+  readonly clarify: {
+    readonly id: string;
+    readonly question: string;
+    readonly choices?: readonly string[];
+    readonly allowFreeform: boolean;
+  };
+};
+
+type ClarifyResolvedEvent = {
+  readonly type: 'clarify_resolved';
+  readonly clarifyId: string;
+  readonly answer: string;
+};
+
+type LearnReflectingEvent = {
+  readonly type: 'learn_reflecting';
+  readonly reason: string;
+};
+
+type LearnReviewEvent = {
+  readonly type: 'learn_review';
+  readonly draft: {
+    readonly name: string;
+    readonly description: string;
+    readonly triggers: readonly string[];
+    readonly body: string;
+  };
+  readonly reason: string;
+};
+
+type LearnNothingEvent = {
+  readonly type: 'learn_nothing';
+  readonly reason: string;
+  readonly force: boolean;
+};
+
+type LearnErrorEvent = {
+  readonly type: 'learn_error';
+  readonly error: string;
+};
+
+type LearnSavedEvent = {
+  readonly type: 'learn_saved';
+  readonly name: string;
+  readonly description: string;
+};
+
 type BridgeStreamEvent =
   | { readonly type: 'delta'; readonly text: string }
   | { readonly type: 'thinking'; readonly text: string }
@@ -53,7 +102,14 @@ type BridgeStreamEvent =
   | { readonly type: 'approval_request'; readonly approval: InlineApprovalRequest }
   | { readonly type: 'approval_resolved'; readonly approvalId: string; readonly action: ApprovalAction }
   | { readonly type: 'done'; readonly finishReason: string | null; readonly usage?: TokenUsage }
-  | { readonly type: 'error'; readonly error: { readonly message: string; readonly code?: string } };
+  | { readonly type: 'error'; readonly error: { readonly message: string; readonly code?: string } }
+  | ClarifyRequestEvent
+  | ClarifyResolvedEvent
+  | LearnReflectingEvent
+  | LearnReviewEvent
+  | LearnNothingEvent
+  | LearnErrorEvent
+  | LearnSavedEvent;
 
 type BridgeMessage =
   | { readonly requestId: string; readonly kind: 'response'; readonly result: unknown }
@@ -368,6 +424,10 @@ type BridgeRequestKind =
   | 'cancelTurn'
   | 'runTurn'
   | 'attachFile'
+  | 'resolveClarify'
+  | 'resolveLearn'
+  | 'runLearnReflection'
+  | 'setLearnEnabled'
   | 'ping';
 
 type ActiveView = 'chat' | 'settings' | 'mcp' | 'sessions' | 'task';
@@ -400,6 +460,7 @@ type ChatMessage = {
   readonly requestId?: string;
   readonly role: 'user' | 'assistant' | 'system' | 'error';
   readonly content: string;
+  readonly rawContent?: string;
   readonly thinking?: string;
   readonly tools?: readonly ChatTool[];
   readonly usage?: TokenUsage;
@@ -482,7 +543,25 @@ function App(): ReactElement {
     return `${seg()}${seg()}-${seg()}-4${seg().slice(0, 3)}-${seg()}-${seg()}${seg()}${seg()}`;
   });
 
+  const [clarifyRequest, setClarifyRequest] = useState<{
+    readonly id: string;
+    readonly question: string;
+    readonly choices?: readonly string[];
+    readonly allowFreeform: boolean;
+  } | null>(null);
+
+  const [learnState, setLearnState] = useState<
+    | { readonly stage: 'reflecting'; readonly reason: string }
+    | { readonly stage: 'review'; readonly draft: { readonly name: string; readonly description: string; readonly triggers: readonly string[]; readonly body: string }; readonly reason: string }
+    | { readonly stage: 'change'; readonly draft: { readonly name: string; readonly description: string; readonly triggers: readonly string[]; readonly body: string }; readonly reason: string }
+    | { readonly stage: 'saving' }
+    | null
+  >(null);
+
+  const [learnEnabled, setLearnEnabled] = useState(true);
+
   const running = runningRequestId !== null;
+  const composerDisabled = running || clarifyRequest !== null;
   const modelLabel = [status.providerName, status.model].filter(Boolean).join(' / ') || 'Local host';
   const showEmptyState = messages.every((message) => message.role === 'system');
   const agentLabel = (status.agentName ? status.agentName.charAt(0).toUpperCase() + status.agentName.slice(1) : 'Atlas');
@@ -706,6 +785,30 @@ function App(): ReactElement {
       if (streamEvent.type === 'error' && message.requestId === runningRequestId) {
         setRunningRequestId(null);
       }
+      if (streamEvent.type === 'clarify_request') {
+        setClarifyRequest(streamEvent.clarify);
+      }
+      if (streamEvent.type === 'clarify_resolved') {
+        setClarifyRequest(null);
+      }
+      if (streamEvent.type === 'learn_reflecting') {
+        setLearnState({ stage: 'reflecting', reason: streamEvent.reason });
+      }
+      if (streamEvent.type === 'learn_review') {
+        setLearnState({ stage: 'review', draft: streamEvent.draft, reason: streamEvent.reason });
+      }
+      if (streamEvent.type === 'learn_nothing') {
+        setActionNotice('Nothing reusable to learn here.');
+        setLearnState(null);
+      }
+      if (streamEvent.type === 'learn_error') {
+        setActionNotice(`Learn error: ${streamEvent.error}`);
+        setLearnState(null);
+      }
+      if (streamEvent.type === 'learn_saved') {
+        setActionNotice(`Saved learned skill: ${streamEvent.name}`);
+        setLearnState(null);
+      }
     };
 
     window.addEventListener('message', listener);
@@ -830,14 +933,39 @@ function App(): ReactElement {
       case 'restart':
       case 'mode':
       case 'thinking':
-      case 'learn':
       case 'next':
       case 'onboard':
       case 'back':
       case 'skip':
       case 'abort':
-        setActionNotice(`/${command} is mapped but not fully ported in the VS Code host yet.`);
+        setActionNotice(`/${command} is mapped but not fully ported in the VS Code: host yet.`);
         return true;
+      case 'learn': {
+        const arg = trimmed.slice(command.length + 1).trim();
+        const sub = arg.toLowerCase().split(/\s+/)[0] ?? '';
+        if (sub === 'on') {
+          setLearnEnabled(true);
+          postRequest('setLearnEnabled', { enabled: true });
+          setActionNotice('Auto-learn is ON.');
+          return true;
+        }
+        if (sub === 'off') {
+          setLearnEnabled(false);
+          postRequest('setLearnEnabled', { enabled: false });
+          setActionNotice('Auto-learn is OFF.');
+          return true;
+        }
+        if (sub === 'status') {
+          setActionNotice(`Auto-learn: ${learnEnabled ? 'ON' : 'OFF'}`);
+          return true;
+        }
+        if (sub === '' || sub === 'force') {
+          postRequest('runLearnReflection', { force: sub === 'force' });
+          return true;
+        }
+        setActionNotice('Usage: /learn [on|off|status|force]');
+        return true;
+      }
       default:
         return false;
     }
@@ -846,7 +974,7 @@ function App(): ReactElement {
   const sendPrompt = useCallback((event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
     const nextPrompt = prompt.trim();
-    if (nextPrompt.length === 0 || running) return;
+    if (nextPrompt.length === 0 || running || clarifyRequest !== null) return;
 
     if (handleLocalSlashCommand(nextPrompt)) {
       setPrompt('');
@@ -1230,9 +1358,38 @@ function App(): ReactElement {
                 <ChatBubble key={message.id} message={message} onOpenFile={openFile} />
               ))
             )}
+            {learnState ? (
+              <LearnCard
+                state={learnState}
+                onSave={() => postRequest('resolveLearn', { action: 'save' })}
+                onEdit={(changeRequest: string) => postRequest('resolveLearn', { action: 'edit', changeRequest })}
+                onDiscard={() => postRequest('resolveLearn', { action: 'discard' })}
+                onBack={() => setLearnState((current) => current?.stage === 'change' ? { stage: 'review', draft: current.draft, reason: current.reason } : current)}
+              />
+            ) : null}
           </section>
           {pendingApprovals.length > 0 ? (
             <ApprovalRail approvals={pendingApprovals} onResolve={resolveApproval} />
+          ) : null}
+
+          {clarifyRequest ? (
+            <ClarifyCard
+              request={clarifyRequest}
+              onChoose={(answer) => {
+                postRequest('resolveClarify', { clarifyId: clarifyRequest.id, answer });
+                setClarifyRequest(null);
+                setPrompt(answer);
+                // Auto-submit as next user turn for protocol questions
+                setTimeout(() => {
+                  const form = document.querySelector('.composer') as HTMLFormElement | null;
+                  if (form) form.requestSubmit();
+                }, 0);
+              }}
+              onDismiss={() => {
+                postRequest('resolveClarify', { clarifyId: clarifyRequest.id, answer: '' });
+                setClarifyRequest(null);
+              }}
+            />
           ) : null}
 
           {mode === 'autopilot' ? (
@@ -1283,7 +1440,7 @@ function App(): ReactElement {
               onPaste={handlePaste}
               rows={2}
               placeholder="Describe what you want to build..."
-              disabled={running}
+              disabled={composerDisabled}
             />
             <div className="composerControls">
               <div ref={selectorRailRef} className="composerControlsLeft">
@@ -1466,6 +1623,184 @@ function ApprovalRail({
           </div>
         </article>
       ))}
+    </section>
+  );
+}
+
+function ClarifyCard({
+  request,
+  onChoose,
+  onDismiss,
+}: {
+  readonly request: {
+    readonly id: string;
+    readonly question: string;
+    readonly choices?: readonly string[];
+    readonly allowFreeform: boolean;
+  };
+  readonly onChoose: (answer: string) => void;
+  readonly onDismiss: () => void;
+}): ReactElement {
+  const [freeform, setFreeform] = useState('');
+  const [showFreeform, setShowFreeform] = useState(false);
+
+  return (
+    <section className="clarifyCard" aria-label="Clarification request">
+      <div className="clarifyHeader">
+        <i className="codicon codicon-question" aria-hidden="true" />
+        <span>{request.question}</span>
+      </div>
+      <div className="clarifyChoices">
+        {request.choices?.map((choice) => (
+          <button
+            key={choice}
+            type="button"
+            className="clarifyChoice"
+            onClick={() => onChoose(choice)}
+          >
+            {choice}
+          </button>
+        ))}
+        {request.allowFreeform && !showFreeform ? (
+          <button
+            type="button"
+            className="clarifyChoice clarifyChoice-freeform"
+            onClick={() => setShowFreeform(true)}
+          >
+            Type your own answer…
+          </button>
+        ) : null}
+        {showFreeform ? (
+          <div className="clarifyFreeform">
+            <input
+              type="text"
+              value={freeform}
+              onChange={(e) => setFreeform(e.target.value)}
+              placeholder="Your answer…"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && freeform.trim().length > 0) {
+                  onChoose(freeform.trim());
+                }
+              }}
+              autoFocus
+            />
+            <button
+              type="button"
+              className="settingsPrimaryButton"
+              disabled={freeform.trim().length === 0}
+              onClick={() => onChoose(freeform.trim())}
+            >
+              Submit
+            </button>
+          </div>
+        ) : null}
+      </div>
+      <button type="button" className="clarifyDismiss" onClick={onDismiss}>
+        Dismiss
+      </button>
+    </section>
+  );
+}
+
+function LearnCard({
+  state,
+  onSave,
+  onEdit,
+  onDiscard,
+  onBack,
+}: {
+  readonly state:
+    | { readonly stage: 'reflecting'; readonly reason: string }
+    | { readonly stage: 'review'; readonly draft: { readonly name: string; readonly description: string; readonly triggers: readonly string[]; readonly body: string }; readonly reason: string }
+    | { readonly stage: 'change'; readonly draft: { readonly name: string; readonly description: string; readonly triggers: readonly string[]; readonly body: string }; readonly reason: string }
+    | { readonly stage: 'saving' };
+  readonly onSave: () => void;
+  readonly onEdit: (changeRequest: string) => void;
+  readonly onDiscard: () => void;
+  readonly onBack: () => void;
+}): ReactElement {
+  const [changeRequest, setChangeRequest] = useState('');
+
+  if (state.stage === 'reflecting') {
+    return (
+      <section className="learnCard learnCard-reflecting" aria-label="Learning reflection">
+        <div className="learnCardHeader">
+          <i className="codicon codicon-sync codicon-spin" aria-hidden="true" />
+          <span>Atlas is drafting a learned skill…</span>
+        </div>
+        <p className="learnCardReason">{state.reason}</p>
+        <button type="button" className="settingsSecondaryButton" onClick={onDiscard}>
+          Cancel
+        </button>
+      </section>
+    );
+  }
+
+  if (state.stage === 'saving') {
+    return (
+      <section className="learnCard learnCard-saving" aria-label="Saving learned skill">
+        <div className="learnCardHeader">
+          <i className="codicon codicon-sync codicon-spin" aria-hidden="true" />
+          <span>Saving learned skill to ~/.atlas/skills/…</span>
+        </div>
+      </section>
+    );
+  }
+
+  if (state.stage === 'change') {
+    return (
+      <section className="learnCard learnCard-change" aria-label="Revise learned skill">
+        <div className="learnCardHeader">
+          <i className="codicon codicon-edit" aria-hidden="true" />
+          <span>Change learned skill · {state.draft.name}</span>
+        </div>
+        <textarea
+          className="learnCardTextarea"
+          rows={3}
+          placeholder="Describe what to change…"
+          value={changeRequest}
+          onChange={(e) => setChangeRequest(e.target.value)}
+        />
+        <div className="learnCardActions">
+          <button type="button" className="settingsSecondaryButton" onClick={onBack}>
+            Back
+          </button>
+          <button
+            type="button"
+            className="settingsPrimaryButton"
+            disabled={changeRequest.trim().length === 0}
+            onClick={() => {
+              onEdit(changeRequest.trim());
+              setChangeRequest('');
+            }}
+          >
+            Submit change
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  // review stage
+  return (
+    <section className="learnCard learnCard-review" aria-label="Review learned skill">
+      <div className="learnCardHeader">
+        <i className="codicon codicon-lightbulb" aria-hidden="true" />
+        <span>Learned skill draft · {state.draft.name}</span>
+      </div>
+      <p className="learnCardDescription">{state.draft.description}</p>
+      <pre className="learnCardBody">{state.draft.body}</pre>
+      <div className="learnCardActions">
+        <button type="button" className="settingsSecondaryButton" onClick={onDiscard}>
+          Discard
+        </button>
+        <button type="button" className="settingsSecondaryButton" onClick={() => onEdit('')}>
+          Request change
+        </button>
+        <button type="button" className="settingsPrimaryButton" onClick={onSave}>
+          Save
+        </button>
+      </div>
     </section>
   );
 }
@@ -3626,6 +3961,15 @@ function RenderableText({
   );
 }
 
+const stripInteractionBlocks = (s: string): string =>
+  s.replace(/<atlas:question>[\s\S]*?<\/atlas:question>/g, '').trim();
+
+const renderVisibleAssistant = (buf: string): string => {
+  const stripped = buf.replace(/<atlas:question>[\s\S]*?<\/atlas:question>/g, '');
+  const open = stripped.indexOf('<atlas:question>');
+  return (open >= 0 ? stripped.slice(0, open) : stripped).trimEnd();
+};
+
 function applyStreamEvent(
   requestId: string,
   event: BridgeStreamEvent,
@@ -3633,10 +3977,14 @@ function applyStreamEvent(
 ): void {
   switch (event.type) {
     case 'delta':
-      updateAssistant(requestId, setMessages, (message) => ({
-        ...message,
-        content: `${message.content}${event.text}`,
-      }));
+      updateAssistant(requestId, setMessages, (message) => {
+        const raw = `${message.rawContent ?? message.content}${event.text}`;
+        return {
+          ...message,
+          rawContent: raw,
+          content: renderVisibleAssistant(raw),
+        };
+      });
       return;
     case 'thinking':
       updateAssistant(requestId, setMessages, (message) => ({
@@ -3668,10 +4016,21 @@ function applyStreamEvent(
       }));
       return;
     case 'turn_end':
-      updateAssistant(requestId, setMessages, (message) => ({ ...message, pending: false }));
+      updateAssistant(requestId, setMessages, (message) => {
+        const raw = message.rawContent ?? message.content;
+        const stripped = stripInteractionBlocks(raw);
+        return { ...message, content: stripped, rawContent: stripped, pending: false };
+      });
       return;
     case 'approval_request':
     case 'approval_resolved':
+    case 'clarify_request':
+    case 'clarify_resolved':
+    case 'learn_reflecting':
+    case 'learn_review':
+    case 'learn_nothing':
+    case 'learn_error':
+    case 'learn_saved':
       return;
     case 'done':
       updateAssistant(requestId, setMessages, (message) => ({ ...message, usage: event.usage, pending: false }));

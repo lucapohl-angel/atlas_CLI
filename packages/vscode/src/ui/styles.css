@@ -208,33 +208,26 @@ button {
 }
 
 .topIconButton {
-  width: 31px;
-  min-width: 31px;
-  height: 30px;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid color-mix(in srgb, var(--atlas-accent) 45%, var(--atlas-line));
-  border-radius: var(--atlas-radius-md);
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 30%, var(--atlas-line));
+  border-radius: 3px;
   background: color-mix(in srgb, var(--atlas-bg-panel) 86%, var(--atlas-accent) 8%);
   color: color-mix(in srgb, var(--atlas-accent) 92%, white 8%);
   cursor: pointer;
   font-size: 13px;
   line-height: 1;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--atlas-accent) 10%, transparent);
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
-}
-
-.topIconButton .codicon {
-  font-size: 14px;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
 
 .topIconButton:hover {
-  border-color: color-mix(in srgb, var(--atlas-accent) 78%, white 4%);
-  background: color-mix(in srgb, var(--atlas-bg-panel) 78%, var(--atlas-accent) 16%);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-accent) 16%, transparent),
-    0 0 16px color-mix(in srgb, var(--atlas-accent) 18%, transparent);
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--atlas-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--atlas-accent) 16%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--atlas-accent) 16%, transparent);
 }
 
 .topIconButton.isActive {
@@ -2663,7 +2656,8 @@ button.toggleToken {
   grid-area: transcript;
   min-height: 0;
   overflow: auto;
-  padding: 8px 0 6px;
+  padding: 20px 0 20px;
+  margin: 0 9px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -2851,7 +2845,7 @@ button.toggleToken {
   min-width: 0;
   border: 1px solid color-mix(in srgb, var(--atlas-accent) 55%, white 5%);
   border-radius: var(--atlas-radius-lg);
-  padding: 10px 0;
+  padding: 10px 12px;
   background: color-mix(in srgb, var(--atlas-bg-elev) 86%, transparent);
   box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-accent) 55%, transparent),
     0 0 6px color-mix(in srgb, var(--atlas-accent) 30%, transparent),
@@ -2889,6 +2883,12 @@ button.toggleToken {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.messageSender {
+  font-weight: 800;
+  color: color-mix(in srgb, var(--atlas-accent) 75%, white 25%);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--atlas-accent) 45%, transparent);
 }
 
 .messageBody,
@@ -3019,6 +3019,13 @@ button.toggleToken {
   overflow: visible;
   box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-accent) 55%, transparent),
     0 0 6px color-mix(in srgb, var(--atlas-accent) 30%, transparent);
+}
+
+.composer.isDraggingOver {
+  border-color: var(--atlas-warning);
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-warning) 55%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-warning) 30%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--atlas-warning) 20%, transparent);
 }
 
 .slashAutocomplete {
@@ -3425,6 +3432,567 @@ button.toggleToken {
 .thinkingDropdownOption.isActive {
   background: color-mix(in srgb, var(--atlas-accent) 18%, transparent);
   color: var(--atlas-accent);
+}
+
+.composerModeWrap {
+  position: relative;
+}
+
+.composerModeIcon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--atlas-dim);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.composerModeIcon:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 80%, white 10%);
+  background: color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+  color: var(--atlas-accent);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--atlas-accent) 70%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-accent) 35%, transparent);
+}
+
+.composerModeIcon.plan {
+  color: color-mix(in srgb, var(--atlas-info) 80%, white 10%);
+}
+
+.composerModeIcon.build {
+  color: color-mix(in srgb, var(--atlas-accent) 80%, white 10%);
+}
+
+.composerModeIcon.autopilot {
+  color: var(--atlas-warning);
+}
+
+.modeDropdown {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  min-width: 200px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 60%, white 6%);
+  border-radius: 6px;
+  background: var(--atlas-bg-panel);
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-accent) 60%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-accent) 35%, transparent),
+    0 0 14px color-mix(in srgb, var(--atlas-accent) 16%, transparent),
+    0 8px 24px color-mix(in srgb, black 40%, transparent),
+    inset 0 0 6px color-mix(in srgb, var(--atlas-accent) 8%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.modeDropdownOption {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--atlas-fg);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.modeDropdownOption:hover {
+  background: color-mix(in srgb, var(--atlas-accent) 12%, transparent);
+}
+
+.modeDropdownOption.isActive {
+  background: color-mix(in srgb, var(--atlas-accent) 18%, transparent);
+  color: var(--atlas-accent);
+}
+
+.modeDropdownOption i {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+}
+
+.modeDropdownOptionInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.modeDropdownOptionInfo strong {
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.modeDropdownOptionInfo span {
+  font-size: 10px;
+  color: var(--atlas-dim);
+}
+
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 12, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.modalPanel {
+  width: min(420px, 90vw);
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 50%, white 8%);
+  border-radius: 8px;
+  background: var(--atlas-bg-panel);
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-accent) 60%, transparent),
+    0 0 8px color-mix(in srgb, var(--atlas-accent) 30%, transparent),
+    0 12px 32px color-mix(in srgb, black 45%, transparent),
+    inset 0 0 8px color-mix(in srgb, var(--atlas-accent) 6%, transparent);
+}
+
+.modalPanel-warn {
+  border-color: color-mix(in srgb, var(--atlas-warning) 50%, white 8%);
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-warning) 60%, transparent),
+    0 0 8px color-mix(in srgb, var(--atlas-warning) 30%, transparent),
+    0 12px 32px color-mix(in srgb, black 45%, transparent),
+    inset 0 0 8px color-mix(in srgb, var(--atlas-warning) 6%, transparent);
+}
+
+.modalPanel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.modalPanel header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--atlas-fg);
+}
+
+.modalPanel header button {
+  padding: 2px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--atlas-dim);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.modalPanel header button:hover {
+  color: var(--atlas-fg);
+  background: color-mix(in srgb, var(--atlas-fg) 10%, transparent);
+}
+
+.modalBody {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--atlas-fg-dim);
+}
+
+.modalBody strong {
+  color: var(--atlas-fg);
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.topIconButton.hasBadge {
+  position: relative;
+}
+
+.topIconBadge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--atlas-warning);
+  box-shadow: 0 0 4px var(--atlas-warning);
+}
+
+.sessionPanelField .warnLabel {
+  color: var(--atlas-warning);
+}
+
+.sessionPanelField .warnValue {
+  color: var(--atlas-warning);
+}
+
+.sessionPanelField .accentValue {
+  color: var(--atlas-accent);
+}
+
+.sessionNameRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sessionRenameButton {
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--atlas-dim);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.sessionRenameButton:hover {
+  color: var(--atlas-accent);
+  background: color-mix(in srgb, var(--atlas-accent) 10%, transparent);
+}
+
+.sessionNameEdit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sessionNameEdit input {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 50%, transparent);
+  border-radius: 4px;
+  background: var(--atlas-bg);
+  color: var(--atlas-fg);
+  font-size: 11px;
+  font-family: var(--atlas-mono);
+}
+
+.sessionNameEdit input:focus {
+  outline: none;
+  box-shadow: 0 0 4px color-mix(in srgb, var(--atlas-accent) 50%, transparent);
+}
+
+.autopilotBanner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--atlas-warning) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--atlas-warning) 25%, transparent);
+  color: var(--atlas-warning);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.autopilotBanner i {
+  font-size: 12px;
+}
+
+.conflictFileList {
+  margin: 0 0 14px;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--atlas-fg-dim);
+  font-family: var(--atlas-mono);
+}
+
+.conflictFileList li {
+  margin-bottom: 2px;
+}
+
+.onboardDocList {
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.onboardDocRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--atlas-fg) 3%, transparent);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.onboardDocRow:hover {
+  background: color-mix(in srgb, var(--atlas-fg) 5%, transparent);
+}
+
+.onboardDocRow input {
+  margin: 0;
+}
+
+.onboardDocName {
+  font-family: var(--atlas-mono);
+  flex: 1;
+  color: var(--atlas-fg);
+}
+
+.onboardDocMeta {
+  color: var(--atlas-dim);
+  font-size: 10px;
+}
+
+.onboardEstimateGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.onboardEstimateGrid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--atlas-fg) 3%, transparent);
+}
+
+.onboardEstimateGrid small {
+  color: var(--atlas-dim);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.onboardEstimateGrid strong {
+  color: var(--atlas-fg);
+  font-size: 12px;
+}
+
+.costBand-low { color: var(--atlas-success); }
+.costBand-medium { color: var(--atlas-warning); }
+.costBand-high { color: #ff5555; }
+
+.onboardDetected {
+  margin: 0;
+  font-size: 11px;
+  color: var(--atlas-dim);
+}
+
+.markdownParagraph {
+  margin: 0 0 8px;
+  line-height: 1.6;
+}
+
+.markdownParagraph:last-child {
+  margin-bottom: 0;
+}
+
+.markdownHeading {
+  margin: 12px 0 6px;
+  font-weight: 600;
+  color: var(--atlas-accent);
+  line-height: 1.3;
+}
+
+.markdownHeading:first-child {
+  margin-top: 0;
+}
+
+.markdownH1 { font-size: 15px; }
+.markdownH2 { font-size: 14px; }
+.markdownH3 { font-size: 13px; }
+.markdownH4 { font-size: 12px; }
+.markdownH5 { font-size: 11px; }
+.markdownH6 { font-size: 11px; }
+
+.markdownCodeBlock {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--atlas-fg) 5%, var(--atlas-bg-panel));
+  border: 1px solid color-mix(in srgb, var(--atlas-fg) 8%, transparent);
+  overflow-x: auto;
+  font-family: var(--atlas-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.markdownCodeBlock code {
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  color: var(--atlas-fg);
+  white-space: pre;
+}
+
+.markdownCodeLang {
+  font-size: 10px;
+  color: var(--atlas-dim);
+  font-style: italic;
+  margin-bottom: 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--atlas-fg) 8%, transparent);
+  padding-bottom: 4px;
+}
+
+.markdownInlineCode {
+  font-family: var(--atlas-mono);
+  font-size: 0.92em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--atlas-fg) 6%, var(--atlas-bg-panel));
+  color: var(--atlas-warning);
+}
+
+.markdownBody {
+  line-height: 1.6;
+}
+
+.markdownBody p {
+  margin: 0 0 8px;
+}
+
+.markdownBody p:last-child {
+  margin-bottom: 0;
+}
+
+.markdownBody h1,
+.markdownBody h2,
+.markdownBody h3,
+.markdownBody h4,
+.markdownBody h5,
+.markdownBody h6 {
+  margin: 12px 0 6px;
+  font-weight: 600;
+  color: var(--atlas-accent);
+  line-height: 1.3;
+}
+
+.markdownBody h1:first-child,
+.markdownBody h2:first-child,
+.markdownBody h3:first-child,
+.markdownBody h4:first-child,
+.markdownBody h5:first-child,
+.markdownBody h6:first-child {
+  margin-top: 0;
+}
+
+.markdownBody h1 { font-size: 15px; }
+.markdownBody h2 { font-size: 14px; }
+.markdownBody h3 { font-size: 13px; }
+.markdownBody h4 { font-size: 12px; }
+.markdownBody h5 { font-size: 11px; }
+.markdownBody h6 { font-size: 11px; }
+
+.markdownBody pre {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--atlas-fg) 5%, var(--atlas-bg-panel));
+  border: 1px solid color-mix(in srgb, var(--atlas-fg) 8%, transparent);
+  overflow-x: auto;
+  font-family: var(--atlas-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.markdownBody pre code {
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  color: var(--atlas-fg);
+  white-space: pre;
+}
+
+.markdownBody code {
+  font-family: var(--atlas-mono);
+  font-size: 0.92em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--atlas-fg) 6%, var(--atlas-bg-panel));
+  color: var(--atlas-warning);
+}
+
+.markdownBody table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12px;
+}
+
+.markdownBody th,
+.markdownBody td {
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--atlas-line) 80%, transparent);
+  text-align: left;
+}
+
+.markdownBody th {
+  background: color-mix(in srgb, var(--atlas-accent) 10%, var(--atlas-bg-panel));
+  font-weight: 600;
+  color: var(--atlas-accent);
+}
+
+.markdownBody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--atlas-fg) 3%, transparent);
+}
+
+.markdownBody ul,
+.markdownBody ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.markdownBody li {
+  margin: 3px 0;
+}
+
+.markdownBody blockquote {
+  margin: 8px 0;
+  padding: 6px 12px;
+  border-left: 3px solid var(--atlas-accent);
+  background: color-mix(in srgb, var(--atlas-accent) 6%, transparent);
+  color: var(--atlas-dim);
+  font-style: italic;
+}
+
+.markdownBody a {
+  color: var(--atlas-accent);
+  text-decoration: none;
+}
+
+.markdownBody a:hover {
+  text-decoration: underline;
+}
+
+.markdownBody img {
+  max-width: 100%;
+  border-radius: 5px;
+  margin: 8px 0;
+}
+
+.markdownBody hr {
+  border: 0;
+  border-top: 1px solid var(--atlas-line);
+  margin: 12px 0;
 }
 
 .agentOverlay {
@@ -4051,4 +4619,680 @@ button.toggleToken {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+/* ── Timeline ── */
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+  padding: 0 16px;
+}
+
+.timelineLine {
+  position: absolute;
+  left: 20px; /* centered on 10px dots at 16px padding + 4px half-dot-width offset */
+  width: 2px;
+  background: color-mix(in srgb, var(--atlas-line) 80%, transparent);
+  pointer-events: none;
+}
+
+.timelineItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  position: relative;
+}
+
+.timelineItem > .statusDot {
+  flex: 0 0 auto;
+  margin-top: 8px;
+}
+
+.timelineItemBody {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 30%, var(--atlas-line));
+  border-radius: var(--atlas-radius-lg);
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--atlas-bg-elev) 86%, transparent);
+  box-shadow: 0 0 2px color-mix(in srgb, var(--atlas-accent) 20%, transparent),
+    0 0 6px color-mix(in srgb, var(--atlas-accent) 10%, transparent);
+}
+
+/* ── User message (right-aligned bubble, not part of timeline) ── */
+
+.timelineItem-user {
+  justify-content: flex-end;
+}
+
+.timelineItem-user > .statusDot {
+  display: none;
+}
+
+.timelineItem-user .timelineItemBody {
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 20%, var(--atlas-line));
+  background: color-mix(in srgb, var(--atlas-accent) 12%, var(--atlas-bg-elev));
+  border-radius: 16px 16px 4px 16px;
+  padding: 10px 14px;
+  max-width: 80%;
+}
+
+.timelineItem-user .messageHeader {
+  display: none;
+}
+
+.timelineItem-user .messageBody {
+  color: var(--atlas-fg);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── Assistant message (plain text, no box, not part of timeline) ── */
+
+.timelineItem-assistant {
+  padding: 10px 0 10px 26px; /* align with timeline card content + breathing room */
+}
+
+.timelineItem-assistant > .statusDot {
+  display: none;
+}
+
+.assistantMessageBody {
+  color: var(--atlas-fg);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.stoppedIndicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #d4a017;
+  font-size: 13px;
+  font-style: italic;
+}
+
+.assistantTokenCount {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--atlas-faint);
+  font-family: var(--atlas-mono);
+}
+
+.timelineItem-thinking .stepCard,
+.timelineItem-tool .stepCard,
+.timelineItem-subagent .stepCard {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+
+
+/* ── Status Dots ── */
+
+.statusDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.statusDot-running {
+  background: var(--atlas-warning);
+  box-shadow: 0 0 8px var(--atlas-warning), 0 0 16px color-mix(in srgb, var(--atlas-warning) 40%, transparent);
+  animation: pulse 1.5s infinite ease-in-out;
+}
+
+.statusDot-ok {
+  background: var(--atlas-success);
+  box-shadow: 0 0 8px var(--atlas-success), 0 0 16px color-mix(in srgb, var(--atlas-success) 40%, transparent);
+}
+
+.statusDot-error {
+  background: var(--atlas-error);
+  box-shadow: 0 0 8px var(--atlas-error), 0 0 16px color-mix(in srgb, var(--atlas-error) 40%, transparent);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ── Step Cards ── */
+
+.stepCard {
+  border: 1px solid color-mix(in srgb, var(--atlas-accent) 25%, var(--atlas-line));
+  border-radius: var(--atlas-radius-lg);
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--atlas-bg-elev) 90%, transparent);
+  cursor: pointer;
+}
+
+.stepCard-running {
+  border-color: color-mix(in srgb, var(--atlas-warning) 50%, var(--atlas-line));
+  background: color-mix(in srgb, var(--atlas-warning) 5%, var(--atlas-bg-elev));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--atlas-warning) 15%, transparent),
+    0 0 8px color-mix(in srgb, var(--atlas-warning) 10%, transparent);
+}
+
+.stepCard-subagentOrigin {
+  /* Subagent origin is indicated by the source tag only; border stays uniform */
+}
+
+.stepCardSource {
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--atlas-accent) 12%, var(--atlas-bg-panel));
+  color: var(--atlas-accent);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-left: auto;
+}
+
+.stepCard > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--atlas-text);
+  list-style: none;
+}
+
+.stepCard > summary::-webkit-details-marker {
+  display: none;
+}
+
+.stepCard > summary::after {
+  content: '';
+  margin-left: auto;
+  width: 16px;
+  height: 16px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath fill='%238b96a8' d='M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.618-.618 4.358 4.357z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  transition: transform 150ms ease;
+}
+
+.stepCard[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.stepCardBody {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--atlas-line) 60%, transparent);
+  font-size: 12px;
+  color: var(--atlas-dim);
+  line-height: 1.5;
+}
+
+.stepCardSubtitle {
+  color: var(--atlas-faint);
+  font-weight: 400;
+  font-size: 11px;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stepCardTag {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--atlas-accent) 15%, var(--atlas-bg-panel));
+  color: var(--atlas-accent);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.stepCardCategory {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--atlas-faint) 12%, var(--atlas-bg-panel));
+  color: var(--atlas-faint);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.stepCountBadge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--atlas-accent) 12%, var(--atlas-bg-panel));
+  color: var(--atlas-accent);
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: auto;
+}
+
+.stepCard-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 11px;
+}
+
+/* ── Tool IN/OUT ── */
+
+.toolInOut {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toolInOutSection {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.toolInOutSection strong {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--atlas-faint);
+}
+
+.toolInOutCode {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--atlas-fg) 4%, var(--atlas-bg-panel));
+  border: 1px solid color-mix(in srgb, var(--atlas-line) 80%, transparent);
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--atlas-dim);
+  max-height: 200px;
+  overflow: auto;
+}
+
+/* ── Message Attachments ── */
+
+.messageAttachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.messageAttachmentImage {
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 10px;
+  overflow: hidden;
+  width: 160px;
+  height: 160px;
+}
+
+.messageAttachmentImage img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 8px;
+  transition: opacity 150ms ease;
+}
+
+.messageAttachmentImage:hover img {
+  opacity: 0.85;
+}
+
+.messageAttachmentFile {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--atlas-bg-panel) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--atlas-line) 60%, transparent);
+  font-size: 12px;
+  color: var(--atlas-dim);
+}
+
+/* ── Image Preview Modal ── */
+
+.imagePreviewOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--atlas-bg) 92%, transparent);
+  backdrop-filter: blur(12px);
+  cursor: zoom-out;
+}
+
+.imagePreviewOverlay img {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px color-mix(in srgb, var(--atlas-bg) 80%, transparent);
+  cursor: default;
+}
+
+.imagePreviewClose {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--atlas-bg-elev) 80%, transparent);
+  color: var(--atlas-dim);
+  font-size: 16px;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.imagePreviewClose:hover {
+  background: color-mix(in srgb, var(--atlas-accent) 20%, var(--atlas-bg-elev));
+  color: var(--atlas-accent);
+}
+
+/* ── Subagent ── */
+
+.subagentGoal {
+  margin: 0 0 8px;
+  color: var(--atlas-text);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.subagentChildToggle {
+  margin: 8px 0;
+}
+
+.subagentChildToggleButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--atlas-line) 60%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--atlas-bg-panel) 40%, transparent);
+  color: var(--atlas-dim);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.subagentChildToggleButton:hover {
+  background: color-mix(in srgb, var(--atlas-accent) 8%, var(--atlas-bg-panel));
+  border-color: color-mix(in srgb, var(--atlas-accent) 30%, var(--atlas-line));
+  color: var(--atlas-accent);
+}
+
+/* ── Processing Indicator ── */
+
+.processingIndicator {
+  grid-area: statusbar;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px;
+  color: var(--atlas-warning);
+  font-size: 12px;
+}
+
+/* ── Code block copy button ── */
+
+.codeBlockCopy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--atlas-line) 80%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--atlas-bg-elev) 80%, transparent);
+  color: var(--atlas-dim);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+pre:hover .codeBlockCopy,
+.codeBlockCopy:hover {
+  opacity: 1;
+}
+
+.codeBlockCopy:hover {
+  border-color: color-mix(in srgb, var(--atlas-accent) 50%, var(--atlas-line));
+  color: var(--atlas-accent);
+}
+
+/* ── Diff viewer ── */
+
+.diffBlock {
+  margin: 6px 0;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--atlas-line) 80%, transparent);
+  font-family: var(--atlas-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.diffHeader {
+  padding: 4px 8px;
+  background: color-mix(in srgb, var(--atlas-line) 60%, transparent);
+  color: var(--atlas-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+.diffLine {
+  padding: 2px 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diffLine-removed {
+  background: color-mix(in srgb, #ff4444 12%, transparent);
+  color: #ff9999;
+}
+
+.diffLine-removed::before {
+  content: '- ';
+  color: #ff5555;
+  font-weight: 700;
+}
+
+.diffLine-added {
+  background: color-mix(in srgb, #44ff44 12%, transparent);
+  color: #99ff99;
+}
+
+.diffLine-added::before {
+  content: '+ ';
+  color: #55ff55;
+  font-weight: 700;
+}
+
+/* ── File content viewer ── */
+
+.fileContentBlock {
+  margin: 6px 0;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--atlas-line) 80%, transparent);
+}
+
+.fileContentHeader {
+  padding: 4px 8px;
+  background: color-mix(in srgb, var(--atlas-accent) 15%, var(--atlas-bg-panel));
+  color: var(--atlas-accent);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+.fileContentCode {
+  margin: 0;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--atlas-fg) 4%, var(--atlas-bg-panel));
+  font-family: var(--atlas-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--atlas-dim);
+  max-height: 300px;
+  overflow: auto;
+}
+
+.toolInOutDiff {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ── Terminal blocks ── */
+
+.terminalBlock {
+  margin: 6px 0;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--atlas-line) 80%, transparent);
+  background: color-mix(in srgb, var(--atlas-fg) 4%, var(--atlas-bg-panel));
+}
+
+.terminalPrompt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-family: var(--atlas-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.terminalDollar {
+  color: var(--atlas-success);
+  font-weight: 700;
+  user-select: none;
+}
+
+.terminalCommand {
+  color: var(--atlas-fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.terminalOutput {
+  margin: 0;
+  padding: 6px 10px;
+  background: transparent;
+  border-top: 1px solid color-mix(in srgb, var(--atlas-line) 60%, transparent);
+  font-family: var(--atlas-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--atlas-dim);
+  max-height: 300px;
+  overflow: auto;
+}
+
+/* ── Todo card ── */
+
+.todoCard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
+}
+
+.todoItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--atlas-text);
+  border-left: 2px solid transparent;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.todoItem-in_progress {
+  border-left-color: var(--atlas-warning);
+  background: color-mix(in srgb, var(--atlas-warning) 6%, transparent);
+}
+
+.todoItem-completed .todoText {
+  text-decoration: line-through;
+  color: var(--atlas-faint);
+}
+
+.todoItem-cancelled .todoText {
+  text-decoration: line-through;
+  color: var(--atlas-error);
+  opacity: 0.7;
+}
+
+.todoCheckbox {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--atlas-success);
+}
+
+.todoCheckboxEmpty {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--atlas-line);
+  border-radius: 2px;
+}
+
+.todoItem-in_progress .todoCheckbox {
+  color: var(--atlas-warning);
+}
+
+.todoItem-in_progress .todoCheckboxEmpty {
+  border-color: var(--atlas-warning);
+}
+
+@keyframes todoSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.todoSpinner {
+  animation: todoSpin 1.2s linear infinite;
+}
+
+.todoText {
+  line-height: 1.4;
 }

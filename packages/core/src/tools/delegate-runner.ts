@@ -59,7 +59,7 @@ export interface CreateDelegateRunnerOptions {
   readonly hooks?: HookRegistry;
   readonly maxRounds?: number;
   /** cwd / approval-baseline for the child. */
-  readonly baseToolContext: Pick<ToolContext, 'cwd'>;
+  readonly baseToolContext: Pick<ToolContext, 'cwd' | 'delegateEvent'>;
   /** Current depth of *this* runner. The child sees `currentDepth + 1`. */
   readonly currentDepth?: number;
   readonly maxDepth?: number;
@@ -106,7 +106,8 @@ export const createDelegateRunner = (
       approve: req.approve ?? denyAskApproval,
       ...(req.signal ? { signal: req.signal } : {}),
       callingAgent: { name: agent.name },
-      delegateDepth: (opts.currentDepth ?? 0) + 1
+      delegateDepth: (opts.currentDepth ?? 0) + 1,
+      ...(opts.baseToolContext.delegateEvent ? { delegateEvent: opts.baseToolContext.delegateEvent } : {})
       // No delegateRun / clarifyAsk — children can't fan out further
       // (delegate is also stripped from their registry as a belt-and-braces).
     };
@@ -114,6 +115,14 @@ export const createDelegateRunner = (
     let assistantText = '';
     let rounds = 0;
     let errorMsg: string | undefined;
+    const subagentId = `subagent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+    opts.baseToolContext.delegateEvent?.({
+      type: 'subagent_start',
+      id: subagentId,
+      agent: agent.name,
+      goal: req.goal
+    });
 
     try {
       const events = runAgentLoop({
@@ -140,12 +149,18 @@ export const createDelegateRunner = (
           const c = ev.assistantMessage.content;
           if (typeof c === 'string') assistantText = c;
         }
+        childCtx.delegateEvent?.(ev);
       }
     } catch (e) {
       errorMsg = (e as Error).message;
     }
 
     if (errorMsg) {
+      opts.baseToolContext.delegateEvent?.({
+        type: 'subagent_done',
+        id: subagentId,
+        summary: `(failed) ${errorMsg}`
+      });
       return {
         ok: false,
         summary: `(child failed) ${errorMsg}`,
@@ -155,9 +170,15 @@ export const createDelegateRunner = (
       };
     }
     log.debug({ agent: agent.name, rounds, chars: assistantText.length }, 'child completed');
+    const summary = truncate(assistantText.trim() || '(no output)');
+    opts.baseToolContext.delegateEvent?.({
+      type: 'subagent_done',
+      id: subagentId,
+      summary
+    });
     return {
       ok: true,
-      summary: truncate(assistantText.trim() || '(no output)'),
+      summary,
       rounds,
       agent: agent.name
     };

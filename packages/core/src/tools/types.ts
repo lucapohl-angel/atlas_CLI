@@ -95,6 +95,12 @@ export interface ToolContext {
     readonly promptOnConflict?: boolean;
   };
   /**
+   * Optional callback for streaming child-agent events upward.
+   * The `delegate` runner invokes this for every event emitted by a
+   * child loop so the host can render subagent progress in real time.
+   */
+  readonly delegateEvent?: (ev: import('../loop/agent-loop.js').LoopEvent) => void;
+  /**
    * Host-supplied interactive prompt invoked by `ship_apply` when an
    * auto-merge hits a conflict and no preset strategy is configured.
    * The TUI implementation pops a picker overlay; the user chooses one

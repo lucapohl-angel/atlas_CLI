@@ -58,6 +58,7 @@ export interface AgentLoopOptions {
 export type LoopEvent =
   | { readonly type: 'delta'; readonly text: string }
   | { readonly type: 'thinking'; readonly text: string }
+  | { readonly type: 'tool_call_delta'; readonly index: number; readonly id?: string; readonly name?: string; readonly argumentsDelta?: string }
   | { readonly type: 'tool_call_start'; readonly call: ToolCall }
   | {
       readonly type: 'tool_call_done';
@@ -74,7 +75,12 @@ export type LoopEvent =
       readonly rounds: number;
       readonly messages: readonly Message[];
     }
-  | { readonly type: 'error'; readonly error: AtlasError };
+  | { readonly type: 'error'; readonly error: AtlasError }
+  | { readonly type: 'subagent_start'; readonly id: string; readonly agent: string; readonly goal: string }
+  | { readonly type: 'subagent_delta'; readonly id: string; readonly text: string }
+  | { readonly type: 'subagent_done'; readonly id: string; readonly summary: string }
+  | { readonly type: 'hook_triggered'; readonly hook: string; readonly target: string }
+  | { readonly type: 'hook_resolved'; readonly hook: string; readonly action: 'allow' | 'block' | 'modify' };
 
 const DEFAULT_MAX_ROUNDS = 24;
 
@@ -152,8 +158,7 @@ export const runAgentLoop = async function* (
           yield { type: 'thinking', text: ev.text };
           break;
         case 'tool_call_delta':
-          // Surface partial tool-call assembly to the UI via no-op for now.
-          // (Full call is processed on the assembled `tool_call` event.)
+          yield { type: 'tool_call_delta', index: ev.index, id: ev.id, name: ev.name, argumentsDelta: ev.argumentsDelta };
           break;
         case 'tool_call':
           turnToolCalls.push(ev.call);

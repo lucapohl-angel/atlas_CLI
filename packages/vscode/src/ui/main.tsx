@@ -1,7 +1,18 @@
 import type { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactElement, ReactNode } from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { marked } from 'marked';
+import hljs from 'highlight.js/lib/core';
+import typescript from 'highlight.js/lib/languages/typescript';
+import javascript from 'highlight.js/lib/languages/javascript';
+import json from 'highlight.js/lib/languages/json';
+import bash from 'highlight.js/lib/languages/bash';
+import css from 'highlight.js/lib/languages/css';
+import xml from 'highlight.js/lib/languages/xml';
+import yaml from 'highlight.js/lib/languages/yaml';
+import markdown from 'highlight.js/lib/languages/markdown';
 import '@vscode/codicons/dist/codicon.css';
+import 'highlight.js/styles/github-dark.css';
 import atlasLogoUrl from './atlas-logo.png';
 import atlasMarkUrl from './atlas-mark.png';
 import octopusIconUrl from './octopus-icon.svg';
@@ -41,7 +52,7 @@ type OpenAIAuthMode = 'auto' | 'apiKey' | 'oauth';
 type AuthProviderId = 'openrouter' | 'anthropic' | 'openai' | 'opencode-zen' | 'opencode-go' | 'local' | 'github';
 
 type ToolOutcome =
-  | { readonly type: 'ok'; readonly summary: string }
+  | { readonly type: 'ok'; readonly summary: string; readonly data?: unknown }
   | { readonly type: 'error'; readonly error: { readonly message: string; readonly code?: string } };
 
 type ClarifyRequestEvent = {
@@ -109,7 +120,22 @@ type BridgeStreamEvent =
   | LearnReviewEvent
   | LearnNothingEvent
   | LearnErrorEvent
-  | LearnSavedEvent;
+  | LearnSavedEvent
+  | { readonly type: 'ship_conflict'; readonly conflict: { readonly id: string; readonly base: string; readonly branch: string; readonly conflictFiles: readonly string[] } }
+  | { readonly type: 'ship_conflict_resolved'; readonly conflictId: string; readonly strategy: 'abort' | 'ours' | 'theirs' | 'ai' }
+  | { readonly type: 'mode_changed'; readonly mode: 'plan' | 'build' | 'autopilot' }
+  | { readonly type: 'subagent_start'; readonly id: string; readonly agent: string; readonly goal: string }
+  | { readonly type: 'subagent_delta'; readonly id: string; readonly text: string }
+  | { readonly type: 'subagent_done'; readonly id: string; readonly summary: string }
+  | { readonly type: 'hook_triggered'; readonly hook: string; readonly target: string }
+  | { readonly type: 'hook_resolved'; readonly hook: string; readonly action: 'allow' | 'block' | 'modify' };
+
+type OnboardWizardState =
+  | { readonly stage: 'scanning' }
+  | { readonly stage: 'select-docs'; readonly docs: readonly { readonly path: string; readonly relPath: string; readonly bytes: number; readonly kind: string }[]; readonly selected: Set<string> }
+  | { readonly stage: 'estimate'; readonly estimate: { readonly fileCount: number; readonly totalBytes: number; readonly estimatedInputTokens: number; readonly estimatedOutputTokensMin: number; readonly estimatedOutputTokensMax: number; readonly detected: { readonly languages: readonly string[]; readonly manifests: readonly string[]; readonly frameworks: readonly string[] }; readonly costBand: string } }
+  | { readonly stage: 'running' }
+  | { readonly stage: 'done'; readonly path: string; readonly filesScanned: number };
 
 type BridgeMessage =
   | { readonly requestId: string; readonly kind: 'response'; readonly result: unknown }
@@ -124,6 +150,8 @@ type AtlasStatus = {
   readonly model?: string;
   readonly mode?: 'plan' | 'build' | 'autopilot';
   readonly thinking?: ThinkingLevel;
+  readonly anthropicOAuthExpired?: boolean;
+  readonly updateAvailable?: string | null;
   readonly error?: { readonly message: string; readonly code?: string };
 };
 
@@ -428,6 +456,11 @@ type BridgeRequestKind =
   | 'resolveLearn'
   | 'runLearnReflection'
   | 'setLearnEnabled'
+  | 'advanceWorkflow'
+  | 'resolveShipConflict'
+  | 'findOnboardingDocs'
+  | 'estimateOnboardCost'
+  | 'writeRepoMap'
   | 'ping';
 
 type ActiveView = 'chat' | 'settings' | 'mcp' | 'sessions' | 'task';
@@ -439,7 +472,7 @@ type TopAction = {
   readonly icon: string;
 };
 
-type SelectorName = 'model' | 'agent' | 'thinking' | 'attach';
+type SelectorName = 'model' | 'agent' | 'thinking' | 'attach' | 'mode';
 
 type QuickOption = {
   readonly value: string;
@@ -467,14 +500,44 @@ type ChatMessage = {
   readonly pending?: boolean;
 };
 
+type StepStatus = 'running' | 'ok' | 'error';
+
+type AttachmentItem =
+  | { readonly type: 'file'; readonly path: string; readonly name: string; readonly content: string }
+  | { readonly type: 'image'; readonly path: string; readonly name: string; readonly base64: string; readonly mediaType: string };
+
+type TimelineItem =
+  | { readonly id: string; readonly type: 'user'; readonly content: string; readonly attachments?: readonly AttachmentItem[] }
+  | { readonly id: string; readonly type: 'assistant'; readonly content: string; readonly rawContent: string; readonly pending: boolean; readonly usage?: TokenUsage; readonly stopped?: boolean }
+  | { readonly id: string; readonly type: 'thinking'; readonly status: StepStatus; readonly content: string }
+  | { readonly id: string; readonly type: 'tool'; readonly status: StepStatus; readonly name: string; readonly arguments: string; readonly summary?: string; readonly output?: string; readonly data?: unknown; readonly sourceAgent?: string }
+  | { readonly id: string; readonly type: 'subagent'; readonly status: StepStatus; readonly agent: string; readonly goal: string; readonly summary?: string; readonly childSteps?: readonly TimelineItem[] }
+  | { readonly id: string; readonly type: 'hook'; readonly status: StepStatus; readonly hook: string; readonly target: string; readonly action?: string };
+
 declare global {
   function acquireVsCodeApi(): VsCodeApi;
 }
 
+hljs.registerLanguage('typescript', typescript);
+hljs.registerLanguage('ts', typescript);
+hljs.registerLanguage('javascript', javascript);
+hljs.registerLanguage('js', javascript);
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('bash', bash);
+hljs.registerLanguage('sh', bash);
+hljs.registerLanguage('shell', bash);
+hljs.registerLanguage('css', css);
+hljs.registerLanguage('html', xml);
+hljs.registerLanguage('xml', xml);
+hljs.registerLanguage('yaml', yaml);
+hljs.registerLanguage('yml', yaml);
+hljs.registerLanguage('markdown', markdown);
+hljs.registerLanguage('md', markdown);
+
 const vscode = getVsCodeApi();
 const topActions: readonly TopAction[] = [
-  { id: 'history', label: 'History', icon: 'history' },
   { id: 'new', label: 'New Session', icon: 'add' },
+  { id: 'history', label: 'History', icon: 'history' },
 ];
 
 const welcomeMessage: ChatMessage = {
@@ -509,6 +572,7 @@ const slashCommands: readonly SlashCommand[] = [
   { name: 'skip', summary: 'jump forward in the workflow', group: 'Workflow' },
   { name: 'abort', summary: 'abandon the active task', group: 'Workflow' },
   { name: 'quit', summary: 'leave Atlas', group: 'Chat' },
+  { name: 'dev', summary: 'run dev test (tools + subagents + timeline)', group: 'Runtime' },
   { name: 'exit', summary: 'leave Atlas', group: 'Chat' },
 ];
 
@@ -517,6 +581,7 @@ const slashCommandGroups: readonly SlashCommand['group'][] = ['Chat', 'Routing',
 function App(): ReactElement {
   const [prompt, setPrompt] = useState('');
   const [messages, setMessages] = useState<readonly ChatMessage[]>([welcomeMessage]);
+  const [timeline, setTimeline] = useState<readonly TimelineItem[]>([]);
   const [status, setStatus] = useState<AtlasStatus>({ ok: false });
   const [settings, setSettings] = useState<SettingsSummaryResult | null>(null);
   const [models, setModels] = useState<ModelSummaryResult | null>(null);
@@ -532,17 +597,16 @@ function App(): ReactElement {
   const [runningRequestId, setRunningRequestId] = useState<string | null>(null);
   const [openSelector, setOpenSelector] = useState<SelectorName | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [previewImage, setPreviewImage] = useState<{ readonly src: string; readonly alt: string } | null>(null);
   const [slashCursor, setSlashCursor] = useState(0);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const selectorRailRef = useRef<HTMLDivElement | null>(null);
   const pendingRequestKindsRef = useRef<Map<string, BridgeRequestKind>>(new Map());
-  const [showSessionPanel, setShowSessionPanel] = useState(false);
-  const [sessionId] = useState(() => {
-    const seg = () => Math.floor((1 + Math.random()) * 0x10000).toString(16).slice(1);
-    return `${seg()}${seg()}-${seg()}-4${seg().slice(0, 3)}-${seg()}-${seg()}${seg()}${seg()}`;
-  });
-
+  const [showInfoPanel, setShowInfoPanel] = useState(false);
+  const [editingSessionName, setEditingSessionName] = useState(false);
+  const [sessionNameDraft, setSessionNameDraft] = useState('');
   const [clarifyRequest, setClarifyRequest] = useState<{
     readonly id: string;
     readonly question: string;
@@ -559,6 +623,15 @@ function App(): ReactElement {
   >(null);
 
   const [learnEnabled, setLearnEnabled] = useState(true);
+  const [showAutopilotConfirm, setShowAutopilotConfirm] = useState(false);
+  const [shipConflict, setShipConflict] = useState<{
+    readonly id: string;
+    readonly base: string;
+    readonly branch: string;
+    readonly conflictFiles: readonly string[];
+  } | null>(null);
+
+  const [onboardState, setOnboardState] = useState<OnboardWizardState | null>(null);
 
   const running = runningRequestId !== null;
   const composerDisabled = running || clarifyRequest !== null;
@@ -677,7 +750,7 @@ function App(): ReactElement {
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, timeline, learnState, clarifyRequest]);
 
   useEffect(() => {
     const listener = (event: MessageEvent<BridgeMessage>) => {
@@ -708,6 +781,19 @@ function App(): ReactElement {
           } else {
             setActionNotice(`${message.result.error.code}: ${message.result.error.message}`);
           }
+        }
+        if (requestKind === 'findOnboardingDocs' && isRecord(message.result) && message.result.ok === true && Array.isArray(message.result['docs'])) {
+          const docs = message.result['docs'] as readonly { readonly path: string; readonly relPath: string; readonly bytes: number; readonly kind: string }[];
+          setOnboardState({ stage: 'select-docs', docs, selected: new Set(docs.filter((d) => d.kind === 'canonical').map((d) => d.path)) });
+        }
+        if (requestKind === 'estimateOnboardCost' && isRecord(message.result) && message.result.ok === true && isRecord(message.result['estimate'])) {
+          const est = message.result['estimate'] as { readonly fileCount: number; readonly totalBytes: number; readonly estimatedInputTokens: number; readonly estimatedOutputTokensMin: number; readonly estimatedOutputTokensMax: number; readonly detected: { readonly languages: readonly string[]; readonly manifests: readonly string[]; readonly frameworks: readonly string[] }; readonly costBand: string };
+          setOnboardState((current) => current?.stage === 'select-docs' ? { stage: 'estimate', estimate: est } : current);
+        }
+        if (requestKind === 'writeRepoMap' && isRecord(message.result) && message.result.ok === true && typeof message.result['path'] === 'string') {
+          const path = message.result['path'] as string;
+          const filesScanned = typeof message.result['filesScanned'] === 'number' ? message.result['filesScanned'] : 0;
+          setOnboardState({ stage: 'done', path, filesScanned });
         }
         if (isOpenFileResult(message.result)) {
           const line = message.result.line === null ? '' : `:${message.result.line}`;
@@ -767,6 +853,7 @@ function App(): ReactElement {
 
       const streamEvent = message.event;
       applyStreamEvent(message.requestId, streamEvent, setMessages);
+      applyTimelineEvent(streamEvent, setTimeline);
       if (streamEvent.type === 'approval_request') {
         setPendingApprovals((current) => [
           ...current.filter((approval) => approval.id !== streamEvent.approval.id),
@@ -808,6 +895,16 @@ function App(): ReactElement {
       if (streamEvent.type === 'learn_saved') {
         setActionNotice(`Saved learned skill: ${streamEvent.name}`);
         setLearnState(null);
+      }
+      if (streamEvent.type === 'ship_conflict') {
+        setShipConflict(streamEvent.conflict);
+      }
+      if (streamEvent.type === 'ship_conflict_resolved') {
+        setShipConflict(null);
+      }
+      if (streamEvent.type === 'mode_changed') {
+        setStatus((prev) => ({ ...prev, mode: streamEvent.mode }));
+        setActionNotice(`Atlas switched to ${streamEvent.mode} mode.`);
       }
     };
 
@@ -886,6 +983,7 @@ function App(): ReactElement {
         return true;
       case 'clear':
         setMessages([{ ...welcomeMessage, id: createRequestId() }]);
+        setTimeline([]);
         return true;
       case 'config':
       case 'tools':
@@ -930,16 +1028,67 @@ function App(): ReactElement {
       case 'exit':
         setActionNotice('Atlas stays open in the VS Code sidebar; close the view when you are done.');
         return true;
-      case 'restart':
-      case 'mode':
-      case 'thinking':
-      case 'next':
-      case 'onboard':
-      case 'back':
-      case 'skip':
-      case 'abort':
-        setActionNotice(`/${command} is mapped but not fully ported in the VS Code: host yet.`);
+      case 'restart': {
+        const arg = trimmed.slice(command.length + 1).trim();
+        if (arg && arg !== 'models') {
+          setActionNotice('Usage: /restart [models]');
+          return true;
+        }
+        setActionNotice('Refreshing model catalog…');
+        postRequest('getModels', { forceRefresh: true });
         return true;
+      }
+      case 'mode': {
+        const arg = trimmed.slice(command.length + 1).trim().toLowerCase();
+        const modes: Array<'plan' | 'build' | 'autopilot'> = ['plan', 'build', 'autopilot'];
+        if (arg && modes.includes(arg as 'plan' | 'build' | 'autopilot')) {
+          if (arg === 'autopilot' && mode !== 'autopilot') {
+            setShowAutopilotConfirm(true);
+          } else {
+            postRequest('setMode', { mode: arg });
+            setStatus((prev) => ({ ...prev, mode: arg as 'plan' | 'build' | 'autopilot' }));
+          }
+        } else if (!arg) {
+          const next = modes[(modes.indexOf(mode) + 1) % modes.length];
+          if (next === 'autopilot' && mode !== 'autopilot') {
+            setShowAutopilotConfirm(true);
+          } else {
+            postRequest('setMode', { mode: next });
+            setStatus((prev) => ({ ...prev, mode: next }));
+          }
+        } else {
+          setActionNotice(`Usage: /mode [plan|build|autopilot]`);
+        }
+        return true;
+      }
+      case 'next': {
+        stagePrompt('*next');
+        setActionNotice('Staged "*next" — press ↵ to ask the orchestrator what to do next.');
+        return true;
+      }
+      case 'back': {
+        const arg = trimmed.slice(command.length + 1).trim();
+        if (!arg) {
+          setActionNotice('Usage: /back <phase>');
+          return true;
+        }
+        postRequest('advanceWorkflow', { action: 'back', target: arg });
+        return true;
+      }
+      case 'skip': {
+        postRequest('advanceWorkflow', { action: 'skip' });
+        return true;
+      }
+      case 'abort': {
+        postRequest('advanceWorkflow', { action: 'abort' });
+        return true;
+      }
+      case 'thinking':
+      case 'onboard': {
+        setOnboardState({ stage: 'scanning' });
+        postRequest('findOnboardingDocs');
+        return true;
+      }
       case 'learn': {
         const arg = trimmed.slice(command.length + 1).trim();
         const sub = arg.toLowerCase().split(/\s+/)[0] ?? '';
@@ -976,6 +1125,36 @@ function App(): ReactElement {
     const nextPrompt = prompt.trim();
     if (nextPrompt.length === 0 || running || clarifyRequest !== null) return;
 
+    // Dev test mode: inject synthetic events locally — zero repo impact
+    if (nextPrompt === '/dev') {
+      const requestId = createRequestId();
+      const userItem: TimelineItem = { id: `${requestId}-user`, type: 'user', content: '/dev — timeline visualization test' };
+      setMessages((current) => [...current, {
+        id: `${requestId}-user`, requestId, role: 'user', content: '/dev — timeline visualization test',
+      }]);
+      setTimeline((current) => [...current, userItem]);
+      setRunningRequestId(requestId);
+      setPrompt('');
+      setAttachments([]);
+      if (textareaRef.current) textareaRef.current.style.height = '';
+      runDevTest(requestId, setTimeline, setRunningRequestId);
+      return;
+    }
+    if (nextPrompt === '/dev-img') {
+      const requestId = createRequestId();
+      const userItem: TimelineItem = { id: `${requestId}-user`, type: 'user', content: '/dev-img — image attachment test', attachments: [{ type: 'image', path: 'test.png', name: 'test.png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', mediaType: 'image/png' }] };
+      setMessages((current) => [...current, {
+        id: `${requestId}-user`, requestId, role: 'user', content: '/dev-img — image attachment test',
+      }]);
+      setTimeline((current) => [...current, userItem]);
+      setRunningRequestId(requestId);
+      setPrompt('');
+      setAttachments([]);
+      if (textareaRef.current) textareaRef.current.style.height = '';
+      runDevTest(requestId, setTimeline, setRunningRequestId);
+      return;
+    }
+
     if (handleLocalSlashCommand(nextPrompt)) {
       setPrompt('');
       if (textareaRef.current) textareaRef.current.style.height = '';
@@ -983,6 +1162,8 @@ function App(): ReactElement {
     }
 
     const requestId = createRequestId();
+    const userItem: TimelineItem = { id: `${requestId}-user`, type: 'user', content: nextPrompt, attachments: attachments.length > 0 ? attachments.map((a) => a as AttachmentItem) : undefined };
+    const assistantItem: TimelineItem = { id: `${requestId}-assistant`, type: 'assistant', content: '', rawContent: '', pending: true };
     setMessages((current) => [...current, {
       id: `${requestId}-user`,
       requestId,
@@ -996,6 +1177,7 @@ function App(): ReactElement {
       tools: [],
       pending: true,
     }]);
+    setTimeline((current) => [...current, userItem, assistantItem]);
     setRunningRequestId(requestId);
     const bridgeAttachments = attachments.map((a) =>
       a.type === 'file'
@@ -1102,6 +1284,64 @@ function App(): ReactElement {
     }
   }, [models]);
 
+  const handleDragOver = useCallback((event: React.DragEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setIsDraggingOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((event: React.DragEvent<HTMLFormElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+      setIsDraggingOver(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback(async (event: React.DragEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsDraggingOver(false);
+    const files = event.dataTransfer.files;
+    if (!files || files.length === 0) return;
+
+    const activeModel = models?.models.find((m) => m.active);
+    const supportsVision = activeModel?.supportsVision ?? false;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!file) continue;
+
+      if (file.type.startsWith('image/')) {
+        if (!supportsVision) {
+          setActionNotice('Current model does not support vision. Image drop skipped.');
+          continue;
+        }
+        const arrayBuffer = await file.arrayBuffer();
+        const base64 = btoa(
+          new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+        );
+        const mediaType = file.type || 'image/png';
+        const name = file.name || `dropped-image-${Date.now()}.${mediaType.split('/')[1] || 'png'}`;
+        setAttachments((current) => [...current, {
+          type: 'image',
+          path: name,
+          name,
+          base64,
+          mediaType,
+        }]);
+        setActionNotice(`Dropped image: ${name}`);
+      } else {
+        const text = await file.text();
+        const name = file.name || 'dropped-file';
+        setAttachments((current) => [...current, {
+          type: 'file',
+          path: name,
+          name,
+          content: text,
+        }]);
+        setActionNotice(`Dropped file: ${name}`);
+      }
+    }
+  }, [models]);
+
   return (
     <main className={`atlasShell ${activeView !== 'chat' ? 'hasSettings' : ''}`}>
       <header className="topBar">
@@ -1173,12 +1413,13 @@ function App(): ReactElement {
           ))}
           <button
             type="button"
-            className="sessionButton"
-            title="Session"
-            aria-label="Session"
-            onClick={() => setShowSessionPanel((s) => !s)}
+            className={`topIconButton ${status.updateAvailable ? 'hasBadge' : ''}`}
+            title={status.updateAvailable ? `Update available: ${status.updateAvailable}` : 'Atlas info'}
+            aria-label="Atlas info"
+            onClick={() => setShowInfoPanel((s) => !s)}
           >
-            Session
+            <i className="codicon codicon-info" aria-hidden="true" />
+            {status.updateAvailable ? <span className="topIconBadge" /> : null}
           </button>
         </nav>
       </header>
@@ -1226,24 +1467,94 @@ function App(): ReactElement {
         </div>
       ) : null}
 
-      {showSessionPanel ? (
-        <div className="sessionOverlay" onClick={() => setShowSessionPanel(false)}>
+      {showInfoPanel ? (
+        <div className="sessionOverlay" onClick={() => setShowInfoPanel(false)}>
           <div className="sessionPanel" onClick={(e) => e.stopPropagation()}>
             <header>
-              <h3>Session Details</h3>
-              <button type="button" onClick={() => setShowSessionPanel(false)} aria-label="Close session panel">
+              <h3>Atlas Info</h3>
+              <button type="button" onClick={() => setShowInfoPanel(false)} aria-label="Close info panel">
                 <i className="codicon codicon-close" aria-hidden="true" />
               </button>
             </header>
-            <p className="sessionPanelSubtitle">Details for this conversation.</p>
             <div className="sessionPanelBody">
-              <div className="sessionPanelField">
-                <span>Session ID</span>
-                <strong>{sessionId}</strong>
-              </div>
+              {editingSessionName ? (
+                <div className="sessionPanelField sessionPanelField-edit">
+                  <span>Session</span>
+                  <div className="sessionNameEdit">
+                    <input
+                      type="text"
+                      value={sessionNameDraft}
+                      onChange={(e) => setSessionNameDraft(e.target.value)}
+                      placeholder="Session name"
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const activeSession = sessions?.sessions.find((s) => s.active);
+                          if (activeSession && sessionNameDraft.trim()) {
+                            postRequest('renameSession', { id: activeSession.id, title: sessionNameDraft.trim() });
+                          }
+                          setEditingSessionName(false);
+                        }
+                        if (e.key === 'Escape') {
+                          setEditingSessionName(false);
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="settingsPrimaryButton"
+                      onClick={() => {
+                        const activeSession = sessions?.sessions.find((s) => s.active);
+                        if (activeSession && sessionNameDraft.trim()) {
+                          postRequest('renameSession', { id: activeSession.id, title: sessionNameDraft.trim() });
+                        }
+                        setEditingSessionName(false);
+                      }}
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="sessionPanelField">
+                  <span>Session</span>
+                  <div className="sessionNameRow">
+                    <strong>{(() => { const s = sessions?.sessions.find((x) => x.active); return s?.title ?? s?.id ?? 'Untitled'; })()}</strong>
+                    <button
+                      type="button"
+                      className="sessionRenameButton"
+                      title="Rename session"
+                      aria-label="Rename session"
+                      onClick={() => {
+                        const activeSession = sessions?.sessions.find((s) => s.active);
+                        setSessionNameDraft(activeSession?.title ?? activeSession?.id ?? '');
+                        setEditingSessionName(true);
+                      }}
+                    >
+                      <i className="codicon codicon-edit" aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="sessionPanelField">
                 <span>Messages</span>
                 <strong>{messages.filter((m) => m.role !== 'system').length}</strong>
+              </div>
+              <div className="sessionPanelField">
+                <span>Model</span>
+                <strong>{status.model ?? '—'}</strong>
+              </div>
+              <div className="sessionPanelField">
+                <span>Agent</span>
+                <strong>{status.agentName ?? '—'}</strong>
+              </div>
+              <div className="sessionPanelField">
+                <span>Mode</span>
+                <strong>{status.mode ?? 'plan'}</strong>
+              </div>
+              <div className="sessionPanelField">
+                <span>Thinking</span>
+                <strong>{status.thinking ?? 'off'}</strong>
               </div>
               <div className="sessionPanelField">
                 <span>Token Usage</span>
@@ -1262,9 +1573,21 @@ function App(): ReactElement {
                   </div>
                 </div>
               </div>
+              {status.updateAvailable ? (
+                <div className="sessionPanelField">
+                  <span>Update</span>
+                  <strong className="accentValue">{status.updateAvailable} available</strong>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
+      ) : null}
+
+      {mode === 'autopilot' && activeView === 'chat' ? (
+        <section className="autopilotBanner" aria-live="polite">
+          <span><i className="codicon codicon-warning" aria-hidden="true" /> AUTOPILOT ENABLED — Atlas is auto-approving all tool calls</span>
+        </section>
       ) : null}
 
       {status.error && activeView === 'chat' ? (
@@ -1325,11 +1648,13 @@ function App(): ReactElement {
           onRefresh={() => postRequest('getSessions')}
           onNew={() => {
             setMessages([{ ...welcomeMessage, id: createRequestId() }]);
+            setTimeline([]);
             postRequest('newSession');
           }}
           onResume={(id) => {
             setActiveView('chat');
             setMessages([{ ...welcomeMessage, id: createRequestId(), content: `Resumed ${id}.` }]);
+            setTimeline([]);
             postRequest('resumeSession', { id });
           }}
           onRename={(session) => postRequest('promptRenameSession', { id: session.id, title: session.title })}
@@ -1354,17 +1679,64 @@ function App(): ReactElement {
             {showEmptyState ? (
               <EmptyState />
             ) : (
-              messages.filter((message) => message.role !== 'system').map((message) => (
-                <ChatBubble key={message.id} message={message} onOpenFile={openFile} />
-              ))
+              <Timeline items={timeline} onOpenFile={openFile} onPreviewImage={(src, alt) => setPreviewImage({ src, alt })} />
             )}
             {learnState ? (
               <LearnCard
                 state={learnState}
                 onSave={() => postRequest('resolveLearn', { action: 'save' })}
                 onEdit={(changeRequest: string) => postRequest('resolveLearn', { action: 'edit', changeRequest })}
-                onDiscard={() => postRequest('resolveLearn', { action: 'discard' })}
+                onDiscard={() => {
+                  setLearnState(null);
+                  postRequest('resolveLearn', { action: 'discard' });
+                }}
+                onRequestChange={() => setLearnState((current) => current?.stage === 'review' ? { stage: 'change', draft: current.draft, reason: current.reason } : current)}
                 onBack={() => setLearnState((current) => current?.stage === 'change' ? { stage: 'review', draft: current.draft, reason: current.reason } : current)}
+              />
+            ) : null}
+            {clarifyRequest ? (
+              <ClarifyCard
+                request={clarifyRequest}
+                onChoose={(answer) => {
+                  postRequest('resolveClarify', { clarifyId: clarifyRequest.id, answer });
+                  setClarifyRequest(null);
+                  setMessages((prev) => {
+                    const ts = Date.now();
+                    // Finalize the previous assistant bubble so resumed deltas don't append to it
+                    const finalized = runningRequestId
+                      ? prev.map((m) => (m.requestId === runningRequestId && m.role === 'assistant' ? { ...m, pending: false } : m))
+                      : prev;
+                    return [...finalized, {
+                      id: `clarify-answer-${ts}`,
+                      role: 'user',
+                      content: answer,
+                    }, ...(runningRequestId ? [{
+                      id: `clarify-resume-${ts}`,
+                      requestId: runningRequestId,
+                      role: 'assistant' as const,
+                      content: '',
+                      tools: [] as const,
+                      pending: true,
+                    }] : [])];
+                  });
+                }}
+                onDismiss={() => {
+                  postRequest('resolveClarify', { clarifyId: clarifyRequest.id, answer: '' });
+                  setClarifyRequest(null);
+                  setMessages((prev) => {
+                    if (!runningRequestId) return prev;
+                    const ts = Date.now();
+                    const finalized = prev.map((m) => (m.requestId === runningRequestId && m.role === 'assistant' ? { ...m, pending: false } : m));
+                    return [...finalized, {
+                      id: `clarify-resume-${ts}`,
+                      requestId: runningRequestId,
+                      role: 'assistant' as const,
+                      content: '',
+                      tools: [] as const,
+                      pending: true,
+                    }];
+                  });
+                }}
               />
             ) : null}
           </section>
@@ -1372,56 +1744,175 @@ function App(): ReactElement {
             <ApprovalRail approvals={pendingApprovals} onResolve={resolveApproval} />
           ) : null}
 
-          {clarifyRequest ? (
-            <ClarifyCard
-              request={clarifyRequest}
-              onChoose={(answer) => {
-                postRequest('resolveClarify', { clarifyId: clarifyRequest.id, answer });
-                setClarifyRequest(null);
-                setPrompt(answer);
-                // Auto-submit as next user turn for protocol questions
-                setTimeout(() => {
-                  const form = document.querySelector('.composer') as HTMLFormElement | null;
-                  if (form) form.requestSubmit();
-                }, 0);
+          {runningRequestId !== null && timeline.length > 0 ? (
+            <ProcessingIndicator />
+          ) : null}
+
+          {showAutopilotConfirm ? (
+            <div className="modalOverlay" onClick={() => setShowAutopilotConfirm(false)}>
+              <div className="modalPanel modalPanel-warn" onClick={(e) => e.stopPropagation()}>
+                <header>
+                  <h3>Enable autopilot?</h3>
+                  <button type="button" onClick={() => setShowAutopilotConfirm(false)} aria-label="Close">
+                    <i className="codicon codicon-close" aria-hidden="true" />
+                  </button>
+                </header>
+                <p className="modalBody">
+                  Autopilot mode will <strong>auto-approve all tool calls</strong> without asking for permission.
+                  Atlas can read, write, and execute commands in your workspace without confirmation.
+                </p>
+                <div className="modalActions">
+                  <button
+                    type="button"
+                    className="settingsSecondaryButton"
+                    onClick={() => setShowAutopilotConfirm(false)}
+                  >
+                    Stay in build
+                  </button>
+                  <button
+                    type="button"
+                    className="settingsPrimaryButton"
+                    onClick={() => {
+                      postRequest('setMode', { mode: 'autopilot' });
+                      setStatus((prev) => ({ ...prev, mode: 'autopilot' }));
+                      setShowAutopilotConfirm(false);
+                    }}
+                  >
+                    Enable autopilot
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {onboardState ? (
+            <OnboardWizard
+              state={onboardState}
+              onSelectDocs={(docs, selected) => setOnboardState({ stage: 'select-docs', docs, selected })}
+              onRun={() => {
+                setOnboardState({ stage: 'running' });
+                postRequest('writeRepoMap');
               }}
-              onDismiss={() => {
-                postRequest('resolveClarify', { clarifyId: clarifyRequest.id, answer: '' });
-                setClarifyRequest(null);
-              }}
+              onClose={() => setOnboardState(null)}
+              postRequest={postRequest}
             />
           ) : null}
 
-          {mode === 'autopilot' ? (
-            <footer className="statusBar">
-              <span className="statusBarWarning">⚠ AUTOPILOT</span>
-            </footer>
+          {shipConflict ? (
+            <div className="modalOverlay" onClick={() => {
+              postRequest('resolveShipConflict', { conflictId: shipConflict.id, strategy: 'abort', persist: false });
+              setShipConflict(null);
+            }}>
+              <div className="modalPanel modalPanel-warn" onClick={(e) => e.stopPropagation()}>
+                <header>
+                  <h3>Ship Conflict</h3>
+                  <button type="button" onClick={() => {
+                    postRequest('resolveShipConflict', { conflictId: shipConflict.id, strategy: 'abort', persist: false });
+                    setShipConflict(null);
+                  }} aria-label="Close">
+                    <i className="codicon codicon-close" aria-hidden="true" />
+                  </button>
+                </header>
+                <p className="modalBody">
+                  Merging <strong>{shipConflict.branch}</strong> into <strong>{shipConflict.base}</strong> produced conflicts in:
+                </p>
+                <ul className="conflictFileList">
+                  {shipConflict.conflictFiles.map((file) => (
+                    <li key={file}>{file}</li>
+                  ))}
+                </ul>
+                <div className="modalActions">
+                  <button
+                    type="button"
+                    className="settingsSecondaryButton"
+                    onClick={() => {
+                      postRequest('resolveShipConflict', { conflictId: shipConflict.id, strategy: 'abort', persist: false });
+                      setShipConflict(null);
+                    }}
+                  >
+                    Abort
+                  </button>
+                  <button
+                    type="button"
+                    className="settingsSecondaryButton"
+                    onClick={() => {
+                      postRequest('resolveShipConflict', { conflictId: shipConflict.id, strategy: 'ours', persist: false });
+                      setShipConflict(null);
+                    }}
+                  >
+                    Ours
+                  </button>
+                  <button
+                    type="button"
+                    className="settingsSecondaryButton"
+                    onClick={() => {
+                      postRequest('resolveShipConflict', { conflictId: shipConflict.id, strategy: 'theirs', persist: false });
+                      setShipConflict(null);
+                    }}
+                  >
+                    Theirs
+                  </button>
+                  <button
+                    type="button"
+                    className="settingsPrimaryButton"
+                    onClick={() => {
+                      postRequest('resolveShipConflict', { conflictId: shipConflict.id, strategy: 'ai', persist: false });
+                      setShipConflict(null);
+                    }}
+                  >
+                    AI Resolve
+                  </button>
+                </div>
+              </div>
+            </div>
           ) : null}
 
-          <form className={`composer ${running ? 'isRunning' : ''}`} onSubmit={sendPrompt}>
+          <form
+            className={`composer ${running ? 'isRunning' : ''} ${isDraggingOver ? 'isDraggingOver' : ''}`}
+            onSubmit={sendPrompt}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
             {attachments.length > 0 ? (
               <div className="attachmentList">
                 {attachments.map((att, idx) => (
-                  <div key={`${att.path}-${idx}`} className="attachmentPill">
-                    {att.type === 'image' ? (
-                      <img
-                        src={`data:${att.mediaType};base64,${att.base64}`}
-                        alt={att.name}
-                        className="attachmentThumbnail"
-                      />
-                    ) : (
+                  att.type === 'image' ? (
+                    <div key={`${att.path}-${idx}`} className="attachmentPill attachmentPill-image">
+                      <button
+                        type="button"
+                        className="attachmentPreviewButton"
+                        onClick={() => setPreviewImage({ src: `data:${att.mediaType};base64,${att.base64}`, alt: att.name })}
+                      >
+                        <img
+                          src={`data:${att.mediaType};base64,${att.base64}`}
+                          alt={att.name}
+                          className="attachmentThumbnail"
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        className="attachmentRemove"
+                        title="Remove attachment"
+                        onClick={() => setAttachments((current) => current.filter((_, i) => i !== idx))}
+                      >
+                        <i className="codicon codicon-close" aria-hidden="true" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div key={`${att.path}-${idx}`} className="attachmentPill">
                       <i className="codicon codicon-file" aria-hidden="true" />
-                    )}
-                    <span className="attachmentName">{att.name}</span>
-                    <button
-                      type="button"
-                      className="attachmentRemove"
-                      title="Remove attachment"
-                      onClick={() => setAttachments((current) => current.filter((_, i) => i !== idx))}
-                    >
-                      <i className="codicon codicon-close" aria-hidden="true" />
-                    </button>
-                  </div>
+                      <span className="attachmentName">{att.name}</span>
+                      <button
+                        type="button"
+                        className="attachmentRemove"
+                        title="Remove attachment"
+                        onClick={() => setAttachments((current) => current.filter((_, i) => i !== idx))}
+                      >
+                        <i className="codicon codicon-close" aria-hidden="true" />
+                      </button>
+                    </div>
+                  )
                 ))}
               </div>
             ) : null}
@@ -1507,6 +1998,72 @@ function App(): ReactElement {
                     ) : null}
                   </div>
                 ) : null}
+                <div className="composerModeWrap">
+                  <button
+                    type="button"
+                    className={`composerModeIcon ${mode}`}
+                    title={`Mode: ${mode}. Click to open mode picker.`}
+                    onClick={() => setOpenSelector((current) => current === 'mode' ? null : 'mode')}
+                  >
+                    {mode === 'plan' ? (
+                      <i className="codicon codicon-checklist" aria-hidden="true" />
+                    ) : mode === 'build' ? (
+                      <i className="codicon codicon-tools" aria-hidden="true" />
+                    ) : (
+                      <i className="codicon codicon-rocket" aria-hidden="true" />
+                    )}
+                  </button>
+                  {openSelector === 'mode' ? (
+                    <div className="modeDropdown">
+                      <button
+                        type="button"
+                        className={`modeDropdownOption ${mode === 'plan' ? 'isActive' : ''}`}
+                        onClick={() => {
+                          postRequest('setMode', { mode: 'plan' });
+                          setStatus((prev) => ({ ...prev, mode: 'plan' }));
+                          setOpenSelector(null);
+                        }}
+                      >
+                        <i className="codicon codicon-checklist" aria-hidden="true" />
+                        <div className="modeDropdownOptionInfo">
+                          <strong>Plan</strong>
+                          <span>Read-only advisory mode</span>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        className={`modeDropdownOption ${mode === 'build' ? 'isActive' : ''}`}
+                        onClick={() => {
+                          postRequest('setMode', { mode: 'build' });
+                          setStatus((prev) => ({ ...prev, mode: 'build' }));
+                          setOpenSelector(null);
+                        }}
+                      >
+                        <i className="codicon codicon-tools" aria-hidden="true" />
+                        <div className="modeDropdownOptionInfo">
+                          <strong>Build</strong>
+                          <span>Full tool access with approval</span>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        className={`modeDropdownOption ${mode === 'autopilot' ? 'isActive' : ''}`}
+                        onClick={() => {
+                          setOpenSelector(null);
+                          if (mode !== 'autopilot') {
+                            setShowAutopilotConfirm(true);
+                          }
+                        }}
+                      >
+                        <i className="codicon codicon-rocket" aria-hidden="true" />
+                        <div className="modeDropdownOptionInfo">
+                          <strong>Autopilot</strong>
+                          <span>Auto-approve all tool calls</span>
+                        </div>
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               </div>
               <div className="composerControlsRight">
                 <button
@@ -1572,6 +2129,14 @@ function App(): ReactElement {
                     if (!running) return;
                     event.preventDefault();
                     postRequest('cancelTurn');
+                    setTimeline((current) => [...current, {
+                      id: `stopped-${Date.now()}`,
+                      type: 'assistant',
+                      content: 'Turn stopped.',
+                      rawContent: 'Turn stopped.',
+                      pending: false,
+                      stopped: true,
+                    }]);
                   }}
                 >
                   <i className={`codicon codicon-${running ? 'debug-stop' : 'send'}`} aria-hidden="true" />
@@ -1581,6 +2146,20 @@ function App(): ReactElement {
             </form>
         </>
       )}
+
+      {previewImage ? (
+        <div className="imagePreviewOverlay" onClick={() => setPreviewImage(null)}>
+          <button
+            type="button"
+            className="imagePreviewClose"
+            onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}
+            aria-label="Close preview"
+          >
+            <i className="codicon codicon-close" aria-hidden="true" />
+          </button>
+          <img src={previewImage.src} alt={previewImage.alt} onClick={(e) => e.stopPropagation()} />
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -1707,6 +2286,7 @@ function LearnCard({
   onSave,
   onEdit,
   onDiscard,
+  onRequestChange,
   onBack,
 }: {
   readonly state:
@@ -1717,6 +2297,7 @@ function LearnCard({
   readonly onSave: () => void;
   readonly onEdit: (changeRequest: string) => void;
   readonly onDiscard: () => void;
+  readonly onRequestChange: () => void;
   readonly onBack: () => void;
 }): ReactElement {
   const [changeRequest, setChangeRequest] = useState('');
@@ -1794,7 +2375,7 @@ function LearnCard({
         <button type="button" className="settingsSecondaryButton" onClick={onDiscard}>
           Discard
         </button>
-        <button type="button" className="settingsSecondaryButton" onClick={() => onEdit('')}>
+        <button type="button" className="settingsSecondaryButton" onClick={onRequestChange}>
           Request change
         </button>
         <button type="button" className="settingsPrimaryButton" onClick={onSave}>
@@ -3805,7 +4386,7 @@ function QuickSelect({
                         title={option.description}
                         onClick={() => { onSelect(option); setSearch(''); }}
                       >
-                        {popularFilter?.(option.label) ? <span className="popularStar">★ </span> : null}
+                        {popularFilter?.(option.label) ? <i className="codicon codicon-star-full popularStar" aria-hidden="true" /> : null}
                         <span>{option.label}</span>
                         {option.description ? <small>{option.description}</small> : null}
                       </button>
@@ -3869,68 +4450,669 @@ function SlashAutocomplete({
   );
 }
 
-function ChatBubble({ message, onOpenFile }: { readonly message: ChatMessage; readonly onOpenFile: (reference: FileReference) => void }): ReactElement {
-  const roleLabel = message.role === 'assistant' ? 'Atlas' : message.role === 'user' ? 'You' : message.role;
-  const usage = message.usage;
-  const contextPct = usage ? Math.min(1, usage.totalTokens / 200000) : 0;
-
-  return (
-    <article className={`message message-${message.role} ${message.pending ? 'isPending' : ''}`}>
-      <div className="messageHeader">
-        <span>{roleLabel}</span>
-        {usage ? <span>{usage.totalTokens.toLocaleString()} tokens</span> : null}
-      </div>
-      {message.thinking ? <p className="thinkingText"><RenderableText text={message.thinking} onOpenFile={onOpenFile} /></p> : null}
-      <div className="messageBody">
-        <RenderableText text={message.content} fallback={message.pending ? '...' : ''} onOpenFile={onOpenFile} />
-      </div>
-      {message.tools && message.tools.length > 0 ? (
-        <div className="toolList">
-          {message.tools.map((tool) => <ToolRow key={tool.id} tool={tool} onOpenFile={onOpenFile} />)}
-        </div>
-      ) : null}
-      {usage ? (
-        <footer className="usageFooter">
-          <span>↑ {usage.promptTokens.toLocaleString()} ↓ {usage.completionTokens.toLocaleString()}</span>
-          <div className="contextBar" title={`${Math.round(contextPct * 100)}% of context window`}>
-            <div className={`contextFill ${contextPct > 0.8 ? 'contextDanger' : contextPct > 0.5 ? 'contextWarn' : ''}`} style={{ width: `${Math.round(contextPct * 100)}%` }} />
+function OnboardWizard({
+  state,
+  onSelectDocs,
+  onRun,
+  onClose,
+  postRequest,
+}: {
+  readonly state: OnboardWizardState;
+  readonly onSelectDocs: (docs: readonly { readonly path: string; readonly relPath: string; readonly bytes: number; readonly kind: string }[], selected: Set<string>) => void;
+  readonly onRun: () => void;
+  readonly onClose: () => void;
+  readonly postRequest: (kind: BridgeRequestKind, params?: Record<string, unknown>) => string;
+}): ReactElement {
+  if (state.stage === 'scanning') {
+    return (
+      <div className="modalOverlay" onClick={onClose}>
+        <div className="modalPanel" onClick={(e) => e.stopPropagation()}>
+          <header>
+            <h3>Brownfield Onboarding</h3>
+            <button type="button" onClick={onClose} aria-label="Close">
+              <i className="codicon codicon-close" aria-hidden="true" />
+            </button>
+          </header>
+          <div className="modalBody">
+            <div className="learnCardHeader">
+              <i className="codicon codicon-sync codicon-spin" aria-hidden="true" />
+              <span>Scanning for existing docs…</span>
+            </div>
           </div>
-        </footer>
-      ) : null}
-    </article>
+        </div>
+      </div>
+    );
+  }
+
+  if (state.stage === 'select-docs') {
+    return (
+      <div className="modalOverlay" onClick={onClose}>
+        <div className="modalPanel" onClick={(e) => e.stopPropagation()}>
+          <header>
+            <h3>Brownfield Onboarding</h3>
+            <button type="button" onClick={onClose} aria-label="Close">
+              <i className="codicon codicon-close" aria-hidden="true" />
+            </button>
+          </header>
+          <p className="modalBody">
+            Found {state.docs.length} existing doc{state.docs.length === 1 ? '' : 's'}. Select which to include in the onboarding context:
+          </p>
+          <div className="onboardDocList">
+            {state.docs.map((doc: { readonly path: string; readonly relPath: string; readonly bytes: number; readonly kind: string }) => (
+              <label key={doc.path} className="onboardDocRow">
+                <input
+                  type="checkbox"
+                  checked={state.selected.has(doc.path)}
+                  onChange={(e) => {
+                    const next = new Set(state.selected);
+                    if (e.target.checked) next.add(doc.path);
+                    else next.delete(doc.path);
+                    onSelectDocs(state.docs, next);
+                  }}
+                />
+                <span className="onboardDocName">{doc.relPath}</span>
+                <span className="onboardDocMeta">{doc.kind} · {(doc.bytes / 1024).toFixed(1)} KB</span>
+              </label>
+            ))}
+          </div>
+          <div className="modalActions">
+            <button type="button" className="settingsSecondaryButton" onClick={onClose}>Cancel</button>
+            <button
+              type="button"
+              className="settingsPrimaryButton"
+              onClick={() => {
+                postRequest('estimateOnboardCost');
+              }}
+            >
+              Estimate cost
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (state.stage === 'estimate') {
+    const est = state.estimate;
+    return (
+      <div className="modalOverlay" onClick={onClose}>
+        <div className="modalPanel" onClick={(e) => e.stopPropagation()}>
+          <header>
+            <h3>Brownfield Onboarding</h3>
+            <button type="button" onClick={onClose} aria-label="Close">
+              <i className="codicon codicon-close" aria-hidden="true" />
+            </button>
+          </header>
+          <div className="modalBody">
+            <div className="onboardEstimateGrid">
+              <div><small>Files</small><strong>{est.fileCount.toLocaleString()}</strong></div>
+              <div><small>Size</small><strong>{(est.totalBytes / 1024 / 1024).toFixed(2)} MB</strong></div>
+              <div><small>Input tokens</small><strong>{est.estimatedInputTokens.toLocaleString()}</strong></div>
+              <div><small>Output tokens</small><strong>{est.estimatedOutputTokensMin.toLocaleString()}–{est.estimatedOutputTokensMax.toLocaleString()}</strong></div>
+              <div><small>Cost band</small><strong className={`costBand-${est.costBand}`}>{est.costBand.toUpperCase()}</strong></div>
+            </div>
+            <p className="onboardDetected">
+              Detected: {est.detected.languages.join(', ') || '—'} · {est.detected.frameworks.join(', ') || '—'}
+            </p>
+          </div>
+          <div className="modalActions">
+            <button type="button" className="settingsSecondaryButton" onClick={onClose}>Cancel</button>
+            <button type="button" className="settingsPrimaryButton" onClick={onRun}>Generate repo map</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (state.stage === 'running') {
+    return (
+      <div className="modalOverlay" onClick={onClose}>
+        <div className="modalPanel" onClick={(e) => e.stopPropagation()}>
+          <header>
+            <h3>Brownfield Onboarding</h3>
+            <button type="button" onClick={onClose} aria-label="Close">
+              <i className="codicon codicon-close" aria-hidden="true" />
+            </button>
+          </header>
+          <div className="modalBody">
+            <div className="learnCardHeader">
+              <i className="codicon codicon-sync codicon-spin" aria-hidden="true" />
+              <span>Generating repo map…</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // done
+  return (
+    <div className="modalOverlay" onClick={onClose}>
+      <div className="modalPanel" onClick={(e) => e.stopPropagation()}>
+        <header>
+          <h3>Brownfield Onboarding</h3>
+          <button type="button" onClick={onClose} aria-label="Close">
+            <i className="codicon codicon-close" aria-hidden="true" />
+          </button>
+        </header>
+        <div className="modalBody">
+          <p>Repo map written to <strong>{state.path}</strong></p>
+          <p className="onboardDetected">{state.filesScanned.toLocaleString()} files scanned.</p>
+        </div>
+        <div className="modalActions">
+          <button type="button" className="settingsSecondaryButton" onClick={onClose}>Close</button>
+          <button type="button" className="settingsPrimaryButton" onClick={() => {
+            postRequest('openFile', { path: state.path });
+            onClose();
+          }}>Open repo map</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
-function ToolRow({ tool, onOpenFile }: { readonly tool: ChatTool; readonly onOpenFile: (reference: FileReference) => void }): ReactElement {
-  const fileReference = fileReferenceFromTool(tool);
-  const preview = tool.summary ?? tool.arguments;
+function Timeline({ items, onOpenFile, onPreviewImage }: { readonly items: readonly TimelineItem[]; readonly onOpenFile: (reference: FileReference) => void; readonly onPreviewImage: (src: string, alt: string) => void }): ReactElement {
+  const timelineRef = useRef<HTMLDivElement | null>(null);
+  const [lineStyle, setLineStyle] = useState<{ readonly top: number; readonly height: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const el = timelineRef.current;
+    if (!el) return;
+
+    function updateLine(timeline: HTMLElement) {
+      const visibleDots = Array.from(timeline.querySelectorAll<HTMLElement>('.statusDot')).filter((d) => d.offsetHeight > 0);
+      if (visibleDots.length === 0) {
+        setLineStyle(null);
+        return;
+      }
+      const first = visibleDots[0]!;
+      const last = visibleDots[visibleDots.length - 1]!;
+      const timelineRect = timeline.getBoundingClientRect();
+      const firstRect = first.getBoundingClientRect();
+      const lastRect = last.getBoundingClientRect();
+      const top = firstRect.top - timelineRect.top + firstRect.height / 2;
+      const bottom = lastRect.top - timelineRect.top + lastRect.height / 2;
+      setLineStyle({ top, height: Math.max(0, bottom - top) });
+    }
+
+    updateLine(el);
+    const ro = new ResizeObserver(() => updateLine(el));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [items]);
+
   return (
-    <details className={`toolRow tool-${tool.state}`}>
-      <summary>
-        <span>{tool.name}</span>
-        <span className="toolSummaryActions">
-          {fileReference ? (
-            <button
-              type="button"
-              className="toolOpenButton"
-              title={`Open ${fileReference.path}`}
-              aria-label={`Open ${fileReference.path}`}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onOpenFile(fileReference);
-              }}
-            >
-              <i className="codicon codicon-go-to-file" aria-hidden="true" />
-            </button>
-          ) : null}
-          <span>{tool.state}</span>
-        </span>
-      </summary>
-      <div className="toolPreview">
-        <RenderableText text={preview} onOpenFile={onOpenFile} />
+    <div ref={timelineRef} className="timeline">
+      {lineStyle ? <div className="timelineLine" style={{ top: lineStyle.top, height: lineStyle.height }} /> : null}
+      {items.map((item) => (
+        <TimelineItemCard key={item.id} item={item} onOpenFile={onOpenFile} onPreviewImage={onPreviewImage} />
+      ))}
+    </div>
+  );
+}
+
+function TimelineItemCard({ item, onOpenFile, onPreviewImage }: { readonly item: TimelineItem; readonly onOpenFile: (reference: FileReference) => void; readonly onPreviewImage: (src: string, alt: string) => void }): ReactElement | null {
+  switch (item.type) {
+    case 'user':
+      return <UserMessageCard item={item} onOpenFile={onOpenFile} onPreviewImage={onPreviewImage} />;
+    case 'assistant':
+      return <AssistantMessageCard item={item} onOpenFile={onOpenFile} />;
+    case 'thinking':
+      return <ThinkingCard item={item} />;
+    case 'tool':
+      return <ToolCard item={item} />;
+    case 'subagent':
+      return <SubagentCard item={item} onOpenFile={onOpenFile} onPreviewImage={onPreviewImage} />;
+    case 'hook':
+      return <HookCard item={item} />;
+    default:
+      return null;
+  }
+}
+
+function StatusDot({ status }: { readonly status: StepStatus }): ReactElement {
+  return <span className={`statusDot statusDot-${status}`} />;
+}
+
+function UserMessageCard({ item, onOpenFile, onPreviewImage }: { readonly item: Extract<TimelineItem, { type: 'user' }>; readonly onOpenFile: (reference: FileReference) => void; readonly onPreviewImage: (src: string, alt: string) => void }): ReactElement {
+  return (
+    <div className="timelineItem timelineItem-user">
+      <span className="statusDot statusDot-user" />
+      <div className="timelineItemBody">
+        <div className="messageHeader">
+          <span className="messageSender">You</span>
+        </div>
+        <div className="messageBody">
+          <RenderableText text={item.content} onOpenFile={onOpenFile} />
+        </div>
+        {item.attachments && item.attachments.length > 0 ? (
+          <div className="messageAttachments">
+            {item.attachments.map((att, idx) => (
+              att.type === 'image' ? (
+                <button
+                  key={idx}
+                  type="button"
+                  className="messageAttachmentImage"
+                  onClick={() => onPreviewImage(`data:${att.mediaType};base64,${att.base64}`, att.name)}
+                >
+                  <img src={`data:${att.mediaType};base64,${att.base64}`} alt={att.name} />
+                </button>
+              ) : (
+                <span key={idx} className="messageAttachmentFile">
+                  <i className="codicon codicon-file" aria-hidden="true" />
+                  {att.name}
+                </span>
+              )
+            ))}
+          </div>
+        ) : null}
       </div>
-    </details>
+    </div>
+  );
+}
+
+function AssistantMessageCard({ item, onOpenFile }: { readonly item: Extract<TimelineItem, { type: 'assistant' }>; readonly onOpenFile: (reference: FileReference) => void }): ReactElement {
+  if (item.stopped) {
+    return (
+      <div className="timelineItem timelineItem-assistant timelineItem-stopped">
+        <div className="assistantMessageBody">
+          <span className="stoppedIndicator">
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+              <rect width="10" height="10" rx="1" fill="currentColor" />
+            </svg>
+            Turn stopped.
+          </span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="timelineItem timelineItem-assistant">
+      <div className="assistantMessageBody">
+        <RenderableText text={item.content} fallback={item.pending ? '...' : ''} onOpenFile={onOpenFile} />
+        {item.usage ? (
+          <span className="assistantTokenCount">{item.usage.totalTokens.toLocaleString()} tokens</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ThinkingCard({ item }: { readonly item: Extract<TimelineItem, { type: 'thinking' }> }): ReactElement {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className={`timelineItem timelineItem-thinking timelineItem-${item.status}`}>
+      <StatusDot status={item.status} />
+      <details className={`stepCard stepCard-${item.status}`} open={expanded}>
+        <summary onClick={(e) => { e.preventDefault(); setExpanded((v) => !v); }}>
+          <i className="codicon codicon-lightbulb" aria-hidden="true" />
+          <span>Thinking</span>
+        </summary>
+        <div className="stepCardBody">
+          <RenderableText text={item.content} onOpenFile={() => {}} />
+        </div>
+      </details>
+    </div>
+  );
+}
+
+interface EditFileEdit {
+  readonly oldText: string;
+  readonly newText: string;
+}
+
+function DiffBlock({ oldText, newText, path }: { readonly oldText: string; readonly newText: string; readonly path?: string }): ReactElement {
+  const oldLines = oldText.split('\n');
+  const newLines = newText.split('\n');
+  return (
+    <div className="diffBlock">
+      <div className="diffHeader">{path ?? 'Changed'}</div>
+      {oldLines.map((line, i) => (
+        <div key={`old-${i}`} className="diffLine diffLine-removed">{line}</div>
+      ))}
+      {newLines.map((line, i) => (
+        <div key={`new-${i}`} className="diffLine diffLine-added">{line}</div>
+      ))}
+    </div>
+  );
+}
+
+function FileContentBlock({ content, label }: { readonly content: string; readonly label: string }): ReactElement {
+  return (
+    <div className="fileContentBlock">
+      <div className="fileContentHeader">{label}</div>
+      <pre className="fileContentCode">{content}</pre>
+    </div>
+  );
+}
+
+interface TodoItemData {
+  readonly id: string;
+  readonly text: string;
+  readonly status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+}
+
+interface TodoData {
+  readonly todos: readonly TodoItemData[];
+  readonly summary?: {
+    readonly total: number;
+    readonly pending: number;
+    readonly in_progress: number;
+    readonly completed: number;
+    readonly cancelled: number;
+  };
+}
+
+function TodoCard({ data }: { readonly data: TodoData }): ReactElement {
+  return (
+    <div className="todoCard">
+      {data.todos.map((todo) => (
+        <div key={todo.id} className={`todoItem todoItem-${todo.status}`}>
+          <span className="todoCheckbox">
+            {todo.status === 'completed' ? (
+              <i className="codicon codicon-check" aria-hidden="true" />
+            ) : todo.status === 'cancelled' ? (
+              <i className="codicon codicon-close" aria-hidden="true" />
+            ) : todo.status === 'in_progress' ? (
+              <i className="codicon codicon-loading todoSpinner" aria-hidden="true" />
+            ) : (
+              <span className="todoCheckboxEmpty" />
+            )}
+          </span>
+          <span className="todoText">{todo.text}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TerminalBlock({ command, output }: { readonly command: string; readonly output?: string }): ReactElement {
+  return (
+    <>
+      <div className="toolInOutSection">
+        <strong>IN</strong>
+        <div className="terminalBlock">
+          <div className="terminalPrompt">
+            <span className="terminalDollar">$</span>
+            <span className="terminalCommand">{command}</span>
+          </div>
+        </div>
+      </div>
+      {output ? (
+        <div className="toolInOutSection">
+          <strong>OUT</strong>
+          <pre className="terminalOutput">{output}</pre>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function ToolOutput({ item }: { readonly item: Extract<TimelineItem, { type: 'tool' }> }): ReactElement {
+  try {
+    const args = JSON.parse(item.arguments) as Record<string, unknown>;
+
+    if (item.name === 'edit_file' && Array.isArray(args['edits'])) {
+      const edits = args['edits'] as EditFileEdit[];
+      return (
+        <>
+          <div className="toolInOutSection">
+            <strong>IN</strong>
+            <div className="toolInOutDiff">
+              {edits.map((edit, i) => (
+                <DiffBlock key={i} oldText={edit.oldText} newText={edit.newText} path={String(args['path'] ?? 'Changed')} />
+              ))}
+            </div>
+          </div>
+          {item.output ? (
+            <div className="toolInOutSection">
+              <strong>OUT</strong>
+              <pre className="toolInOutCode">{item.output}</pre>
+            </div>
+          ) : null}
+        </>
+      );
+    }
+
+    if (item.name === 'write_file') {
+      const content = typeof args['content'] === 'string' ? args['content'] : '';
+      return (
+        <>
+          <div className="toolInOutSection">
+            <strong>IN</strong>
+            <FileContentBlock content={content} label={`New file: ${String(args['path'] ?? 'unknown')}`} />
+          </div>
+          {item.output ? (
+            <div className="toolInOutSection">
+              <strong>OUT</strong>
+              <pre className="toolInOutCode">{item.output}</pre>
+            </div>
+          ) : null}
+        </>
+      );
+    }
+
+    if (item.name === 'read_file') {
+      return (
+        <>
+          <div className="toolInOutSection">
+            <strong>IN</strong>
+            <pre className="toolInOutCode">{item.arguments}</pre>
+          </div>
+          {item.output ? (
+            <div className="toolInOutSection">
+              <strong>OUT</strong>
+              <FileContentBlock content={item.output} label={String(args['path'] ?? 'content')} />
+            </div>
+          ) : null}
+        </>
+      );
+    }
+
+    if (item.name === 'todo' && item.data && typeof item.data === 'object' && item.data !== null && 'todos' in item.data) {
+      const todoData = item.data as TodoData;
+      return (
+        <>
+          <div className="toolInOutSection">
+            <strong>Todos</strong>
+            <TodoCard data={todoData} />
+          </div>
+          {item.output ? (
+            <div className="toolInOutSection">
+              <strong>OUT</strong>
+              <pre className="toolInOutCode">{item.output}</pre>
+            </div>
+          ) : null}
+        </>
+      );
+    }
+
+    if (item.name === 'terminal') {
+      const command = String(args['command'] ?? '');
+      return <TerminalBlock command={command} output={item.output} />;
+    }
+
+    if (item.name === 'git') {
+      const subcommand = String(args['subcommand'] ?? '');
+      const gitArgs = Array.isArray(args['args']) ? (args['args'] as string[]).join(' ') : '';
+      const command = `git ${subcommand}${gitArgs ? ` ${gitArgs}` : ''}`;
+      return <TerminalBlock command={command} output={item.output} />;
+    }
+
+    if (item.name === 'gh') {
+      const subcommand = String(args['subcommand'] ?? '');
+      const ghArgs = Array.isArray(args['args']) ? (args['args'] as string[]).join(' ') : '';
+      const command = `gh ${subcommand}${ghArgs ? ` ${ghArgs}` : ''}`;
+      return <TerminalBlock command={command} output={item.output} />;
+    }
+  } catch {
+    // fall through to generic render
+  }
+
+  return (
+    <>
+      <div className="toolInOutSection">
+        <strong>IN</strong>
+        <pre className="toolInOutCode">{item.arguments}</pre>
+      </div>
+      {item.output ? (
+        <div className="toolInOutSection">
+          <strong>OUT</strong>
+          <pre className="toolInOutCode">{item.output}</pre>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function toolCategory(name: string): string | null {
+  const map: Record<string, string> = {
+    read_file: 'File',
+    write_file: 'File',
+    edit_file: 'File',
+    str_replace_file: 'File',
+    glob: 'File',
+    grep: 'Search',
+    web_search: 'Search',
+    web_fetch: 'Fetch',
+    browser: 'Browser',
+    terminal: 'Shell',
+    git: 'Git',
+    gh: 'Git',
+    delegate: 'Agent',
+    todo: 'Task',
+    story_create: 'Story',
+    story_update: 'Story',
+    handoff_emit: 'Handoff',
+    handoff_consume: 'Handoff',
+    template_render: 'Template',
+    template_list: 'Template',
+    checklist_run: 'Checklist',
+    checklist_list: 'Checklist',
+    clarify: 'Clarify',
+    open_question: 'Clarify',
+    context_note: 'Context',
+    context_show: 'Context',
+    context_set: 'Context',
+    context_status: 'Context',
+    context_finalize: 'Context',
+    plan_write: 'Plan',
+    plan_show: 'Plan',
+    plan_check: 'Plan',
+    plan_execute: 'Plan',
+    ship_summary: 'Ship',
+    ship_apply: 'Ship',
+    set_mode: 'Settings',
+  };
+  return map[name] ?? null;
+}
+
+function ToolCard({ item }: { readonly item: Extract<TimelineItem, { type: 'tool' }> }): ReactElement {
+  const [expanded, setExpanded] = useState(false);
+  let subtitle = '';
+  let actionLabel = '';
+  try {
+    const args = JSON.parse(item.arguments) as Record<string, unknown>;
+    subtitle = (args['path'] as string) ?? (args['command'] as string) ?? (args['query'] as string) ?? (args['url'] as string) ?? '';
+    actionLabel = (args['description'] as string) ?? (args['message'] as string) ?? (args['action'] as string) ?? '';
+  } catch {
+    subtitle = item.arguments.slice(0, 60);
+  }
+  const iconClass = item.name === 'edit_file' || item.name === 'write_file' || item.name === 'read_file'
+    ? 'codicon codicon-file-code'
+    : item.name === 'terminal' || item.name === 'git' || item.name === 'gh'
+      ? 'codicon codicon-terminal'
+      : item.name === 'delegate'
+        ? 'codicon codicon-person'
+        : item.name === 'todo'
+          ? 'codicon codicon-tasklist'
+          : 'codicon codicon-tools';
+  const displayName = item.name.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join('');
+  const category = toolCategory(item.name);
+  return (
+    <div className={`timelineItem timelineItem-tool timelineItem-${item.status}`}>
+      <StatusDot status={item.status} />
+      <details className={`stepCard stepCard-${item.status}${item.sourceAgent ? ' stepCard-subagentOrigin' : ''}`} open={expanded}>
+        <summary onClick={(e) => { e.preventDefault(); setExpanded((v) => !v); }}>
+          <i className={iconClass} aria-hidden="true" />
+          <span>{displayName}</span>
+          {category ? <span className="stepCardCategory">{category}</span> : null}
+          {actionLabel ? <span className="stepCardTag">{actionLabel}</span> : null}
+          {subtitle && !actionLabel ? <span className="stepCardSubtitle">{subtitle}</span> : null}
+          {item.sourceAgent ? <span className="stepCardSource">{item.sourceAgent}</span> : null}
+        </summary>
+        <div className="stepCardBody">
+          <div className="toolInOut">
+            <ToolOutput item={item} />
+          </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function SubagentCard({ item, onOpenFile, onPreviewImage }: { readonly item: Extract<TimelineItem, { type: 'subagent' }>; readonly onOpenFile: (reference: FileReference) => void; readonly onPreviewImage: (src: string, alt: string) => void }): ReactElement {
+  const [expanded, setExpanded] = useState(false);
+  const [showChildSteps, setShowChildSteps] = useState(false);
+  const childCount = item.childSteps?.length ?? 0;
+  return (
+    <div className={`timelineItem timelineItem-subagent timelineItem-${item.status}`}>
+      <StatusDot status={item.status} />
+      <details className={`stepCard stepCard-${item.status}`} open={expanded}>
+        <summary onClick={(e) => { e.preventDefault(); setExpanded((v) => !v); }}>
+          <i className="codicon codicon-person" aria-hidden="true" />
+          <span>Subagent</span>
+          <span className="stepCardTag">{item.agent}</span>
+          {childCount > 0 ? <span className="stepCountBadge">{childCount} steps</span> : null}
+        </summary>
+        <div className="stepCardBody">
+          <p className="subagentGoal">{item.goal}</p>
+          {item.childSteps && childCount > 0 ? (
+            <div className="subagentChildToggle">
+              <button
+                type="button"
+                className="subagentChildToggleButton"
+                onClick={() => setShowChildSteps((v) => !v)}
+              >
+                <i className={`codicon codicon-chevron-${showChildSteps ? 'down' : 'right'}`} aria-hidden="true" />
+                <span>{childCount} steps</span>
+              </button>
+              {showChildSteps ? (
+                <Timeline items={item.childSteps} onOpenFile={onOpenFile} onPreviewImage={onPreviewImage} />
+              ) : null}
+            </div>
+          ) : null}
+          {item.summary ? (
+            <div className="toolInOutSection">
+              <strong>OUT</strong>
+              <pre className="toolInOutCode">{item.summary}</pre>
+            </div>
+          ) : null}
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function HookCard({ item }: { readonly item: Extract<TimelineItem, { type: 'hook' }> }): ReactElement {
+  return (
+    <div className={`timelineItem timelineItem-hook timelineItem-${item.status}`}>
+      <StatusDot status={item.status} />
+      <div className={`stepCard stepCard-inline stepCard-${item.status}`}>
+        <span><i className="codicon codicon-shield" aria-hidden="true" /> {item.hook}</span>
+        <span className="stepCardSubtitle">{item.target}</span>
+        {item.action ? <span className="stepCountBadge">{item.action}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function ProcessingIndicator(): ReactElement {
+  return (
+    <div className="processingIndicator">
+      <span className="statusDot statusDot-running" />
+      <span>Processing...</span>
+    </div>
   );
 }
 
@@ -3946,7 +5128,9 @@ function RenderableText({
   const parts = splitFileReferences(text || fallback);
   return (
     <>
-      {parts.map((part, index) => typeof part === 'string' ? part : (
+      {parts.map((part, index) => typeof part === 'string' ? (
+        <MarkdownText key={`md-${index}`} text={part} />
+      ) : (
         <button
           key={`${part.path}:${part.line ?? 0}:${index}`}
           type="button"
@@ -3961,6 +5145,48 @@ function RenderableText({
   );
 }
 
+function MarkdownText({ text }: { readonly text: string }): ReactElement {
+  const html = useMemo(() => {
+    try {
+      return marked.parse(text, { async: false });
+    } catch {
+      return text;
+    }
+  }, [text]);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    // Syntax highlight all code blocks
+    ref.current.querySelectorAll('pre code').forEach((block) => {
+      hljs.highlightElement(block as HTMLElement);
+    });
+    // Add copy buttons
+    const blocks = ref.current.querySelectorAll('pre');
+    blocks.forEach((pre) => {
+      if (pre.querySelector('.codeBlockCopy')) return;
+      const code = pre.querySelector('code');
+      if (!code) return;
+      const btn = document.createElement('button');
+      btn.className = 'codeBlockCopy';
+      btn.type = 'button';
+      btn.textContent = 'Copy';
+      btn.onclick = () => {
+        void navigator.clipboard.writeText(code.textContent ?? '');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+      };
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+    return () => {
+      blocks.forEach((pre) => {
+        pre.querySelector('.codeBlockCopy')?.remove();
+      });
+    };
+  }, [html]);
+  return <div ref={ref} className="markdownBody" dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
 const stripInteractionBlocks = (s: string): string =>
   s.replace(/<atlas:question>[\s\S]*?<\/atlas:question>/g, '').trim();
 
@@ -3969,6 +5195,452 @@ const renderVisibleAssistant = (buf: string): string => {
   const open = stripped.indexOf('<atlas:question>');
   return (open >= 0 ? stripped.slice(0, open) : stripped).trimEnd();
 };
+
+/** Tracks active subagent IDs → agent names for attributing tool calls. */
+const activeSubagents = new Map<string, string>();
+/** Tracks child timeline items per active subagent ID. */
+const subagentChildSteps = new Map<string, TimelineItem[]>();
+
+function currentSourceAgent(): string | undefined {
+  // Use the most recently started subagent
+  const entries = Array.from(activeSubagents.entries());
+  return entries.length > 0 ? entries[entries.length - 1]![1] : undefined;
+}
+
+function currentSubagentId(): string | undefined {
+  const entries = Array.from(activeSubagents.entries());
+  return entries.length > 0 ? entries[entries.length - 1]![0] : undefined;
+}
+
+function applyTimelineEvent(
+  event: BridgeStreamEvent,
+  setTimeline: (updater: (timeline: readonly TimelineItem[]) => readonly TimelineItem[]) => void,
+): void {
+  switch (event.type) {
+    case 'delta': {
+      setTimeline((current) => {
+        // Find the last assistant that appears after the most recent non-assistant item.
+        // This creates fragmented assistant messages interleaved with tools/thinking.
+        let lastNonAssistantIdx = -1;
+        for (let i = current.length - 1; i >= 0; i--) {
+          const item = current[i]!;
+          if (item.type !== 'assistant') { lastNonAssistantIdx = i; break; }
+        }
+        let targetIdx = -1;
+        for (let i = current.length - 1; i > lastNonAssistantIdx; i--) {
+          const item = current[i]!;
+          if (item.type === 'assistant' && item.pending) { targetIdx = i; break; }
+        }
+        const next = [...current];
+        if (targetIdx !== -1) {
+          const item = next[targetIdx] as Extract<TimelineItem, { type: 'assistant' }>;
+          const raw = item.rawContent + event.text;
+          next[targetIdx] = { ...item, rawContent: raw, content: renderVisibleAssistant(raw) };
+        } else {
+          next.push({ id: `assistant-${Date.now()}`, type: 'assistant', content: '', rawContent: event.text, pending: true });
+        }
+        return next;
+      });
+      return;
+    }
+    case 'thinking': {
+      setTimeline((current) => {
+        let lastIdx = -1;
+        for (let i = current.length - 1; i >= 0; i--) {
+          const item = current[i]!;
+          if (item.type === 'thinking' && item.status === 'running') { lastIdx = i; break; }
+        }
+        if (lastIdx !== -1) {
+          const next = [...current];
+          const item = next[lastIdx] as Extract<TimelineItem, { type: 'thinking' }>;
+          next[lastIdx] = { ...item, content: item.content + event.text };
+          return next;
+        }
+        return [...current, { id: `thinking-${Date.now()}`, type: 'thinking', status: 'running', content: event.text }];
+      });
+      return;
+    }
+    case 'tool_call': {
+      const sourceAgent = currentSourceAgent();
+      const subagentId = currentSubagentId();
+      const toolItem: TimelineItem = {
+        id: event.call.id,
+        type: 'tool',
+        status: 'running',
+        name: event.call.name,
+        arguments: event.call.arguments,
+        ...(sourceAgent ? { sourceAgent } : {}),
+      };
+      if (subagentId) {
+        const children = subagentChildSteps.get(subagentId) ?? [];
+        children.push(toolItem);
+        subagentChildSteps.set(subagentId, children);
+      }
+      setTimeline((current) => [...current, toolItem]);
+      return;
+    }
+    case 'tool_result': {
+      const subagentId2 = currentSubagentId();
+      setTimeline((current) => {
+        const idx = current.findIndex((item) => item.type === 'tool' && item.id === event.call.id);
+        if (idx === -1) return current;
+        const next = [...current];
+        const item = next[idx] as Extract<TimelineItem, { type: 'tool' }>;
+        const updated: TimelineItem = {
+          ...item,
+          status: event.outcome.type === 'ok' ? 'ok' : 'error',
+          summary: event.outcome.type === 'ok' ? event.outcome.summary : event.outcome.error.message,
+          output: event.outcome.type === 'ok' ? event.outcome.summary : event.outcome.error.message,
+          data: event.outcome.type === 'ok' ? event.outcome.data : undefined,
+        };
+        next[idx] = updated;
+        // Also update in subagent childSteps if applicable
+        if (subagentId2) {
+          const children = subagentChildSteps.get(subagentId2);
+          if (children) {
+            const childIdx = children.findIndex((c) => c.type === 'tool' && c.id === event.call.id);
+            if (childIdx !== -1) children[childIdx] = updated;
+          }
+        }
+        return next;
+      });
+      return;
+    }
+    case 'turn_end': {
+      setTimeline((current) => {
+        let lastIdx = -1;
+        for (let i = current.length - 1; i >= 0; i--) {
+          if (current[i]!.type === 'assistant') { lastIdx = i; break; }
+        }
+        if (lastIdx === -1) return current;
+        const last = current[lastIdx]!;
+        if (last.type !== 'assistant') return current;
+        const next = [...current];
+        const raw = last.rawContent;
+        const stripped = stripInteractionBlocks(raw);
+        next[lastIdx] = { ...last, content: stripped, rawContent: stripped, pending: false };
+        return next;
+      });
+      // Also mark the last running thinking as ok
+      setTimeline((current) => {
+        let lastIdx = -1;
+        for (let i = current.length - 1; i >= 0; i--) {
+          const item = current[i]!;
+          if (item.type === 'thinking' && item.status === 'running') { lastIdx = i; break; }
+        }
+        if (lastIdx === -1) return current;
+        const next = [...current];
+        const item = next[lastIdx] as Extract<TimelineItem, { type: 'thinking' }>;
+        next[lastIdx] = { ...item, status: 'ok' };
+        return next;
+      });
+      return;
+    }
+    case 'done': {
+      activeSubagents.clear();
+      setTimeline((current) => current.map((item) => (
+        item.type === 'assistant' && item.pending
+          ? { ...item, pending: false, usage: event.usage }
+          : item.type === 'thinking' || item.type === 'tool' || item.type === 'hook' || item.type === 'subagent'
+            ? item.status === 'running' ? { ...item, status: 'ok' as const } : item
+            : item
+      )));
+      return;
+    }
+    case 'error': {
+      activeSubagents.clear();
+      setTimeline((current) => [...current, { id: `error-${Date.now()}`, type: 'user', content: event.error.message }]);
+      return;
+    }
+    case 'subagent_start': {
+      activeSubagents.set(event.id, event.agent);
+      subagentChildSteps.set(event.id, []);
+      setTimeline((current) => [...current, {
+        id: event.id,
+        type: 'subagent',
+        status: 'running',
+        agent: event.agent,
+        goal: event.goal,
+      }]);
+      return;
+    }
+    case 'subagent_delta': {
+      setTimeline((current) => {
+        const idx = current.findIndex((item) => item.type === 'subagent' && item.id === event.id);
+        if (idx === -1) return current;
+        const next = [...current];
+        const item = next[idx] as Extract<TimelineItem, { type: 'subagent' }>;
+        next[idx] = { ...item, summary: (item.summary ?? '') + event.text };
+        return next;
+      });
+      return;
+    }
+    case 'subagent_done': {
+      activeSubagents.delete(event.id);
+      const childSteps = subagentChildSteps.get(event.id);
+      subagentChildSteps.delete(event.id);
+      setTimeline((current) => {
+        const idx = current.findIndex((item) => item.type === 'subagent' && item.id === event.id);
+        if (idx === -1) return current;
+        const next = [...current];
+        const item = next[idx] as Extract<TimelineItem, { type: 'subagent' }>;
+        next[idx] = { ...item, status: 'ok', summary: event.summary, childSteps };
+        return next;
+      });
+      return;
+    }
+    case 'hook_triggered': {
+      setTimeline((current) => [...current, {
+        id: `hook-${event.hook}-${Date.now()}`,
+        type: 'hook',
+        status: 'running',
+        hook: event.hook,
+        target: event.target,
+      }]);
+      return;
+    }
+    case 'hook_resolved': {
+      setTimeline((current) => {
+        let idx = -1;
+        for (let i = current.length - 1; i >= 0; i--) {
+          const item = current[i]!;
+          if (item.type === 'hook' && item.hook === event.hook && item.status === 'running') { idx = i; break; }
+        }
+        if (idx === -1) return current;
+        const next = [...current];
+        const item = next[idx] as Extract<TimelineItem, { type: 'hook' }>;
+        next[idx] = { ...item, status: 'ok', action: event.action };
+        return next;
+      });
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+async function runDevTest(
+  _requestId: string,
+  setTimeline: (updater: (timeline: readonly TimelineItem[]) => readonly TimelineItem[]) => void,
+  setRunningRequestId: (id: string | null) => void,
+): Promise<void> {
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const emit = (event: BridgeStreamEvent) => applyTimelineEvent(event, setTimeline);
+
+  // 1. Thinking with rich markdown formatting examples
+  await delay(200);
+  emit({ type: 'thinking', text: `Analyzing workspace structure and planning tool invocations...
+
+**Plan:**
+1. Read \`package.json\` to understand project metadata
+2. Edit \`README.md\` to fix the title
+3. Create a temp config file
+4. Run a terminal command to list files
+5. Search for TODO patterns
+6. Update the todo tracker
+7. Delegate exploration to a subagent
+8. Run guardrail checks
+
+> Note: This is a *synthetic* test of the timeline renderer.
+
+\`\`\`typescript
+const plan = {
+  tools: ['read_file', 'edit_file', 'write_file', 'terminal', 'grep', 'todo', 'delegate'],
+  subagents: ['explore', 'coder'],
+  expectedDuration: '8s'
+};
+\`\`\`
+
+| Tool | Purpose | Status |
+|------|---------|--------|
+| read_file | Inspect package.json | pending |
+| edit_file | Fix README title | pending |
+| write_file | Create temp file | pending |
+
+Let's begin.` });
+
+  // 2. Interleaved thinking before read_file
+  await delay(200);
+  emit({ type: 'thinking', text: 'I need to understand the project structure first. Let me read the package.json to see the dependencies and scripts.' });
+
+  // 3. read_file tool — with actual file content in output
+  await delay(400);
+  const readCall: ToolCall = { id: 'tool-read-1', name: 'read_file', arguments: JSON.stringify({ path: 'package.json' }) };
+  emit({ type: 'tool_call', call: readCall });
+  await delay(600);
+  emit({ type: 'tool_result', call: readCall, outcome: { type: 'ok', summary: '{\n  "name": "atlas-cli",\n  "version": "0.1.4",\n  "description": "Atlas OS — agentic dev environment",\n  "type": "module",\n  "scripts": {\n    "build": "tsc -p tsconfig.build.json",\n    "test": "vitest",\n    "lint": "eslint src/"\n  },\n  "dependencies": {\n    "zod": "^3.23.8",\n    "marked": "^14.0.0"\n  }\n}' } });
+  await delay(200);
+  emit({ type: 'turn_end' });
+
+  // 4. Interleaved thinking before edit_file
+  await delay(200);
+  emit({ type: 'thinking', text: 'The project is an ESM TypeScript monorepo. Now I need to fix the README title to match the package name.' });
+
+  // 5. edit_file tool — with filename in diff header
+  await delay(300);
+  const editCall: ToolCall = { id: 'tool-edit-1', name: 'edit_file', arguments: JSON.stringify({ path: 'README.md', edits: [{ oldText: '# Atlas', newText: '# Atlas CLI' }] }) };
+  emit({ type: 'tool_call', call: editCall });
+  await delay(500);
+  emit({ type: 'tool_result', call: editCall, outcome: { type: 'ok', summary: 'Applied 1 edit to README.md' } });
+  await delay(200);
+  emit({ type: 'turn_end' });
+
+  // 6. Interleaved thinking before write_file
+  await delay(300);
+  const writeCall: ToolCall = { id: 'tool-write-1', name: 'write_file', arguments: JSON.stringify({ path: '.atlas/dev-test-temp.txt', content: '# Temporary Dev Test File\n\nThis file was created by the /dev test harness.\nIt will be deleted automatically when the test completes.\n\n- Created: 2026-05-13\n- Purpose: Timeline visualization test\n' }) };
+  emit({ type: 'tool_call', call: writeCall });
+  await delay(500);
+  emit({ type: 'tool_result', call: writeCall, outcome: { type: 'ok', summary: 'Created .atlas/dev-test-temp.txt (142 bytes)' } });
+  await delay(200);
+  emit({ type: 'turn_end' });
+
+  // 8. Interleaved thinking before terminal
+  await delay(200);
+  emit({ type: 'thinking', text: 'The temp file is created. Let me run a terminal command to verify the .atlas directory contents.' });
+
+  // 9. terminal tool
+  await delay(300);
+  const terminalCall: ToolCall = { id: 'tool-term-1', name: 'terminal', arguments: JSON.stringify({ command: 'echo "Dev test running" && ls -la .atlas/' }) };
+  emit({ type: 'tool_call', call: terminalCall });
+  await delay(600);
+  emit({ type: 'tool_result', call: terminalCall, outcome: { type: 'ok', summary: 'Dev test running\ntotal 16\ndrwxr-xr-x  2 user user 4096 May 13 20:30 .\ndrwxr-xr-x  8 user user 4096 May 13 20:00 ..\n-rw-r--r--  1 user user  142 May 13 20:30 dev-test-temp.txt' } });
+  await delay(200);
+  emit({ type: 'turn_end' });
+
+  // 10. Interleaved thinking before grep
+  await delay(200);
+  emit({ type: 'thinking', text: 'Directory looks clean. Now let me search for any TODO or FIXME comments in the source code.' });
+
+  // 11. grep tool
+  await delay(300);
+  const grepCall: ToolCall = { id: 'tool-grep-1', name: 'grep', arguments: JSON.stringify({ pattern: 'TODO|FIXME|HACK', path: 'src', output: 'content' }) };
+  emit({ type: 'tool_call', call: grepCall });
+  await delay(500);
+  emit({ type: 'tool_result', call: grepCall, outcome: { type: 'ok', summary: 'src/core/loop.ts:142:  // TODO: add retry logic for rate limits\nsrc/tools/delegate.ts:88:  // FIXME: handle concurrent subagent limit\nsrc/ui/main.tsx:1104:  // HACK: workaround for safari flexbox bug' } });
+  await delay(200);
+  emit({ type: 'turn_end' });
+
+  // 12. Interleaved thinking before todo
+  await delay(200);
+  emit({ type: 'thinking', text: 'Found some TODOs and FIXMEs. Let me update the todo tracker to keep track of these items.' });
+
+  // 13. todo tool with action label
+  await delay(300);
+  const todoCall: ToolCall = {
+    id: 'tool-todo-1',
+    name: 'todo',
+    arguments: JSON.stringify({
+      description: 'Update Todos',
+      todos: [
+        { id: '1', content: 'Fix grey screen crash on large terminal output', status: 'completed' },
+        { id: '2', content: 'Add timeline vertical connector line', status: 'completed' },
+        { id: '3', content: 'Implement todo checklist UI with active highlight', status: 'in_progress' },
+        { id: '4', content: 'Build, test, and package extension', status: 'pending' },
+      ]
+    })
+  };
+  emit({ type: 'tool_call', call: todoCall });
+  await delay(500);
+  emit({
+    type: 'tool_result',
+    call: todoCall,
+    outcome: {
+      type: 'ok',
+      summary: '4 todos: 1p / 1i / 2c / 0x',
+      data: {
+        todos: [
+          { id: '1', content: 'Fix grey screen crash on large terminal output', status: 'completed' },
+          { id: '2', content: 'Add timeline vertical connector line', status: 'completed' },
+          { id: '3', content: 'Implement todo checklist UI with active highlight', status: 'in_progress' },
+          { id: '4', content: 'Build, test, and package extension', status: 'pending' },
+        ],
+        summary: { total: 4, pending: 1, in_progress: 1, completed: 2, cancelled: 0 }
+      }
+    }
+  });
+  await delay(200);
+  emit({ type: 'turn_end' });
+
+  // 14. Interleaved thinking before subagent
+  await delay(200);
+  emit({ type: 'thinking', text: 'Good, the todo tracker is updated. Now I need to delegate the provider exploration to a subagent.' });
+
+  // 15. Subagent delegation — explore agent with child tool calls inside
+  await delay(400);
+  emit({ type: 'subagent_start', id: 'subagent-explore-1', agent: 'explore', goal: 'Explore the providers directory and list all API integrations' });
+
+  await delay(300);
+  const childReadCall: ToolCall = { id: 'tool-child-read-1', name: 'read_file', arguments: JSON.stringify({ path: 'src/providers/openrouter.ts' }) };
+  emit({ type: 'tool_call', call: childReadCall });
+  await delay(500);
+  emit({ type: 'tool_result', call: childReadCall, outcome: { type: 'ok', summary: 'export function createOpenRouterProvider(config: OpenRouterConfig) {\n  return {\n    name: "openrouter",\n    stream: async (req) => { /* ... */ }\n  };\n}' } });
+
+  await delay(300);
+  // glob = file pattern matching tool (like ls src/providers/*.ts)
+  const childGlobCall: ToolCall = { id: 'tool-child-glob-1', name: 'glob', arguments: JSON.stringify({ pattern: 'src/providers/*.ts' }) };
+  emit({ type: 'tool_call', call: childGlobCall });
+  await delay(400);
+  emit({ type: 'tool_result', call: childGlobCall, outcome: { type: 'ok', summary: 'Found 6 files matching src/providers/*.ts' } });
+
+  await delay(300);
+  const childGrepCall: ToolCall = { id: 'tool-child-grep-1', name: 'grep', arguments: JSON.stringify({ pattern: 'export function create', path: 'src/providers' }) };
+  emit({ type: 'tool_call', call: childGrepCall });
+  await delay(400);
+  emit({ type: 'tool_result', call: childGrepCall, outcome: { type: 'ok', summary: 'Found 5 provider factory functions' } });
+
+  await delay(400);
+  emit({ type: 'subagent_delta', id: 'subagent-explore-1', text: 'Found 6 provider files and 5 factory functions in src/providers/' });
+  await delay(300);
+  emit({ type: 'subagent_done', id: 'subagent-explore-1', summary: 'Explored providers directory: 6 files, 5 factory functions (openrouter, anthropic, codex, local, opencode)' });
+
+  // 9. Hook guardrail
+  await delay(300);
+  emit({ type: 'hook_triggered', hook: 'dangerousCommand', target: 'rm -rf node_modules' });
+  await delay(400);
+  emit({ type: 'hook_resolved', hook: 'dangerousCommand', action: 'block' });
+
+  // 10. Another subagent — coder with child edit
+  await delay(300);
+  emit({ type: 'subagent_start', id: 'subagent-coder-1', agent: 'coder', goal: 'Refactor auth module to use Result pattern instead of exceptions' });
+  await delay(400);
+  const childEditCall: ToolCall = { id: 'tool-child-edit-1', name: 'edit_file', arguments: JSON.stringify({ path: 'src/auth.ts', edits: [{ oldText: 'throw new Error("Unauthorized")', newText: 'return err(atlasError("AUTH_UNAUTHORIZED", "Invalid credentials"))' }] }) };
+  emit({ type: 'tool_call', call: childEditCall });
+  await delay(500);
+  emit({ type: 'tool_result', call: childEditCall, outcome: { type: 'ok', summary: 'Applied 1 edit to src/auth.ts' } });
+  await delay(300);
+  const childWriteCall: ToolCall = { id: 'tool-child-write-1', name: 'write_file', arguments: JSON.stringify({ path: 'src/auth-result.ts', content: 'export type AuthResult = Result<Session, AtlasError>;\n' }) };
+  emit({ type: 'tool_call', call: childWriteCall });
+  await delay(400);
+  emit({ type: 'tool_result', call: childWriteCall, outcome: { type: 'ok', summary: 'Created src/auth-result.ts' } });
+  await delay(300);
+  emit({ type: 'subagent_done', id: 'subagent-coder-1', summary: 'Refactored auth module: replaced 3 throws with Result pattern, created auth-result.ts' });
+
+  // 11. Error tool example (red dot)
+  await delay(300);
+  const errorCall: ToolCall = { id: 'tool-error-1', name: 'read_file', arguments: JSON.stringify({ path: 'nonexistent-file.txt' }) };
+  emit({ type: 'tool_call', call: errorCall });
+  await delay(400);
+  emit({ type: 'tool_result', call: errorCall, outcome: { type: 'error', error: { message: 'ENOENT: no such file or directory, open \'nonexistent-file.txt\'', code: 'ENOENT' } } });
+
+  // 12. Inline assistant fragments appear throughout the timeline
+  // First fragment: after todo, before subagent
+  await delay(200);
+  emit({ type: 'delta', text: 'I\'ve updated the todo list and read the project files. Now I\'ll delegate the provider exploration to a subagent.' });
+
+  // Second fragment: between subagents
+  await delay(300);
+  emit({ type: 'delta', text: 'The explore subagent found 6 provider implementations. Now I\'ll have the coder refactor the auth module.' });
+
+  // Third fragment: after error, final summary
+  await delay(300);
+  emit({ type: 'delta', text: 'All dev tests completed successfully!\n\n**Verified components:**\n- ✅ Read file with syntax-highlighted preview\n- ✅ Edit file with diff view (filename header)\n- ✅ Write file with new file preview\n- ✅ Terminal with $ prompt + output\n- ✅ Grep search results\n- ✅ Todo checklist with active highlight + spinner\n- ✅ Subagent delegation with nested child timeline\n- ✅ Source attribution (agent badge)\n- ✅ Hook guardrails (trigger → block)\n- ✅ Error state (red dot)\n- ✅ Fragmented assistant messages inline\n\nThe timeline visualization is working as expected.' });
+  await delay(200);
+  emit({ type: 'turn_end' });
+  await delay(200);
+  emit({ type: 'done', finishReason: 'stop', usage: { promptTokens: 1240, completionTokens: 680, totalTokens: 1920 } });
+
+  setRunningRequestId(null);
+}
 
 function applyStreamEvent(
   requestId: string,
@@ -4051,9 +5723,20 @@ function updateAssistant(
   setMessages: (updater: (messages: readonly ChatMessage[]) => readonly ChatMessage[]) => void,
   update: (message: ChatMessage) => ChatMessage,
 ): void {
-  setMessages((current) => current.map((message) => (
-    message.requestId === requestId && message.role === 'assistant' ? update(message) : message
-  )));
+  setMessages((current) => {
+    let lastIndex = -1;
+    for (let i = current.length - 1; i >= 0; i--) {
+      const message = current[i];
+      if (message && message.requestId === requestId && message.role === 'assistant') {
+        lastIndex = i;
+        break;
+      }
+    }
+    if (lastIndex === -1) return current;
+    const next = [...current];
+    next[lastIndex] = update(next[lastIndex]!);
+    return next;
+  });
 }
 
 function markAssistantDone(
@@ -4091,39 +5774,6 @@ function splitFileReferences(text: string): readonly (string | FileReference)[] 
 
   if (cursor < text.length) parts.push(text.slice(cursor));
   return parts.length > 0 ? parts : [text];
-}
-
-function firstFileReference(text: string): FileReference | null {
-  for (const part of splitFileReferences(text)) {
-    if (typeof part !== 'string') return part;
-  }
-  return null;
-}
-
-function fileReferenceFromTool(tool: ChatTool): FileReference | null {
-  const fromArgs = fileReferenceFromToolArguments(tool.arguments);
-  if (fromArgs) return fromArgs;
-  return firstFileReference(tool.summary ?? '');
-}
-
-function fileReferenceFromToolArguments(rawArguments: string): FileReference | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawArguments);
-  } catch {
-    return null;
-  }
-  if (!isRecord(parsed)) return null;
-
-  const pathValue = parsed['path'] ?? parsed['filePath'] ?? parsed['targetPath'];
-  if (typeof pathValue !== 'string' || !isFileLikePath(pathValue)) return null;
-  const lineValue = parsed['line'] ?? parsed['startLine'];
-  const columnValue = parsed['column'] ?? parsed['startColumn'];
-  return {
-    path: pathValue,
-    ...(typeof lineValue === 'number' && Number.isInteger(lineValue) && lineValue > 0 ? { line: lineValue } : {}),
-    ...(typeof columnValue === 'number' && Number.isInteger(columnValue) && columnValue > 0 ? { column: columnValue } : {}),
-  };
 }
 
 function isFileLikePath(path: string): boolean {
@@ -4210,11 +5860,15 @@ function actionNoticeFromResult(result: RuntimeActionResult): string {
     if (result['provider'] === 'local') return `${modelNotice} — Lite mode activated.`;
     return modelNotice;
   }
-  if (typeof result['agent'] === 'string') return `Agent set to ${result['agent']}`;
+  if (typeof result['agent'] === 'string') {
+    const restored = typeof result['restoredModel'] === 'string' ? ` (restored ${result['restoredModel']})` : '';
+    return `Agent set to ${result['agent']}${restored}`;
+  }
   if (typeof result['deleted'] === 'string') return `Deleted session ${result['deleted']}`;
   if (typeof result['mcp'] === 'string') return `MCP ${result['mcp']} updated.`;
   if (typeof result['secret'] === 'string' && typeof result['label'] === 'string') return `${result['label']} ${result['configured'] ? 'stored' : 'cleared'}.`;
   if (result['codexSignIn'] === true) return 'ChatGPT / Codex sign-in complete.';
+  if (typeof result['message'] === 'string') return result['message'];
   if (result['settingsUpdated'] === true) {
     const update = result['update'];
     if (isRecord(update)) {

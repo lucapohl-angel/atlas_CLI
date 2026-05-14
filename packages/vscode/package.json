@@ -68,7 +68,14 @@
       "properties": {
         "atlas.defaultProvider": {
           "type": "string",
-          "enum": ["openrouter", "anthropic", "openai-codex", "local", "opencode-zen", "opencode-go"],
+          "enum": [
+            "openrouter",
+            "anthropic",
+            "openai-codex",
+            "local",
+            "opencode-zen",
+            "opencode-go"
+          ],
           "default": "openrouter",
           "description": "Atlas default provider override for VS Code."
         },
@@ -84,13 +91,20 @@
         },
         "atlas.mode": {
           "type": "string",
-          "enum": ["full", "smart"],
+          "enum": [
+            "full",
+            "smart"
+          ],
           "default": "full",
           "description": "Atlas power mode override."
         },
         "atlas.vscodePowerMode": {
           "type": "string",
-          "enum": ["lite", "hybrid", "full"],
+          "enum": [
+            "lite",
+            "hybrid",
+            "full"
+          ],
           "default": "full",
           "description": "VS Code: extension-specific power mode (lite/hybrid/full). Does not affect CLI/TUI."
         },
@@ -106,7 +120,11 @@
         },
         "atlas.local.toolMode": {
           "type": "string",
-          "enum": ["lite", "hybrid", "full"],
+          "enum": [
+            "lite",
+            "hybrid",
+            "full"
+          ],
           "default": "lite",
           "description": "Local model tool/prompt mode."
         },
@@ -127,7 +145,11 @@
         },
         "atlas.openai.authMode": {
           "type": "string",
-          "enum": ["auto", "apiKey", "oauth"],
+          "enum": [
+            "auto",
+            "apiKey",
+            "oauth"
+          ],
           "default": "auto",
           "description": "OpenAI auth preference: direct API key, ChatGPT/Codex OAuth, or automatic."
         },
@@ -167,7 +189,12 @@
         },
         "atlas.ship.autoResolve": {
           "type": "string",
-          "enum": ["abort", "ours", "theirs", "ai"],
+          "enum": [
+            "abort",
+            "ours",
+            "theirs",
+            "ai"
+          ],
           "default": "abort",
           "description": "Default conflict resolution strategy for ship_apply mode=auto."
         },
@@ -234,11 +261,13 @@
     "@atlas/core": "workspace:*",
     "@vscode-elements/elements": "^2.5.1",
     "@vscode/codicons": "^0.0.45",
+    "highlight.js": "^11.11.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/diff": "^8.0.0",
     "@types/node": "^22.13.10",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.0.3",

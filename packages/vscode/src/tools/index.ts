@@ -4,11 +4,15 @@ import type { VsCodeToolHost } from './types.js';
 import { createVsCodeEditFileTool } from './vscode-edit.js';
 import { createVsCodeReadFileTool, createVsCodeWriteFileTool } from './vscode-fs.js';
 import { createVsCodeTerminalTool } from './vscode-terminal.js';
+import { createSetModeTool } from './set-mode.js';
 
-export { createVsCodeApprovalPolicy, createVsCodeClarifyAsk } from './approval.js';
+export { createVsCodeApprovalPolicy, createVsCodeClarifyAsk, createVsCodeShipResolveAsk } from './approval.js';
 export type { VsCodeToolHost } from './types.js';
 
-export const createVsCodeToolRegistry = (host: VsCodeToolHost): ToolRegistry => {
+export const createVsCodeToolRegistry = (
+  host: VsCodeToolHost,
+  onSetMode?: (mode: 'plan' | 'build' | 'autopilot') => void,
+): ToolRegistry => {
   const registry = builtinToolRegistry();
   for (const name of ['read_file', 'write_file', 'edit_file', 'terminal']) {
     registry.unregister(name);
@@ -17,5 +21,8 @@ export const createVsCodeToolRegistry = (host: VsCodeToolHost): ToolRegistry => 
   registry.register(createVsCodeWriteFileTool(host));
   registry.register(createVsCodeEditFileTool(host));
   registry.register(createVsCodeTerminalTool(host));
+  if (onSetMode) {
+    registry.register(createSetModeTool(onSetMode));
+  }
   return registry;
 };

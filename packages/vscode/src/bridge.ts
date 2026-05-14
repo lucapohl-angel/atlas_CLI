@@ -46,6 +46,7 @@ const ToolOutcomeSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('ok'),
     summary: z.string(),
+    data: z.unknown().optional(),
   }).strict(),
   z.object({
     type: z.literal('error'),
@@ -156,6 +157,50 @@ export const BridgeStreamEventSchema = z.discriminatedUnion('type', [
     type: z.literal('learn_saved'),
     name: z.string(),
     description: z.string(),
+  }).strict(),
+  z.object({
+    type: z.literal('ship_conflict'),
+    conflict: z.object({
+      id: z.string().min(1),
+      base: z.string().min(1),
+      branch: z.string().min(1),
+      conflictFiles: z.array(z.string()).min(1),
+    }).strict(),
+  }).strict(),
+  z.object({
+    type: z.literal('ship_conflict_resolved'),
+    conflictId: z.string().min(1),
+    strategy: z.enum(['abort', 'ours', 'theirs', 'ai']),
+  }).strict(),
+  z.object({
+    type: z.literal('mode_changed'),
+    mode: z.enum(['plan', 'build', 'autopilot']),
+  }).strict(),
+  z.object({
+    type: z.literal('subagent_start'),
+    id: z.string().min(1),
+    agent: z.string().min(1),
+    goal: z.string().min(1),
+  }).strict(),
+  z.object({
+    type: z.literal('subagent_delta'),
+    id: z.string().min(1),
+    text: z.string(),
+  }).strict(),
+  z.object({
+    type: z.literal('subagent_done'),
+    id: z.string().min(1),
+    summary: z.string(),
+  }).strict(),
+  z.object({
+    type: z.literal('hook_triggered'),
+    hook: z.string().min(1),
+    target: z.string().min(1),
+  }).strict(),
+  z.object({
+    type: z.literal('hook_resolved'),
+    hook: z.string().min(1),
+    action: z.enum(['allow', 'block', 'modify']),
   }).strict(),
 ]);
 
@@ -501,6 +546,38 @@ export const BridgeRequestSchema = z.discriminatedUnion('kind', [
     params: z.object({
       enabled: z.boolean(),
     }).strict(),
+  }).strict(),
+  z.object({
+    requestId: RequestIdSchema,
+    kind: z.literal('advanceWorkflow'),
+    params: z.object({
+      action: z.enum(['next', 'back', 'skip', 'abort']),
+      target: z.string().optional(),
+    }).strict(),
+  }).strict(),
+  z.object({
+    requestId: RequestIdSchema,
+    kind: z.literal('resolveShipConflict'),
+    params: z.object({
+      conflictId: z.string().min(1),
+      strategy: z.enum(['abort', 'ours', 'theirs', 'ai']),
+      persist: z.boolean(),
+    }).strict(),
+  }).strict(),
+  z.object({
+    requestId: RequestIdSchema,
+    kind: z.literal('findOnboardingDocs'),
+    params: z.object({}).strict(),
+  }).strict(),
+  z.object({
+    requestId: RequestIdSchema,
+    kind: z.literal('estimateOnboardCost'),
+    params: z.object({}).strict(),
+  }).strict(),
+  z.object({
+    requestId: RequestIdSchema,
+    kind: z.literal('writeRepoMap'),
+    params: z.object({}).strict(),
   }).strict(),
 ]);
 

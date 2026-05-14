@@ -20,7 +20,7 @@ import {
 } from '@atlas/core/providers';
 import { err, ok, type Result } from '@atlas/core/result';
 import { SkillRegistry, loadSkills, type Skill } from '@atlas/core/skills';
-import { TodoStore, type TodoItem } from '@atlas/core/tools';
+import { TodoStore, type TodoItem, createDelegateRunner } from '@atlas/core/tools';
 import { ToolRegistry, allowAllPolicy } from '@atlas/core/tools/registry';
 import type { ApprovalPolicy, ToolContext } from '@atlas/core/tools/types';
 import { phasePromptAddendum } from '@atlas/core/workflow';
@@ -39,12 +39,15 @@ export interface CreateAtlasSessionHostOptions {
   readonly hooks?: HookRegistry;
   readonly approvalPolicy?: ApprovalPolicy;
   readonly clarifyAsk?: ToolContext['clarifyAsk'];
+  readonly shipDefaults?: ToolContext['shipDefaults'];
+  readonly shipResolveAsk?: ToolContext['shipResolveAsk'];
   readonly initialMessages?: readonly Message[];
   readonly initialTodos?: readonly TodoItem[];
 }
 
 export interface RunTurnOptions {
   readonly signal?: AbortSignal;
+  readonly delegateEvent?: ToolContext['delegateEvent'];
 }
 
 interface AtlasSessionHostState {
@@ -120,6 +123,7 @@ export class AtlasSessionHost {
       toolContext: {
         ...this.state.toolContext,
         ...(options.signal ? { signal: options.signal } : {}),
+        ...(options.delegateEvent ? { delegateEvent: options.delegateEvent } : {}),
       },
       initialMessages: [{ role: 'system', content: systemContent }, ...turnHistory],
       ...(reasoning ? { reasoning } : {}),
@@ -181,6 +185,21 @@ export const createAtlasSessionHost = async (
   const skillsResult = await resolveSkills(options.skills);
   if (!skillsResult.ok) return err(skillsResult.error);
 
+  const agentMap = new Map<string, Agent>();
+  for (const a of agents.list()) agentMap.set(a.name, a);
+
+  const delegateRun = createDelegateRunner({
+    provider: providerResult.value,
+    model: options.model ?? config.defaultModel,
+    fallbackModels: config.fallbackModels,
+    agents: agentMap,
+    defaultAgent: agent,
+    skills: skillsResult.value,
+    baseTools: options.tools ?? new ToolRegistry(),
+    baseToolContext: { cwd: options.cwd },
+    hooks: options.hooks ?? builtinHookRegistry({ cwd: options.cwd, config: config.guardrails }),
+  });
+
   const toolContext: ToolContext = {
     cwd: options.cwd,
     approve: options.approvalPolicy ?? allowAllPolicy,
@@ -189,7 +208,10 @@ export const createAtlasSessionHost = async (
       ...(agent.authorizedSections ? { authorizedSections: agent.authorizedSections } : {}),
       ...(agent.forbiddenSections ? { forbiddenSections: agent.forbiddenSections } : {}),
     },
+    delegateRun,
     ...(options.clarifyAsk ? { clarifyAsk: options.clarifyAsk } : {}),
+    ...(options.shipDefaults ? { shipDefaults: options.shipDefaults } : {}),
+    ...(options.shipResolveAsk ? { shipResolveAsk: options.shipResolveAsk } : {}),
   };
   const todoStore = new TodoStore();
   if (options.initialTodos && options.initialTodos.length > 0) {

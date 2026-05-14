@@ -30,7 +30,8 @@ import {
 } from '@atlas/core/providers';
 import { err, ok, type Result } from '@atlas/core/result';
 import type { TodoItem } from '@atlas/core/tools';
-import { loadActiveTask, type TaskState } from '@atlas/core/workflow';
+import { loadActiveTask, updateTask, clearActiveTask, canRewindTo, PHASES, type TaskState } from '@atlas/core/workflow';
+import { findOnboardingDocs, estimateOnboardCost, writeRepoMap } from '@atlas/core';
 import {
   BridgeRequestSchema,
   type BridgeResponse,
@@ -51,12 +52,14 @@ import {
 import {
   createVsCodeApprovalPolicy,
   createVsCodeClarifyAsk,
+  createVsCodeShipResolveAsk,
   createVsCodeToolRegistry,
   type VsCodeToolHost,
 } from './tools/index.js';
 import { InlineApprovalBroker } from './approval-broker.js';
 import { InlineClarifyBroker } from './clarify-broker.js';
 import { LearnBroker } from './learn-broker.js';
+import { ShipConflictBroker } from './ship-conflict-broker.js';
 import { shouldOfferLearn, describeLearnReason } from '@atlas/core';
 import { saveLearnedSkill } from '@atlas/core/skills';
 import {
@@ -241,8 +244,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const approvals = new InlineApprovalBroker(output);
   const clarifyBroker = new InlineClarifyBroker(output);
   const learnBroker = new LearnBroker(output);
-  const runtime = new AtlasRuntimeController(context, output, approvals, clarifyBroker, learnBroker);
-  const provider = new AtlasSidebarProvider(context, output, runtime, approvals, clarifyBroker, learnBroker);
+  const shipConflictBroker = new ShipConflictBroker(output);
+  const runtime = new AtlasRuntimeController(context, output, approvals, clarifyBroker, learnBroker, shipConflictBroker);
+  const provider = new AtlasSidebarProvider(context, output, runtime, approvals, clarifyBroker, learnBroker, shipConflictBroker);
 
   context.subscriptions.push(
     output,
@@ -336,6 +340,7 @@ class AtlasSidebarProvider implements vscode.WebviewViewProvider {
     private readonly approvals: InlineApprovalBroker,
     private readonly clarifyBroker: InlineClarifyBroker,
     private readonly learnBroker: LearnBroker,
+    private readonly shipConflictBroker: ShipConflictBroker,
   ) {}
 
   public resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -348,10 +353,19 @@ class AtlasSidebarProvider implements vscode.WebviewViewProvider {
     this.approvals.attach(webviewView.webview);
     this.clarifyBroker.attach(webviewView.webview);
     this.learnBroker.attach(webviewView.webview);
+    this.shipConflictBroker.attach(webviewView.webview);
+    this.runtime.setModeChangeListener((mode) => {
+      void webviewView.webview.postMessage({
+        requestId: 'mode-change',
+        kind: 'stream-event',
+        event: { type: 'mode_changed', mode },
+      });
+    });
     webviewView.onDidDispose(() => {
       this.approvals.detach(webviewView.webview);
       this.clarifyBroker.detach(webviewView.webview);
       this.learnBroker.detach(webviewView.webview);
+      this.shipConflictBroker.detach(webviewView.webview);
     });
     webviewView.webview.onDidReceiveMessage((rawMessage: unknown) => {
       this.handleMessage(webviewView.webview, rawMessage);
@@ -620,21 +634,24 @@ class AtlasSidebarProvider implements vscode.WebviewViewProvider {
       }
       case 'attachFile': {
         void (async () => {
-          const result = await vscode.window.showOpenDialog({
-            canSelectFiles: true,
-            canSelectFolders: false,
-            canSelectMany: false,
-            openLabel: 'Attach',
-            filters: request.params.type === 'image'
-              ? { Images: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }
-              : undefined,
-          });
-          if (!result || result.length === 0) {
-            await webview.postMessage(createBridgeResponse(request.requestId, { ok: true, cancelled: true }));
-            return;
-          }
-          const file = result[0]!;
           try {
+            const defaultUri = vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(process.env.HOME ?? process.env.USERPROFILE ?? '/');
+            const result = await vscode.window.showOpenDialog({
+              canSelectFiles: true,
+              canSelectFolders: false,
+              canSelectMany: false,
+              openLabel: 'Attach',
+              defaultUri,
+              filters: request.params.type === 'image'
+                ? { Images: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }
+                : undefined,
+            });
+            if (!result || result.length === 0) {
+              await webview.postMessage(createBridgeResponse(request.requestId, { ok: true, cancelled: true }));
+              return;
+            }
+            const file = result[0]!;
+            this.output.appendLine(`Atlas attachFile: ${file.fsPath} (${request.params.type})`);
             if (request.params.type === 'image') {
               const buffer = await readFile(file.fsPath);
               const base64 = buffer.toString('base64');
@@ -645,6 +662,7 @@ class AtlasSidebarProvider implements vscode.WebviewViewProvider {
                 base64,
                 mediaType,
               }));
+              this.output.appendLine(`Atlas attachFile: image attached (${base64.length} chars base64)`);
             } else {
               const content = await readFile(file.fsPath, 'utf8');
               await webview.postMessage(createBridgeResponse(request.requestId, {
@@ -652,11 +670,14 @@ class AtlasSidebarProvider implements vscode.WebviewViewProvider {
                 path: file.fsPath,
                 content,
               }));
+              this.output.appendLine(`Atlas attachFile: file attached (${content.length} chars)`);
             }
           } catch (e) {
+            const message = `Failed to attach file: ${(e as Error).message}`;
+            this.output.appendLine(`Atlas attachFile error: ${message}`);
             await webview.postMessage(createBridgeErrorResponse(
               request.requestId,
-              `Failed to read file: ${(e as Error).message}`,
+              message,
               'READ_ERROR',
             ));
           }
@@ -759,6 +780,47 @@ class AtlasSidebarProvider implements vscode.WebviewViewProvider {
       case 'setLearnEnabled': {
         this.runtime.setLearnEnabled(request.params.enabled);
         void webview.postMessage(createBridgeResponse(request.requestId, { ok: true }));
+        return;
+      }
+      case 'advanceWorkflow': {
+        void this.runtime.advanceWorkflow(request.params.action, request.params.target).then(async (result) => {
+          await webview.postMessage(createBridgeResponse(request.requestId, result));
+        }).catch(async (error: unknown) => {
+          await webview.postMessage(createBridgeErrorResponse(
+            request.requestId,
+            error instanceof Error ? error.message : 'Workflow action failed.',
+            'WORKFLOW_ACTION_FAILED',
+          ));
+        });
+        return;
+      }
+      case 'resolveShipConflict': {
+        this.shipConflictBroker.resolve(request.params.conflictId, request.params.strategy, request.params.persist);
+        void webview.postMessage(createBridgeResponse(request.requestId, { ok: true }));
+        return;
+      }
+      case 'findOnboardingDocs': {
+        void findOnboardingDocs({ cwd: workspaceCwd() }).then(async (result) => {
+          await webview.postMessage(createBridgeResponse(request.requestId, result.ok
+            ? { ok: true, docs: result.value }
+            : runtimeError(result.error)));
+        });
+        return;
+      }
+      case 'estimateOnboardCost': {
+        void estimateOnboardCost({ cwd: workspaceCwd() }).then(async (result) => {
+          await webview.postMessage(createBridgeResponse(request.requestId, result.ok
+            ? { ok: true, estimate: result.value }
+            : runtimeError(result.error)));
+        });
+        return;
+      }
+      case 'writeRepoMap': {
+        void writeRepoMap({ cwd: workspaceCwd() }).then(async (result) => {
+          await webview.postMessage(createBridgeResponse(request.requestId, result.ok
+            ? { ok: true, path: result.value.path, filesScanned: result.value.filesScanned }
+            : runtimeError(result.error)));
+        });
         return;
       }
     }
@@ -983,9 +1045,12 @@ class AtlasRuntimeController {
   private selectedAgent: string | null = null;
   private selectedThinking: ThinkingLevel = 'off';
   private currentMode: 'plan' | 'build' | 'autopilot' = 'plan';
+  private agentModels = new Map<string, string>();
   private initialMessages: readonly Message[] = [];
   private lastTodos: readonly TodoItem[] = [];
   private currentAbortController: AbortController | null = null;
+  private updateAvailable: string | null = null;
+  private onModeChange: ((mode: 'plan' | 'build' | 'autopilot') => void) | null = null;
 
   private learnEnabled = true;
 
@@ -995,8 +1060,30 @@ class AtlasRuntimeController {
     private readonly approvals: InlineApprovalBroker,
     private readonly clarifyBroker: InlineClarifyBroker,
     private readonly learnBroker: LearnBroker,
+    private readonly shipConflictBroker: ShipConflictBroker,
   ) {
     this.activeSessionId = context.globalState.get<string>(ACTIVE_SESSION_KEY) ?? null;
+    void this.checkForUpdate();
+  }
+
+  public setModeChangeListener(callback: (mode: 'plan' | 'build' | 'autopilot') => void): void {
+    this.onModeChange = callback;
+  }
+
+  private async checkForUpdate(): Promise<void> {
+    try {
+      const currentVersion = this.context.extension.packageJSON.version as string;
+      const response = await fetch('https://registry.npmjs.org/atlas-os-vscode/latest', { signal: AbortSignal.timeout(5000) });
+      if (!response.ok) return;
+      const data = await response.json() as { version?: string };
+      const latest = data.version;
+      if (latest && latest !== currentVersion) {
+        this.updateAvailable = latest;
+        this.output.appendLine(`[update] Atlas VS Code: extension ${currentVersion} → ${latest} is available.`);
+      }
+    } catch {
+      // Silently ignore network errors
+    }
   }
 
   public async getStatus(): Promise<{
@@ -1007,13 +1094,28 @@ class AtlasRuntimeController {
     readonly model?: string;
     readonly mode?: 'plan' | 'build' | 'autopilot';
     readonly thinking?: ThinkingLevel;
+    readonly anthropicOAuthExpired?: boolean;
+    readonly updateAvailable?: string | null;
     readonly error?: { readonly message: string; readonly code: string };
   }> {
     const hostResult = await this.getHost();
+    const configResult = await loadVsCodeConfig(this.context);
+    let anthropicOAuthExpired = false;
+    if (configResult.ok && configResult.value.providers.anthropic.useClaudeCodeOauth) {
+      const creds = await loadClaudeCodeCredentials(
+        configResult.value.providers.anthropic.claudeCodeCredentialsPath
+          ? { path: configResult.value.providers.anthropic.claudeCodeCredentialsPath }
+          : {},
+      );
+      if (creds.ok && creds.value.expiresAt && creds.value.expiresAt < Date.now()) {
+        anthropicOAuthExpired = true;
+      }
+    }
     if (!hostResult.ok) {
       return {
         ok: false,
         cwd: workspaceCwd(),
+        anthropicOAuthExpired,
         error: { message: hostResult.error.message, code: hostResult.error.code },
       };
     }
@@ -1025,6 +1127,8 @@ class AtlasRuntimeController {
       model: hostResult.value.model,
       mode: this.currentMode,
       thinking: this.selectedThinking,
+      anthropicOAuthExpired,
+      updateAvailable: this.updateAvailable,
     };
   }
 
@@ -1128,6 +1232,7 @@ class AtlasRuntimeController {
   public async selectAgent(name: string): Promise<{
     readonly ok: true;
     readonly agent: string;
+    readonly restoredModel?: string;
   } | RuntimeActionError> {
     const agentsResult = await loadAgents({ cwd: workspaceCwd() });
     if (!agentsResult.ok) return runtimeError(agentsResult.error);
@@ -1140,8 +1245,24 @@ class AtlasRuntimeController {
       ));
     }
     this.selectedAgent = name;
+    const boundModel = this.agentModels.get(name);
+    if (boundModel) {
+      const configResult = await loadVsCodeConfig(this.context);
+      if (configResult.ok) {
+        const catalog = await loadVsCodeModelCatalog(configResult.value);
+        const match = catalog.find((m) => m.id === boundModel);
+        if (match) {
+          this.selectedModel = boundModel;
+          this.selectedProvider = match.provider;
+        }
+      }
+    }
     this.resetHost();
-    return { ok: true, agent: name };
+    return { ok: true, agent: name, ...(boundModel ? { restoredModel: boundModel } : {}) };
+  }
+
+  public bindAgentModel(agent: string, model: string): void {
+    this.agentModels.set(agent, model);
   }
 
   public async getMcpStatus(): Promise<McpStatusResult> {
@@ -1450,6 +1571,7 @@ class AtlasRuntimeController {
   public cancelTurn(): { readonly ok: true; readonly cancelled: boolean } {
     if (!this.currentAbortController) return { ok: true, cancelled: false };
     this.approvals.cancelAll('Atlas turn cancelled from the VS Code sidebar.');
+    this.shipConflictBroker.cancelAll('Atlas turn cancelled from the VS Code sidebar.');
     this.currentAbortController.abort();
     return { ok: true, cancelled: true };
   }
@@ -1480,6 +1602,52 @@ class AtlasRuntimeController {
 
   public setLearnEnabled(enabled: boolean): void {
     this.learnEnabled = enabled;
+  }
+
+  public async advanceWorkflow(
+    action: 'next' | 'back' | 'skip' | 'abort',
+    target?: string,
+  ): Promise<{ readonly ok: true; readonly message: string } | RuntimeActionError> {
+    const taskResult = await loadActiveTask(workspaceCwd());
+    if (!taskResult.ok) return runtimeError(taskResult.error);
+    const task = taskResult.value;
+
+    if (action === 'abort') {
+      if (!task) return runtimeError(atlasError('WORKFLOW_NO_ACTIVE_TASK', 'No active task to abort.'));
+      const r = await clearActiveTask(workspaceCwd());
+      if (!r.ok) return runtimeError(r.error);
+      return { ok: true, message: `Task aborted (state preserved at .atlas/tasks/${task.id}/).` };
+    }
+
+    if (!task) return runtimeError(atlasError('WORKFLOW_NO_ACTIVE_TASK', 'No active task.'));
+
+    if (action === 'back') {
+      const phase = target?.toLowerCase();
+      if (!phase || !PHASES.includes(phase as TaskState['phase'])) {
+        return runtimeError(atlasError(
+          'WORKFLOW_INVALID_PHASE',
+          `usage: /back <${PHASES.filter((p) => p !== 'idle').join('|')}>`,
+        ));
+      }
+      const check = canRewindTo(task, phase as TaskState['phase']);
+      if (!check.ok) return runtimeError(atlasError('WORKFLOW_INVALID_PHASE', check.reason));
+      const u = await updateTask(task, { phase: phase as TaskState['phase'] });
+      if (!u.ok) return runtimeError(u.error);
+      return { ok: true, message: `Phase rewound: ${task.phase} → ${phase}.` };
+    }
+
+    if (action === 'skip') {
+      const idx = PHASES.indexOf(task.phase);
+      const next = PHASES[idx + 1];
+      if (!next) return runtimeError(atlasError('WORKFLOW_INVALID_PHASE', `Already at terminal phase: ${task.phase}.`));
+      const u = await updateTask(task, { phase: next });
+      if (!u.ok) return runtimeError(u.error);
+      return { ok: true, message: `Phase skipped: ${task.phase} → ${next}.` };
+    }
+
+    // action === 'next' — this is handled by staging *next in composer, but if called directly
+    // just return the current task status
+    return { ok: true, message: `Active task: ${task.title} (${task.phase}). Stage *next to advance.` };
   }
 
   public async runTurn(
@@ -1519,7 +1687,10 @@ class AtlasRuntimeController {
     let turnToolErrors = 0;
 
     try {
-      for await (const event of hostResult.value.runTurn(content, { signal: abortController.signal })) {
+      for await (const event of hostResult.value.runTurn(content, {
+        signal: abortController.signal,
+        delegateEvent: handlers.onEvent,
+      })) {
         if (event.type === 'tool_call_done' && event.outcome.type === 'error') {
           turnToolErrors += 1;
         }
@@ -1575,9 +1746,16 @@ class AtlasRuntimeController {
         ...(this.selectedAgent ? { agentName: this.selectedAgent } : {}),
         initialMessages: this.initialMessages,
         initialTodos: this.lastTodos,
-        tools: createVsCodeToolRegistry(toolHost),
-        approvalPolicy: createVsCodeApprovalPolicy(toolHost, this.approvals),
+        tools: createVsCodeToolRegistry(toolHost, (mode) => {
+          this.currentMode = mode;
+          this.output.appendLine(`[atlas] mode → ${mode} (agent-initiated)`);
+          this.onModeChange?.(mode);
+          this.resetHost();
+        }),
+        approvalPolicy: createVsCodeApprovalPolicy(toolHost, this.approvals, this.currentMode),
         clarifyAsk: createVsCodeClarifyAsk(this.clarifyBroker),
+        shipDefaults: config.ship,
+        shipResolveAsk: createVsCodeShipResolveAsk(this.shipConflictBroker),
       });
     })();
     return this.hostPromise;
@@ -1945,6 +2123,8 @@ const bridgeMessageFromLoopEvent = (
       return { requestId, kind: 'stream-event', event: { type: 'delta', text: event.text } };
     case 'thinking':
       return { requestId, kind: 'stream-event', event: { type: 'thinking', text: event.text } };
+    case 'tool_call_delta':
+      return { requestId, kind: 'stream-event', event: { type: 'tool_call_delta', index: event.index, id: event.id, name: event.name, argumentsDelta: event.argumentsDelta } };
     case 'tool_call_start':
       return { requestId, kind: 'stream-event', event: { type: 'tool_call', call: event.call } };
     case 'tool_call_done':
@@ -1967,8 +2147,18 @@ const bridgeMessageFromLoopEvent = (
       };
     case 'error':
       return createBridgeErrorResponse(requestId, event.error.message, event.error.code);
-      return null;
+    case 'subagent_start':
+      return { requestId, kind: 'stream-event', event: { type: 'subagent_start', id: event.id, agent: event.agent, goal: event.goal } };
+    case 'subagent_delta':
+      return { requestId, kind: 'stream-event', event: { type: 'subagent_delta', id: event.id, text: event.text } };
+    case 'subagent_done':
+      return { requestId, kind: 'stream-event', event: { type: 'subagent_done', id: event.id, summary: event.summary } };
+    case 'hook_triggered':
+      return { requestId, kind: 'stream-event', event: { type: 'hook_triggered', hook: event.hook, target: event.target } };
+    case 'hook_resolved':
+      return { requestId, kind: 'stream-event', event: { type: 'hook_resolved', hook: event.hook, action: event.action } };
   }
+  return null;
 };
 
 const bridgeToolOutcome = (

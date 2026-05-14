@@ -91,7 +91,7 @@ describe('VS Code native tools', () => {
 
   it('approval policy uses VS Code modal choices', async () => {
     const { host, setApprovalChoice } = createFakeHost();
-    const policy = createVsCodeApprovalPolicy(host);
+    const policy = createVsCodeApprovalPolicy(host, undefined, 'build');
 
     setApprovalChoice('Allow');
     await expect(policy.decide('terminal', { command: 'pnpm test' })).resolves.toEqual({ action: 'allow' });
@@ -107,10 +107,27 @@ describe('VS Code native tools', () => {
     const { host, setApprovalChoice } = createFakeHost();
     const policy = createVsCodeApprovalPolicy(host, {
       request: async () => ({ action: 'allow' }),
-    });
+    }, 'build');
 
     setApprovalChoice('Deny');
     await expect(policy.decide('terminal', { command: 'pnpm test' })).resolves.toEqual({ action: 'allow' });
+  });
+
+  it('approval policy denies all in plan mode', async () => {
+    const { host } = createFakeHost();
+    const policy = createVsCodeApprovalPolicy(host, undefined, 'plan');
+
+    expect(policy.decide('terminal', { command: 'pnpm test' })).toEqual({
+      action: 'deny',
+      reason: 'terminal requires approval and policy is deny-all',
+    });
+  });
+
+  it('approval policy allows all in autopilot mode', async () => {
+    const { host } = createFakeHost();
+    const policy = createVsCodeApprovalPolicy(host, undefined, 'autopilot');
+
+    expect(policy.decide('terminal', { command: 'rm -rf .' })).toEqual({ action: 'allow' });
   });
 
   it('terminal runs a command through a pseudoterminal', async () => {

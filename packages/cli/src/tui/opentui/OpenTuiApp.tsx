@@ -52,7 +52,9 @@ import {
   isFrameworkAgent,
   loadClaudeCodeCredentials,
   loadContextPack,
+  createLocalProvider,
   LOCAL_HYBRID_TOOL_NAMES,
+  LOCAL_LITE_TOOL_NAMES,
   LOCAL_TOOL_MODE_SPECS,
   findSuggestion,
   PHASES,
@@ -5581,6 +5583,9 @@ Pull models with:
 Modes:
 ${modeInfo}
 
+Lite tool allowlist:
+  ${LOCAL_LITE_TOOL_NAMES.join(', ')}
+
 Hybrid tool allowlist:
   ${LOCAL_HYBRID_TOOL_NAMES.join(', ')}
 
@@ -5620,9 +5625,29 @@ Config file: ~/.atlas/config.yaml
                       pushItem('error', `save failed: ${r.error.message}`);
                       return;
                     }
+                    // Recreate the local provider so the new mode applies
+                    // immediately without requiring a restart.
+                    const newLocalProvider = createLocalProvider({
+                      baseUrl: next.providers.local.baseUrl,
+                      ...(next.providers.local.apiKey
+                        ? { apiKey: next.providers.local.apiKey }
+                        : {}),
+                      ...(Object.keys(next.providers.local.headers).length > 0
+                        ? { headers: next.providers.local.headers }
+                        : {}),
+                      toolMode: mode,
+                      requestTimeoutMs: next.providers.local.requestTimeoutMs
+                    });
+                    if (props.providers) {
+                      (props.providers as Record<string, Provider | undefined>).local =
+                        newLocalProvider;
+                    }
+                    if (activeProviderKind === 'local') {
+                      setActiveProvider(newLocalProvider);
+                    }
                     pushItem(
                       'system',
-                      `✓ local tool mode set to ${mode} — restart Atlas to apply (saved to ~/.atlas/config.yaml)`
+                      `✓ local tool mode set to ${mode} — applied immediately (saved to ~/.atlas/config.yaml)`
                     );
                     setOverlay(null);
                   })();

@@ -135,7 +135,11 @@ describe('runtime provider construction', () => {
 
     const providers = await buildAllProviders(cfg);
 
-    expect(providers.local?.supportsToolCalling).toBe(false);
+    expect(providers.local?.supportsToolCalling).toBe(true);
+    expect(providers.local?.allowedToolNames).toContain('read_file');
+    expect(providers.local?.allowedToolNames).toContain('write_file');
+    expect(providers.local?.allowedToolNames).toContain('edit_file');
+    expect(providers.local?.allowedToolNames).not.toContain('terminal');
   });
 
   it('preserves local hybrid mode on the picker provider map', async () => {

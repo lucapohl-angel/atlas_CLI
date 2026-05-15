@@ -36,6 +36,12 @@ import {
 
 const log = childLogger('provider:local');
 
+export const LOCAL_LITE_TOOL_NAMES = [
+  'read_file',
+  'edit_file',
+  'write_file'
+] as const;
+
 export const LOCAL_HYBRID_TOOL_NAMES = [
   'read_file',
   'edit_file',
@@ -59,8 +65,8 @@ export const LOCAL_TOOL_MODE_SPECS: Record<
   lite: {
     label: 'Lite',
     requirements: 'CPU ok, 4-8 GB RAM, 1.5B-7B models',
-    pros: 'fastest and most reliable locally',
-    cons: 'chat only; no model-driven tools or tool hooks'
+    pros: 'fastest locally with basic file read/write/edit',
+    cons: 'no terminal, git, or hooks; small models may miss calls'
   },
   hybrid: {
     label: 'Hybrid',
@@ -160,7 +166,7 @@ const compactSystemPrompt = (model: string, mode: 'lite' | 'hybrid'): string =>
     `Active model id: ${model}. Provider: local OpenAI-compatible server (usually Ollama).`,
     'If asked who you are, say you are Atlas. If asked which model is running, answer with the exact active model id above. Do not claim to be Claude, Anthropic, OpenAI, GPT-4, or ChatGPT unless that exact model id/provider says so.',
     mode === 'lite'
-      ? 'Local lite mode is active: you do not have tools, tool results, or file access; answer only from the conversation and ask for details when needed.'
+      ? `Local lite mode is active: only these basic file tools are available: ${LOCAL_LITE_TOOL_NAMES.join(', ')}. No terminal, git, or advanced tools. When the user asks you to read, create, or change a file, you MUST use the matching tool. Do not describe what you would do — call the tool with the exact path and content.`
       : `Local hybrid mode is active: only these compact development tools may be available: ${LOCAL_HYBRID_TOOL_NAMES.join(', ')}. Use them sparingly and expect approval for writes or commands.`,
     'Atlas workflow summary: discover the task, plan carefully, build small focused changes, verify, then summarize.',
     'Keep responses short, direct, and useful.'
@@ -175,12 +181,18 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
   const doFetch = options.fetch ?? fetch;
   const toolMode = resolveLocalToolMode(options);
   const compactMode = toolMode === 'full' ? null : toolMode;
-  const supportsToolCalling = toolMode !== 'lite';
+  const supportsToolCalling = true;
+  const allowedToolNames =
+    toolMode === 'lite'
+      ? LOCAL_LITE_TOOL_NAMES
+      : toolMode === 'hybrid'
+        ? LOCAL_HYBRID_TOOL_NAMES
+        : undefined;
 
   return {
     name: 'local',
     supportsToolCalling,
-    ...(toolMode === 'hybrid' ? { allowedToolNames: LOCAL_HYBRID_TOOL_NAMES } : {}),
+    ...(allowedToolNames ? { allowedToolNames } : {}),
     async *stream(request: CompletionRequest): AsyncIterable<StreamEvent> {
       const url = `${baseUrl}/chat/completions`;
       const headers: Record<string, string> = {
@@ -192,26 +204,14 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
         headers['authorization'] = `Bearer ${options.apiKey}`;
       }
 
-      const includeToolProtocol = toolMode !== 'lite';
-
       // In compact local modes: collapse the entire orchestrator system
-      // stack into a single tiny prompt and keep only recent turns. Lite
-      // drops tool protocol turns; hybrid keeps them so tool results can
-      // feed the follow-up request.
+      // stack into a single tiny prompt and keep only recent turns.
+      // Both lite and hybrid keep tool protocol turns so the model can
+      // see tool results and issue follow-up calls.
       let effectiveMessages: readonly typeof request.messages[number][];
       if (compactMode) {
         const nonSystem = request.messages.filter((m) => {
           if (m.role === 'system') return false;
-          if (compactMode === 'lite' && m.role === 'tool') return false;
-          if (
-            compactMode === 'lite' &&
-            m.role === 'assistant' &&
-            m.toolCalls &&
-            m.toolCalls.length > 0 &&
-            !m.content
-          ) {
-            return false;
-          }
           return true;
         });
         const keep = compactMode === 'hybrid' ? HYBRID_HISTORY_KEEP : LITE_HISTORY_KEEP;
@@ -250,8 +250,11 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
             content: mapContentToOpenAI(m.content, isAssistantToolCall)
           };
           if (m.toolCallId) base['tool_call_id'] = m.toolCallId;
-          if (m.name) base['name'] = m.name;
-          if (includeToolProtocol && m.toolCalls && m.toolCalls.length > 0) {
+          // Only include 'name' on non-tool roles. The 'name' field is not
+          // part of the standard OpenAI 'tool' role spec and can confuse
+          // strict local implementations (LM Studio, vLLM, llama.cpp).
+          if (m.name && m.role !== 'tool') base['name'] = m.name;
+          if (m.toolCalls && m.toolCalls.length > 0) {
             base['tool_calls'] = m.toolCalls.map((tc) => ({
               id: tc.id,
               type: 'function',
@@ -263,12 +266,14 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
         stream: true,
         // Keep the model resident in RAM/VRAM for 30 min between requests
         // so the second prompt feels as instant as `ollama run` does in a
-        // REPL. Ollama-specific field; the OpenAI shim forwards it. Other
-        // OpenAI-compat servers (LM Studio, vLLM) ignore unknown fields.
-        keep_alive: '30m',
+        // REPL. Only send for Ollama (default port 11434 or explicit baseUrl
+        // containing 'ollama'); strict OpenAI-compat servers may reject it.
+        ...(baseUrl.includes('11434') || baseUrl.includes('ollama')
+          ? { keep_alive: '30m' }
+          : {}),
         ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
         ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
-        ...(includeToolProtocol && request.tools && request.tools.length > 0
+        ...(request.tools && request.tools.length > 0
           ? {
               tools: request.tools.map((t) => ({
                 type: 'function',
@@ -460,9 +465,15 @@ export const createLocalProvider = (options: LocalProviderOptions = {}): Provide
         yield segment;
       }
 
-      // Flush assembled tool calls.
-      for (const [, acc] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
-        if (acc.emitted || !acc.id || !acc.name) continue;
+      // Flush assembled tool calls. Some local implementations (older
+      // Ollama builds, certain llama.cpp/vLLM configs) omit the 'id'
+      // field on tool_call deltas. We synthesise one so the call isn't
+      // silently dropped.
+      for (const [idx, acc] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
+        if (acc.emitted || !acc.name) continue;
+        if (!acc.id) {
+          acc.id = `local_${Date.now()}_${idx}`;
+        }
         acc.emitted = true;
         const call: ToolCall = {
           id: acc.id,

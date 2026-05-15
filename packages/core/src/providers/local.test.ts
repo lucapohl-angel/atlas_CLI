@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   LOCAL_HYBRID_TOOL_NAMES,
+  LOCAL_LITE_TOOL_NAMES,
   createLocalProvider,
   listLocalModels,
   probeLocalProvider,
@@ -204,6 +205,9 @@ describe('Local provider', () => {
       fetch: fakeFetch as unknown as typeof fetch
     });
 
+    expect(provider.supportsToolCalling).toBe(true);
+    expect(provider.allowedToolNames).toEqual(LOCAL_LITE_TOOL_NAMES);
+
     await collect(
       provider.stream({
         model: 'qwen2.5-coder:7b',
@@ -223,9 +227,9 @@ describe('Local provider', () => {
 
     const body = JSON.parse((fakeFetch.mock.calls[0]![1] as RequestInit).body as string) as {
       messages: ReadonlyArray<{ role: string; content: string }>;
-      tools?: unknown;
+      tools?: ReadonlyArray<{ type: string; function: { name: string } }>;
     };
-    expect(body.tools).toBeUndefined();
+    expect(body.tools?.[0]?.function.name).toBe('read_file');
     expect(body.messages[0]?.content).toContain('You are Atlas');
     expect(body.messages[0]?.content).toContain('qwen2.5-coder:7b');
     expect(body.messages[0]?.content).toContain('Do not claim to be Claude');
@@ -268,6 +272,74 @@ describe('Local provider', () => {
     expect(body.messages[0]?.content).toContain('You are Atlas');
     expect(body.messages[0]?.content).toContain('Local hybrid mode');
     expect(body.tools?.[0]?.function.name).toBe('read_file');
+  });
+
+  it('synthesises a tool call id when the local server omits it', async () => {
+    const fakeFetch = vi.fn(async () =>
+      new Response(
+        sseBody([
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"echo","arguments":"{\\"x\\":"}}]}}]}\n\n',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}]}\n\n',
+          'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+          'data: [DONE]\n\n'
+        ]),
+        { status: 200 }
+      )
+    );
+    const provider = createLocalProvider({ fetch: fakeFetch as unknown as typeof fetch });
+
+    const events = await collect(
+      provider.stream({
+        model: 'qwen2.5-coder:7b',
+        messages: [{ role: 'user', content: 'x' }],
+        tools: [
+          {
+            name: 'echo',
+            description: 'echo a value',
+            parameters: { type: 'object', properties: { x: { type: 'number' } } }
+          }
+        ]
+      })
+    );
+
+    const call = events.find((e) => e.type === 'tool_call');
+    expect(call?.type).toBe('tool_call');
+    if (call?.type === 'tool_call') {
+      expect(call.call.name).toBe('echo');
+      expect(call.call.arguments).toBe('{"x":1}');
+      expect(call.call.id).toMatch(/^local_\d+_0$/);
+    }
+  });
+
+  it('sends keep_alive only for Ollama endpoints', async () => {
+    const fakeFetchOllama = vi.fn(async () =>
+      new Response(sseBody(['data: [DONE]\n\n']), { status: 200 })
+    );
+    const ollamaProvider = createLocalProvider({
+      fetch: fakeFetchOllama as unknown as typeof fetch
+    });
+    await collect(
+      ollamaProvider.stream({ model: 'm', messages: [{ role: 'user', content: 'hi' }] })
+    );
+    const ollamaBody = JSON.parse(
+      (fakeFetchOllama.mock.calls[0]![1] as RequestInit).body as string
+    ) as Record<string, unknown>;
+    expect(ollamaBody.keep_alive).toBe('30m');
+
+    const fakeFetchLmStudio = vi.fn(async () =>
+      new Response(sseBody(['data: [DONE]\n\n']), { status: 200 })
+    );
+    const lmStudioProvider = createLocalProvider({
+      baseUrl: 'http://localhost:1234/v1',
+      fetch: fakeFetchLmStudio as unknown as typeof fetch
+    });
+    await collect(
+      lmStudioProvider.stream({ model: 'm', messages: [{ role: 'user', content: 'hi' }] })
+    );
+    const lmStudioBody = JSON.parse(
+      (fakeFetchLmStudio.mock.calls[0]![1] as RequestInit).body as string
+    ) as Record<string, unknown>;
+    expect(lmStudioBody.keep_alive).toBeUndefined();
   });
 });
 

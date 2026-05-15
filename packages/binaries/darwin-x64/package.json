@@ -1,6 +1,6 @@
 {
   "name": "atlas-os-darwin-x64",
-  "version": "1.7.4",
+  "version": "1.7.5",
   "description": "macOS x64 binary for atlas-os (do not install directly).",
   "license": "MIT",
   "repository": {
@@ -8,9 +8,16 @@
     "url": "git+https://github.com/lucapohl-angel/ATLAS_OS.git",
     "directory": "packages/binaries/darwin-x64"
   },
-  "os": ["darwin"],
-  "cpu": ["x64"],
-  "files": ["bin/atlas", "README.md"],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/atlas",
+    "README.md"
+  ],
   "publishConfig": {
     "access": "public"
   },

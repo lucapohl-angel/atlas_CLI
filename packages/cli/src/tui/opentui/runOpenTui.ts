@@ -25,8 +25,11 @@ export const runOpenTui = async (
   let reactBinding: typeof import('@opentui/react');
   let appModule: typeof import('./OpenTuiApp.js');
   try {
-    [core, reactBinding, appModule] = await Promise.all([
-      import('@opentui/core'),
+    // Load @opentui/core first, then @opentui/react. Parallel imports
+    // of these two packages trigger a Bun ESM circular-dependency bug
+    // (TDZ error on TextNodeRenderable). Sequential loading avoids it.
+    core = await import('@opentui/core');
+    [reactBinding, appModule] = await Promise.all([
       import('@opentui/react'),
       import('./OpenTuiApp.js')
     ]);

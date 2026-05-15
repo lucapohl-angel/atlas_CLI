@@ -1,6 +1,6 @@
 {
   "name": "atlas-os-monorepo",
-  "version": "0.1.0",
+  "version": "1.7.5",
   "private": true,
   "description": "Atlas CLI — Your autonomous development crew. Multi-agent, hook-driven, model-agnostic.",
   "license": "MIT",

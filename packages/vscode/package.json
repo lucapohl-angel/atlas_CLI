@@ -262,6 +262,7 @@
     "@vscode-elements/elements": "^2.5.1",
     "@vscode/codicons": "^0.0.45",
     "highlight.js": "^11.11.1",
+    "marked": "^18.0.3",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "zod": "^3.24.2"

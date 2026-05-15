@@ -19,8 +19,12 @@ name: release
 #   atlas-os-win32-x64        ← native binary for windows x64
 #
 # Required repository secret (only consumed when publish=true):
-#   • NPM_TOKEN  — npm automation token with publish access to the
+#   • NPM_TOKEN  — npm *automation* token with publish access to the
 #                  atlas-os* package names.
+#                  IMPORTANT: If your npm account has 2FA enabled, a regular
+#                  "publish" token will fail with E404. You MUST use an
+#                  automation token (generated at npmjs.com → Access Tokens →
+#                  Generate New Token → Automation) which bypasses 2FA.
 
 on:
   push:
@@ -181,9 +185,23 @@ jobs:
             fi
           done
 
+      # Verify npm auth before attempting any publishes. This gives a clear
+      # error early if the token is missing, expired, or lacks publish access.
+      - name: Verify npm authentication
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          echo "→ verifying npm auth..."
+          npm whoami || (echo "::error::npm auth failed — check NPM_TOKEN secret"; exit 1)
+          echo "✓ authenticated as $(npm whoami)"
+
       # Publish platform packages first so when atlas-os goes live, its
       # optional-dep version is already resolvable on the registry.
+      # continue-on-error: binaries are optional — if a platform package fails
+      # (e.g. token lacks scope, transient registry issue), the main atlas-os
+      # dispatcher will still be published so users get the JS fallback.
       - name: Publish platform packages
+        continue-on-error: true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
